@@ -187,7 +187,6 @@ impl GBZBase {
         )?;
 
         // Insert the nodes.
-        // FIXME compressed encoding: $ACGTN -> 0..6; 3 bases per byte
         let mut inserted = 0;
         let transaction = connection.transaction()?;
         {
@@ -202,7 +201,8 @@ impl GBZBase {
                 let record_id = index.node_to_record(forward_id);
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = graph.sequence(node_id).unwrap();
-                insert.execute((forward_id, edge_bytes, bwt_bytes, sequence))?;
+                let encoded_sequence = encode_sequence(sequence);
+                insert.execute((forward_id, edge_bytes, bwt_bytes, encoded_sequence))?;
                 inserted += 1;
         
                 // Reverse orientation.
@@ -210,7 +210,8 @@ impl GBZBase {
                 let record_id = index.node_to_record(reverse_id);
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = support::reverse_complement(sequence);
-                insert.execute((reverse_id, edge_bytes, bwt_bytes, &sequence))?;
+                let encoded_sequence = encode_sequence(&sequence);
+                insert.execute((reverse_id, edge_bytes, bwt_bytes, encoded_sequence))?;
                 inserted += 1;
             }
         }
@@ -456,7 +457,8 @@ impl<'a> Cursor<'a> {
                 let edge_bytes: Vec<u8> = row.get(0)?;
                 let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                 let bwt: Vec<u8> = row.get(1)?;
-                let sequence: Vec<u8> = row.get(2)?;
+                let encoded_sequence: Vec<u8> = row.get(2)?;
+                let sequence: Vec<u8> = decode_sequence(&encoded_sequence);
                 Ok(GBZRecord { handle, edges, bwt, sequence })
             }
         ).optional().map_err(|x| x.to_string())
@@ -511,6 +513,60 @@ impl<'a> Cursor<'a> {
             }
         ).optional().map_err(|x| x.to_string())
     }
+}
+
+//-----------------------------------------------------------------------------
+
+const DECODE: [u8; 6] = [0, b'A', b'C', b'G', b'T', b'N'];
+
+fn decode_sequence(encoding: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(3 * encoding.len() - 1);
+
+    for byte in encoding {
+        let mut value = *byte as usize;
+        for _ in 0..3 {
+            let decoded = DECODE[value % DECODE.len()];
+            if decoded == 0 {
+                return result;
+            }
+            value /= DECODE.len();
+            result.push(decoded);
+        }
+    }
+
+    result
+}
+
+const fn generate_encoding() -> [u8; 256] {
+    let mut result = [5; 256];
+    result[b'a' as usize] = 1; result[b'A' as usize] = 1;
+    result[b'c' as usize] = 2; result[b'C' as usize] = 2;
+    result[b'g' as usize] = 3; result[b'G' as usize] = 3;
+    result[b't' as usize] = 4; result[b'T' as usize] = 4;
+    result
+}
+
+const ENCODE: [u8; 256] = generate_encoding();
+
+fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
+    let mut result: Vec<u8> = Vec::with_capacity(sequence.len() / 3 + 1);
+
+    let mut offset = 0;
+    while offset + 3 <= sequence.len() {
+        let byte = ENCODE[sequence[offset] as usize] +
+            6 * ENCODE[sequence[offset + 1] as usize] +
+            36 * ENCODE[sequence[offset + 2] as usize];
+        result.push(byte);
+        offset += 3;
+    }
+    let byte = match sequence.len() - offset {
+        0 => 0,
+        1 => ENCODE[sequence[offset] as usize],
+        _ => ENCODE[sequence[offset] as usize] + 6 * ENCODE[sequence[offset + 1] as usize],
+    };
+    result.push(byte);
+
+    result
 }
 
 //-----------------------------------------------------------------------------
