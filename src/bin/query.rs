@@ -3,9 +3,10 @@ use gbz_base::{Cursor, GBZBase, GBZRecord, GBZPath};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap};
 use std::io::Write;
+use std::ops::Range;
 use std::{env, io, process};
 
-use gbwt::{Orientation, REFERENCE_SAMPLES_KEY, ENDMARKER};
+use gbwt::{Orientation, Pos, REFERENCE_SAMPLES_KEY, ENDMARKER};
 use getopts::Options;
 
 use gbwt::support;
@@ -25,86 +26,34 @@ fn main() -> Result<(), String> {
         &config.sample, &config.contig, config.haplotype, config.fragment
     )?;
     let ref_info = ref_path.ok_or(format!("Cannot find path {}", config.path_name()))?;
-
-    // Find an indexed position for offset - context.
-    let low = if config.offset >= config.context { config.offset - config.context } else { 0 };
-    let result = cursor.indexed_position(ref_info.handle, low)?;
-    let (mut initial_offset, mut pos) = result.ok_or(format!("Path {} is not indexed", ref_info.name()))?;
-
-    // Walk the path until offset + context and find the node containing offset.
-    let high = config.offset + config.context;
-    let mut path_offset = initial_offset;
-    let mut initial_node: Option<usize> = None;
-    let mut initial_node_offset = 0;
-    let mut ref_path: Vec<usize> = Vec::new();
-    while path_offset < high {
-        let handle = pos.node;
-        let record = cursor.get_record(handle)?;
-        let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
-        if path_offset <= low {
-            initial_offset = path_offset;
-        }
-        if path_offset <= config.offset {
-            initial_node_offset = config.offset - path_offset;
-        }
-        path_offset += record.sequence.len();
-        if path_offset > low {
-            ref_path.push(handle);
-            if path_offset > config.offset && initial_node.is_none() {
-                initial_node = Some(handle);
-            }
-        }
-        let gbwt_record = record.to_gbwt_record().ok_or(
-            format!("The record for handle {} is invalid", handle)
-        )?;
-        let next = gbwt_record.lf(pos.offset);
-        if next.is_none() {
-            break;
-        }
-        pos = next.unwrap();
+    if !ref_info.is_reference {
+        return Err(format!("Path {} is not a reference path", config.path_name()));
     }
-    let initial_node = initial_node.ok_or(
-        format!("Path {} does not contain offset {}", ref_info.name(), config.offset)
+
+    // Extract the reference path fragment.
+    let (query_pos, ref_path, ref_interval, ref_pos) = extract_path(
+        &mut cursor,
+        &ref_info,
+        config.offset,
+        config.context
     )?;
-    let initial_orientation = support::node_orientation(initial_node);
-    let initial_node = support::node_id(initial_node);
 
-    // Start graph traversal from the initial node.
-    let mut active: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new(); // (distance, node id)
-    active.push(Reverse((0, initial_node)));
+    // Extract all GBWT records within the context.
+    let subgraph = extract_context(&mut cursor, query_pos, config.context)?;
 
-    // Traverse in both directions.
-    let mut selected: BTreeMap<usize, GBZRecord> = BTreeMap::new();
-    while !active.is_empty() {
-        let (distance, node_id) = active.pop().unwrap().0;
-        for orientation in [Orientation::Forward, Orientation::Reverse] {
-            let handle = support::encode_node(node_id, orientation);
-            if selected.contains_key(&handle) {
-                continue;
-            }
-            let record = cursor.get_record(handle)?;
-            let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
-            let next_distance = if node_id == initial_node {
-                distance_to_end(&record, initial_orientation, initial_node_offset)
-            } else {
-                distance + record.sequence.len()
-            };
-            if next_distance <= config.context {
-                for edge in record.edges.iter() {
-                    if edge.node != ENDMARKER && !selected.contains_key(&edge.node) {
-                        active.push(Reverse((next_distance, support::node_id(edge.node))));
-                    }
-                }
-            }
-            selected.insert(handle, record);
-        }
-    }
+    // Extract all other paths.
+    let other_paths = extract_other_paths(&subgraph, ref_pos)?;
 
     // GFA output.
     let mut output = io::stdout();
     let reference_samples = cursor.get_gbwt_tag(REFERENCE_SAMPLES_KEY)?;
-    write_gfa(&selected, reference_samples, &mut output).map_err(|x| x.to_string())?;
-    write_gfa_walk(&ref_path, &ref_info, initial_offset, path_offset, &mut output).map_err(|x| x.to_string())?;
+    write_gfa(&subgraph, reference_samples, &mut output).map_err(|x| x.to_string())?;
+    let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval);
+    write_gfa_walk(&ref_path, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
+    for (haplotype, (path, len)) in other_paths.iter().enumerate() {
+        let metadata = WalkMetadata::anonymous(haplotype + 1, &ref_info.contig, *len);
+        write_gfa_walk(path, &metadata, &mut output).map_err(|x| x.to_string())?;
+    }
 
     Ok(())
 }
@@ -112,6 +61,7 @@ fn main() -> Result<(), String> {
 //-----------------------------------------------------------------------------
 
 // TODO: haplotype, fragment; offset or interval
+// TODO: ref path only, ref + distinct haplotypes, ref + all haplotypes
 pub struct Config {
     pub filename: String,
     pub sample: String,
@@ -179,12 +129,223 @@ impl Config {
 
 //-----------------------------------------------------------------------------
 
+// TODO: Should this be in the library?
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct GraphPosition {
+    pub node: usize,
+    pub orientation: Orientation,
+    pub offset: usize,
+}
+
+//-----------------------------------------------------------------------------
+
+fn query_interval(offset: usize, context: usize) -> Range<usize> {
+    let low = if offset >= context { offset - context } else { 0 };
+    let high = offset + context;
+    low..high
+}
+
+// FIXME: This should only return the query position and the GBWT position.
+// FIXME: Then we can extract all paths later and determine which of them is the reference.
+// Returns the query position, the sequence of handles, the path interval, and the GBWT position for path start.
+fn extract_path(
+    cursor: &mut Cursor,
+    path: &GBZPath,
+    offset: usize,
+    context: usize
+) -> Result<(GraphPosition, Vec<usize>, Range<usize>, Pos), String> {
+    // Find an indexed position for the start of the query interval.
+    let query_interval = query_interval(offset, context);
+    let result = cursor.indexed_position(path.handle, query_interval.start)?;
+    let (mut path_offset, mut pos) = result.ok_or(format!("Path {} is not indexed", path.name()))?;
+
+    // Walk the path until offset + context and find the node containing offset.
+    let mut path_handles: Vec<usize> = Vec::new();
+    let mut query_pos: Option<GraphPosition> = None;
+    let mut path_interval = 0..0;
+    let mut start_pos = pos;
+    while path_offset < query_interval.end {
+        let handle = pos.node;
+        let record = cursor.get_record(handle)?;
+        let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
+        if path_offset <= query_interval.start {
+            path_interval.start = path_offset;
+            start_pos = pos;
+        }
+        path_offset += record.sequence.len();
+        path_interval.end = path_offset;
+        if path_offset > query_interval.start {
+            path_handles.push(handle);
+            if path_offset > offset && query_pos.is_none() {
+                query_pos = Some(GraphPosition {
+                    node: support::node_id(handle),
+                    orientation: support::node_orientation(handle),
+                    offset: offset - (path_offset - record.sequence.len())
+                });
+            }
+        }
+        let gbwt_record = record.to_gbwt_record().ok_or(
+            format!("The record for handle {} is invalid", handle)
+        )?;
+        let next = gbwt_record.lf(pos.offset);
+        if next.is_none() {
+            break;
+        }
+        pos = next.unwrap();
+    }
+
+    let query_pos = query_pos.ok_or(
+        format!("Path {} does not contain offset {}", path.name(), offset)
+    )?;
+    Ok((query_pos, path_handles, path_interval, start_pos))
+}
+
+//-----------------------------------------------------------------------------
+
 fn distance_to_end(record: &GBZRecord, orientation: Orientation, offset: usize) -> usize {
     if orientation == support::node_orientation(record.handle) {
         record.sequence.len() - offset
     } else {
         offset + 1
     }
+}
+
+fn extract_context(
+    cursor: &mut Cursor,
+    from: GraphPosition,
+    context: usize
+) -> Result<BTreeMap<usize, GBZRecord>, String> {
+    // Start graph traversal from the initial node.
+    let mut active: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new(); // (distance, node id)
+    active.push(Reverse((0, from.node)));
+
+    // Traverse in both directions.
+    let mut selected: BTreeMap<usize, GBZRecord> = BTreeMap::new();
+    while !active.is_empty() {
+        let (distance, node_id) = active.pop().unwrap().0;
+        for orientation in [Orientation::Forward, Orientation::Reverse] {
+            let handle = support::encode_node(node_id, orientation);
+            if selected.contains_key(&handle) {
+                continue;
+            }
+            let record = cursor.get_record(handle)?;
+            let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
+            let next_distance = if node_id == from.node {
+                distance_to_end(&record, from.orientation, from.offset)
+            } else {
+                distance + record.sequence.len()
+            };
+            if next_distance <= context {
+                for edge in record.edges.iter() {
+                    if edge.node != ENDMARKER && !selected.contains_key(&edge.node) {
+                        active.push(Reverse((next_distance, support::node_id(edge.node))));
+                    }
+                }
+            }
+            selected.insert(handle, record);
+        }
+    }
+
+    Ok(selected)
+}
+
+//-----------------------------------------------------------------------------
+
+fn next_pos(pos: Pos, successors: &BTreeMap<usize, Vec<(Pos, bool)>>) -> Option<Pos> {
+    if let Some(v) = successors.get(&pos.node) {
+        let (next, _) = v[pos.offset];
+        if next.node == ENDMARKER || !successors.contains_key(&next.node) {
+            None
+        } else {
+            Some(next)
+        }
+    } else {
+        None
+    }
+}
+
+// TODO this should be a public function
+fn edge_is_canonical(from: (usize, Orientation), to: (usize, Orientation)) -> bool {
+    if from.1 == Orientation::Forward {
+        to.0 >= from.0
+    } else {
+        (to.0 > from.0) || (to.0 == from.0 && to.1 == Orientation::Forward)
+    }
+}
+
+// TODO this should be a public function
+fn path_is_canonical(path: &[usize]) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    if path.len() == 1 && support::node_orientation(path[0]) == Orientation::Forward {
+        return true;
+    }
+
+    // In the general case, we consider the path a single edge.
+    let first = path[0];
+    let last = path[path.len() - 1];
+    edge_is_canonical(
+        (support::node_id(first), support::node_orientation(first)),
+        (support::node_id(last), support::node_orientation(last))
+    )
+}
+
+// Extract the handle sequences and lengths for all paths in the subgraph except
+// the one passing through the given GBWT position.
+// FIXME this should only return distinct paths
+fn extract_other_paths(
+    subgraph: &BTreeMap<usize, GBZRecord>,
+    ref_pos: Pos
+) -> Result<Vec<(Vec<usize>, usize)>, String> {
+    // Decompress the GBWT node records for the subgraph.
+    let mut keys: Vec<usize> = Vec::new();
+    let mut successors: BTreeMap<usize, Vec<(Pos, bool)>> = BTreeMap::new();
+    for (handle, gbz_record) in subgraph.iter() {
+        let gbwt_record = gbz_record.to_gbwt_record().unwrap();
+        let decompressed: Vec<(Pos, bool)> = gbwt_record.decompress().into_iter().map(|x| (x, false)).collect();
+        keys.push(*handle);
+        successors.insert(*handle, decompressed);
+    }
+
+    // Mark the positions that have predecessors in the subgraph.
+    for handle in keys.iter() {
+        let decompressed = successors.get(handle).unwrap().clone();
+        for (pos, _) in decompressed.iter() {
+            if let Some(v) = successors.get_mut(&pos.node) {
+                v[pos.offset].1 = true;
+            }
+        }
+    }
+
+    // FIXME: Check for infinite loops.
+    // Extract all paths that do not pass through `ref_pos`.
+    let mut result: Vec<(Vec<usize>, usize)> = Vec::new();
+    for (handle, positions) in successors.iter() {
+        for (offset, (_, has_predecessor)) in positions.iter().enumerate() {
+            if *has_predecessor {
+                continue;
+            }
+            let mut curr = Some(Pos::new(*handle, offset));
+            let mut ok = true;
+            let mut path: Vec<usize> = Vec::new();
+            let mut len = 0;
+            while let Some(pos) = curr {
+                if pos == ref_pos {
+                    ok = false;
+                    break;
+                }
+                path.push(pos.node);
+                len += subgraph.get(&pos.node).unwrap().sequence.len();
+                curr = next_pos(pos, &successors);
+            }
+            if ok && path_is_canonical(&path) {
+                result.push((path, len));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 //-----------------------------------------------------------------------------
@@ -204,7 +365,7 @@ fn write_gfa<T: Write>(records: &BTreeMap<usize, GBZRecord>, reference_samples: 
         let (from_id, from_o) = support::decode_node(*handle);
         for edge in record.edges.iter() {
             let (to_id, to_o) = support::decode_node(edge.node);
-            if records.contains_key(&edge.node) && is_canonical_orientation((from_id, from_o), (to_id, to_o)) {
+            if records.contains_key(&edge.node) && edge_is_canonical((from_id, from_o), (to_id, to_o)) {
                 write_gfa_link(
                     (from_id.to_string().as_bytes(), from_o),
                     (to_id.to_string().as_bytes(), to_o),
@@ -213,8 +374,6 @@ fn write_gfa<T: Write>(records: &BTreeMap<usize, GBZRecord>, reference_samples: 
             }
         }
     }
-
-    // FIXME paths, walks
 
     Ok(())
 }
@@ -246,15 +405,6 @@ fn write_gfa_segment<T: Write>(record: &GBZRecord, output: &mut T) -> io::Result
     Ok(())
 }
 
-// TODO this should be a public function
-fn is_canonical_orientation(from: (usize, Orientation), to: (usize, Orientation)) -> bool {
-    if from.1 == Orientation::Forward {
-        to.0 >= from.0
-    } else {
-        (to.0 > from.0) || (to.0 == from.0 && to.1 == Orientation::Forward)
-    }
-}
-
 fn write_gfa_link<T: Write>(from: (&[u8], Orientation), to: (&[u8], Orientation), output: &mut T) -> io::Result<()> {
     output.write_all(b"L\t")?;
     output.write_all(from.0)?;
@@ -270,19 +420,41 @@ fn write_gfa_link<T: Write>(from: (&[u8], Orientation), to: (&[u8], Orientation)
     Ok(())
 }
 
-fn write_gfa_walk<T: Write>(path: &[usize], info: &GBZPath, from: usize, to: usize, output: &mut T) -> io::Result<()> {
+struct WalkMetadata {
+    sample: String,
+    haplotype: usize,
+    contig: String,
+    interval: Range<usize>,
+}
+
+impl WalkMetadata {
+    fn from_gbz_path(path: &GBZPath, interval: Range<usize>) -> Self {
+        WalkMetadata {
+            sample: path.sample.clone(),
+            haplotype: path.haplotype,
+            contig: path.contig.clone(),
+            interval,
+        }
+    }
+
+    fn anonymous(haplotype: usize, contig: &str, len: usize) -> Self {
+        WalkMetadata { sample: "unknown".to_string(), haplotype, contig: contig.to_owned(), interval: 0..len }
+    }
+}
+
+fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mut T) -> io::Result<()> {
     let mut buffer: Vec<u8> = Vec::new();
     buffer.push(b'W');
     buffer.push(b'\t');
-    buffer.extend_from_slice(info.sample.as_bytes());
+    buffer.extend_from_slice(metadata.sample.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(info.haplotype.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.haplotype.to_string().as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(info.contig.as_bytes());
+    buffer.extend_from_slice(metadata.contig.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(from.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.interval.start.to_string().as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(to.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.interval.end.to_string().as_bytes());
     buffer.push(b'\t');
     for handle in path.iter() {
         match support::node_orientation(*handle) {
