@@ -30,29 +30,35 @@ fn main() -> Result<(), String> {
         return Err(format!("Path {} is not a reference path", config.path_name()));
     }
 
-    // Extract the reference path fragment.
-    let (query_pos, ref_path, ref_interval, ref_pos) = extract_path(
+    // Find the query position on the reference path.
+    let (query_pos, gbwt_pos) = query_position(
         &mut cursor,
         &ref_info,
-        config.offset,
-        config.context
+        config.offset
     )?;
 
     // Extract all GBWT records within the context.
     let subgraph = extract_context(&mut cursor, query_pos, config.context)?;
 
-    // Extract all other paths.
-    let other_paths = extract_other_paths(&subgraph, ref_pos)?;
+    // Extract paths.
+    let (paths, (ref_id, path_offset)) = extract_paths(&subgraph, gbwt_pos)?;
+    let ref_start = config.offset - distance_to(&subgraph, &paths[ref_id].0, path_offset, query_pos.offset);
+    let ref_interval = ref_start..ref_start + paths[ref_id].1;
 
     // GFA output.
     let mut output = io::stdout();
     let reference_samples = cursor.get_gbwt_tag(REFERENCE_SAMPLES_KEY)?;
     write_gfa(&subgraph, reference_samples, &mut output).map_err(|x| x.to_string())?;
     let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval);
-    write_gfa_walk(&ref_path, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
-    for (haplotype, (path, len)) in other_paths.iter().enumerate() {
-        let metadata = WalkMetadata::anonymous(haplotype + 1, &ref_info.contig, *len);
+    write_gfa_walk(&paths[ref_id].0, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
+    let mut haplotype = 1;
+    for (id, (path, len)) in paths.iter().enumerate() {
+        if id == ref_id {
+            continue;
+        }
+        let metadata = WalkMetadata::anonymous(haplotype, &ref_info.contig, *len);
         write_gfa_walk(path, &metadata, &mut output).map_err(|x| x.to_string())?;
+        haplotype += 1;
     }
 
     Ok(())
@@ -139,51 +145,27 @@ struct GraphPosition {
 
 //-----------------------------------------------------------------------------
 
-fn query_interval(offset: usize, context: usize) -> Range<usize> {
-    let low = if offset >= context { offset - context } else { 0 };
-    let high = offset + context;
-    low..high
-}
-
-// FIXME: This should only return the query position and the GBWT position.
-// FIXME: Then we can extract all paths later and determine which of them is the reference.
-// Returns the query position, the sequence of handles, the path interval, and the GBWT position for path start.
-fn extract_path(
-    cursor: &mut Cursor,
-    path: &GBZPath,
-    offset: usize,
-    context: usize
-) -> Result<(GraphPosition, Vec<usize>, Range<usize>, Pos), String> {
-    // Find an indexed position for the start of the query interval.
-    let query_interval = query_interval(offset, context);
-    let result = cursor.indexed_position(path.handle, query_interval.start)?;
+// Returns the graph position and the GBWT position for the given offset.
+fn query_position(cursor: &mut Cursor, path: &GBZPath, query_offset: usize) -> Result<(GraphPosition, Pos), String> {
+    let result = cursor.indexed_position(path.handle, query_offset)?;
     let (mut path_offset, mut pos) = result.ok_or(format!("Path {} is not indexed", path.name()))?;
 
-    // Walk the path until offset + context and find the node containing offset.
-    let mut path_handles: Vec<usize> = Vec::new();
-    let mut query_pos: Option<GraphPosition> = None;
-    let mut path_interval = 0..0;
-    let mut start_pos = pos;
-    while path_offset < query_interval.end {
+    let mut graph_pos: Option<GraphPosition> = None;
+    let mut gbwt_pos: Option<Pos> = None;
+    loop {
         let handle = pos.node;
         let record = cursor.get_record(handle)?;
         let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
-        if path_offset <= query_interval.start {
-            path_interval.start = path_offset;
-            start_pos = pos;
+        if path_offset + record.sequence.len() > query_offset {
+            graph_pos = Some(GraphPosition {
+                node: support::node_id(handle),
+                orientation: support::node_orientation(handle),
+                offset: query_offset - path_offset,
+            });
+            gbwt_pos = Some(pos);
+            break;
         }
         path_offset += record.sequence.len();
-        path_interval.end = path_offset;
-        if path_offset > query_interval.start {
-            path_handles.push(handle);
-            if path_offset > offset && query_pos.is_none() {
-                query_pos = Some(GraphPosition {
-                    node: support::node_id(handle),
-                    orientation: support::node_orientation(handle),
-                    offset: offset - (path_offset - record.sequence.len())
-                });
-            }
-        }
         let gbwt_record = record.to_gbwt_record().ok_or(
             format!("The record for handle {} is invalid", handle)
         )?;
@@ -194,10 +176,11 @@ fn extract_path(
         pos = next.unwrap();
     }
 
-    let query_pos = query_pos.ok_or(
-        format!("Path {} does not contain offset {}", path.name(), offset)
+    let graph_pos = graph_pos.ok_or(
+        format!("Path {} does not contain offset {}", path.name(), query_offset)
     )?;
-    Ok((query_pos, path_handles, path_interval, start_pos))
+    let gbwt_pos = gbwt_pos.unwrap();
+    Ok((graph_pos, gbwt_pos))
 }
 
 //-----------------------------------------------------------------------------
@@ -278,26 +261,30 @@ fn path_is_canonical(path: &[usize]) -> bool {
     if path.is_empty() {
         return true;
     }
-    if path.len() == 1 && support::node_orientation(path[0]) == Orientation::Forward {
-        return true;
-    }
 
-    // In the general case, we consider the path a single edge.
+    // If both ends are in the same orientation, the forward orientation is canonical.
     let first = path[0];
     let last = path[path.len() - 1];
+    let first_o = support::node_orientation(first);
+    let last_o = support::node_orientation(last);
+    if first_o == last_o {
+        return first_o == Orientation::Forward;
+    }
+
+    // Otherwise we consider the path a single edge.
     edge_is_canonical(
-        (support::node_id(first), support::node_orientation(first)),
-        (support::node_id(last), support::node_orientation(last))
+        (support::node_id(first), first_o),
+        (support::node_id(last), last_o)
     )
 }
 
-// Extract the handle sequences and lengths for all paths in the subgraph except
-// the one passing through the given GBWT position.
-// FIXME this should only return distinct paths
-fn extract_other_paths(
+// Extract the handle sequences and lengths for all paths. The second return
+// value is (offset in result, offset on that path) for the handle corresponding
+// to `ref_pos`.
+fn extract_paths(
     subgraph: &BTreeMap<usize, GBZRecord>,
     ref_pos: Pos
-) -> Result<Vec<(Vec<usize>, usize)>, String> {
+) -> Result<(Vec<(Vec<usize>, usize)>, (usize, usize)), String> {
     // Decompress the GBWT node records for the subgraph.
     let mut keys: Vec<usize> = Vec::new();
     let mut successors: BTreeMap<usize, Vec<(Pos, bool)>> = BTreeMap::new();
@@ -319,33 +306,48 @@ fn extract_other_paths(
     }
 
     // FIXME: Check for infinite loops.
-    // Extract all paths that do not pass through `ref_pos`.
+    // Extract all paths and note if one of them passes through `ref_pos`.
     let mut result: Vec<(Vec<usize>, usize)> = Vec::new();
+    let mut ref_id_offset: Option<(usize, usize)> = None;
     for (handle, positions) in successors.iter() {
         for (offset, (_, has_predecessor)) in positions.iter().enumerate() {
             if *has_predecessor {
                 continue;
             }
             let mut curr = Some(Pos::new(*handle, offset));
-            let mut ok = true;
+            let mut is_ref = false;
             let mut path: Vec<usize> = Vec::new();
             let mut len = 0;
             while let Some(pos) = curr {
                 if pos == ref_pos {
-                    ok = false;
-                    break;
+                    ref_id_offset = Some((result.len(), path.len()));
+                    is_ref = true;
                 }
                 path.push(pos.node);
                 len += subgraph.get(&pos.node).unwrap().sequence.len();
                 curr = next_pos(pos, &successors);
             }
-            if ok && path_is_canonical(&path) {
+            if is_ref {
+                if !path_is_canonical(&path) {
+                    eprintln!("Warning: the reference path is not in canonical orientation");
+                }
+                result.push((path, len));
+            } else if path_is_canonical(&path) {
                 result.push((path, len));
             }
         }
     }
 
-    Ok(result)
+    let ref_id_offset = ref_id_offset.ok_or(format!("Could not find the reference path"))?;
+    Ok((result, ref_id_offset))
+}
+
+fn distance_to(subgraph: &BTreeMap<usize, GBZRecord>, path: &[usize], path_offset: usize, node_offset: usize) -> usize {
+    let mut result = node_offset;
+    for handle in path.iter().take(path_offset) {
+        result += subgraph.get(handle).unwrap().sequence.len();
+    }
+    result
 }
 
 //-----------------------------------------------------------------------------
