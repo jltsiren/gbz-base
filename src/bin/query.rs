@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap};
 use std::io::Write;
 use std::ops::Range;
+use std::time::Instant;
 use std::{env, io, process};
 
 use gbwt::{Orientation, Pos, REFERENCE_SAMPLES_KEY, ENDMARKER};
@@ -14,6 +15,8 @@ use gbwt::support;
 //-----------------------------------------------------------------------------
 
 fn main() -> Result<(), String> {
+    let start_time = Instant::now();
+
     // Parse arguments.
     let config = Config::new()?;
 
@@ -61,12 +64,16 @@ fn main() -> Result<(), String> {
         haplotype += 1;
     }
 
+    let end_time = Instant::now();
+    let seconds = end_time.duration_since(start_time).as_secs_f64();
+    eprintln!("Used {:.3} seconds", seconds);
+
     Ok(())
 }
 
 //-----------------------------------------------------------------------------
 
-// TODO: haplotype, fragment; offset or interval
+// TODO: haplotype, fragment
 // TODO: ref path only, ref + distinct haplotypes, ref + all haplotypes
 pub struct Config {
     pub filename: String,
@@ -87,27 +94,10 @@ impl Config {
         opts.optflag("h", "help", "print this help");
         opts.optopt("s", "sample", "sample name (required)", "STR");
         opts.optopt("c", "contig", "contig name (required)", "STR");
-        opts.optopt("o", "offset", "sequence offset (required)", "INT");
+        opts.optopt("o", "offset", "sequence offset (-o or -i is required)", "INT");
+        opts.optopt("i", "interval", "sequence interval (-o or -i is required)", "INT..INT");
         opts.optopt("n", "context", "context length in bp (default 100)", "INT");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
-
-        let haplotype: usize = 0;
-        let fragment: usize = 0;
-        let mut offset: Option<usize> = None;
-        let mut context: usize = 100; // FIXME source for this
-        if matches.opt_present("h") {
-            let header = format!("Usage: {} [options] graph.gbz.db", program);
-            eprint!("{}", opts.usage(&header));
-            process::exit(0);
-        }
-        let sample = matches.opt_str("s");
-        let contig = matches.opt_str("c");
-        if let Some(s) = matches.opt_str("o") {
-            offset = Some(s.parse::<usize>().map_err(|x| format!("--offset: {}", x))?);
-        }
-        if let Some(s) = matches.opt_str("n") {
-            context = s.parse::<usize>().map_err(|x| format!("--context: {}", x))?;
-        }
 
         let filename = if let Some(s) = matches.free.first() {
             s.clone()
@@ -117,19 +107,69 @@ impl Config {
             process::exit(1);
         };
 
-        Ok(Config {
-            filename,
-            sample: sample.ok_or("Sample name must be provided with --sample".to_string())?,
-            contig: contig.ok_or("Contig name must be provided with --contig".to_string())?,
-            haplotype,
-            fragment,
-            offset: offset.ok_or("Sequence offset must be provided with --offset".to_string())?,
-            context,
-        })
+        if matches.opt_present("h") {
+            let header = format!("Usage: {} [options] graph.gbz.db", program);
+            eprint!("{}", opts.usage(&header));
+            process::exit(0);
+        }
+
+        let sample = matches.opt_str("s").ok_or("Sample name must be provided with --sample".to_string())?;
+        let contig = matches.opt_str("c").ok_or("Contig name must be provided with --contig".to_string())?;
+        let haplotype: usize = 0;
+        let fragment: usize = 0;
+        let (offset, context) = Self::parse_offset_and_context(&matches)?;
+
+        Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, })
     }
 
     pub fn path_name(&self) -> String {
         format!("{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
+    }
+
+    fn parse_interval(s: &str) -> Result<Range<usize>, String> {
+        let mut parts = s.split("..");
+        let start = parts.next().ok_or(format!("Invalid interval: {}", s))?;
+        let start = start.parse::<usize>().map_err(|x| format!("{}", x))?;
+        let end = parts.next().ok_or(format!("Invalid interval: {}", s))?;
+        let end = end.parse::<usize>().map_err(|x| format!("{}", x))?;
+        if !parts.next().is_none() {
+            return Err(format!("Invalid interval: {}", s));
+        }
+        Ok(start..end)
+    }
+
+    fn parse_offset_and_context(matches: &getopts::Matches) -> Result<(usize, usize), String> {
+        let mut context = if let Some(s) = matches.opt_str("n") {
+            s.parse::<usize>().map_err(|x| format!("--context: {}", x))?
+        } else {
+            100 // FIXME source for this
+        };
+
+        let mut offset: Option<usize> = None;
+        let mut interval: Option<Range<usize>> = None;
+        if let Some(s) = matches.opt_str("o") {
+            offset = Some(s.parse::<usize>().map_err(|x| format!("--offset: {}", x))?);
+        }
+        if let Some(s) = matches.opt_str("i") {
+            let parsed = Self::parse_interval(&s)?;
+            if parsed.is_empty() {
+                return Err("--interval: Sequence interval cannot be empty".to_string());
+            }
+            interval = Some(parsed);
+        }
+        if offset.is_none() && interval.is_none() {
+            return Err("Either --offset or --interval must be provided".to_string());
+        }
+        if offset.is_some() && interval.is_some() {
+            return Err("Only one of --offset and --interval can be provided".to_string());
+        }
+        if let Some(interval) = interval {
+            context += interval.len() / 2;
+            offset = Some(interval.start + interval.len() / 2);
+        }
+        let offset = offset.unwrap();
+
+        Ok((offset, context))
     }
 }
 

@@ -1,4 +1,5 @@
-use std::{env, process};
+use std::time::Instant;
+use std::{env, fs, process};
 
 use gbwt::GBZ;
 use gbz_base::GBZBase;
@@ -9,12 +10,19 @@ use simple_sds::serialize;
 //-----------------------------------------------------------------------------
 
 fn main() -> Result<(), String> {
+    let start_time = Instant::now();
+
     // Parse arguments.
     let config = Config::new();
 
     // Check if the database already exists.
     if GBZBase::exists(&config.db_file) {
-        return Err(format!("Database {} already exists", config.db_file));
+        if config.overwrite {
+            eprintln!("Overwriting database {}", config.db_file);
+            fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;
+        } else {
+            return Err(format!("Database {} already exists", config.db_file));
+        }
     }
 
     // Load input graph.
@@ -33,6 +41,10 @@ fn main() -> Result<(), String> {
         database.nodes(), database.samples(), database.haplotypes(), database.contigs(), database.paths()
     );
 
+    let end_time = Instant::now();
+    let seconds = end_time.duration_since(start_time).as_secs_f64();
+    eprintln!("Used {:.3} seconds", seconds);
+
     Ok(())
 }
 
@@ -41,6 +53,7 @@ fn main() -> Result<(), String> {
 pub struct Config {
     pub gbz_file: String,
     pub db_file: String,
+    pub overwrite: bool,
 }
 
 impl Config {
@@ -51,6 +64,7 @@ impl Config {
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");
         opts.optopt("o", "output", "output file name (default: <input>.db)", "FILE");
+        opts.optflag("", "overwrite", "overwrite the database file if it exists");
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
             Err(f) => {
@@ -80,9 +94,12 @@ impl Config {
             db_file = Some(format!("{}.db", gbz_file));
         }
 
+        let overwrite = matches.opt_present("overwrite");
+
         Config {
             gbz_file,
             db_file: db_file.unwrap(),
+            overwrite,
         }
     }
 }
