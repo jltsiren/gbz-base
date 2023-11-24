@@ -12,6 +12,7 @@ use gbwt::support;
 #[derive(Debug)]
 pub struct GBZBase {
     connection: Connection,
+    version: String,
     nodes: usize,
     samples: usize,
     haplotypes: usize,
@@ -24,6 +25,12 @@ impl GBZBase {
     // Index positions at the start of a node on reference paths approximately
     // every this many base pairs.
     const INDEX_INTERVAL: usize = 1000;
+
+    // Key for database version.
+    const KEY_VERSION: &'static str = "version";
+
+    // Current database version.
+    pub const VERSION: &'static str = "0.1.0";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -54,6 +61,10 @@ impl GBZBase {
         let mut get_tag = connection.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
         ).map_err(|x| x.to_string())?;
+        let version = Self::get_string_value(&mut get_tag, Self::KEY_VERSION)?;
+        if version != Self::VERSION {
+            return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
+        }
         let nodes = Self::get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
         let samples = Self::get_numeric_value(&mut get_tag, Self::KEY_SAMPLES)?;
         let haplotypes = Self::get_numeric_value(&mut get_tag, Self::KEY_HAPLOTYPES)?;
@@ -63,6 +74,7 @@ impl GBZBase {
 
         Ok(GBZBase {
             connection,
+            version,
             nodes, samples, haplotypes, contigs, paths,
         })
     }
@@ -71,6 +83,10 @@ impl GBZBase {
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let connection = Connection::open_with_flags(filename, flags);
         connection.is_ok()
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
     }
 
     pub fn nodes(&self) -> usize {
@@ -94,11 +110,14 @@ impl GBZBase {
     }
 
     fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, String> {
-        let result = statement.query_row(
+        let result: rusqlite::Result<String> = statement.query_row(
             (key,),
             |row| row.get(0)
-        ).map_err(|x| x.to_string())?;
-        Ok(result)
+        );
+        match result {
+            Ok(value) => Ok(value),
+            Err(x) => Err(format!("Key not found: {} ({})", key, x.to_string())),
+        }
     }
 
     fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
@@ -144,12 +163,13 @@ impl GBZBase {
 
             // Header.
             let metadata = graph.metadata().unwrap();
+            insert.execute((Self::KEY_VERSION, Self::VERSION))?;
             insert.execute((Self::KEY_NODES, graph.nodes()))?;
             insert.execute((Self::KEY_SAMPLES, metadata.samples()))?;
             insert.execute((Self::KEY_HAPLOTYPES, metadata.haplotypes()))?;
             insert.execute((Self::KEY_CONTIGS, metadata.contigs()))?;
             insert.execute((Self::KEY_PATHS, metadata.paths()))?;
-            inserted += 5;
+            inserted += 6;
 
             // GBWT tags.
             let index: &GBWT = graph.as_ref();
