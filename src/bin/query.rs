@@ -287,37 +287,6 @@ fn next_pos(pos: Pos, successors: &BTreeMap<usize, Vec<(Pos, bool)>>) -> Option<
     }
 }
 
-// TODO this should be a public function
-fn edge_is_canonical(from: (usize, Orientation), to: (usize, Orientation)) -> bool {
-    if from.1 == Orientation::Forward {
-        to.0 >= from.0
-    } else {
-        (to.0 > from.0) || (to.0 == from.0 && to.1 == Orientation::Forward)
-    }
-}
-
-// TODO this should be a public function
-fn path_is_canonical(path: &[usize]) -> bool {
-    if path.is_empty() {
-        return true;
-    }
-
-    // If both ends are in the same orientation, the forward orientation is canonical.
-    let first = path[0];
-    let last = path[path.len() - 1];
-    let first_o = support::node_orientation(first);
-    let last_o = support::node_orientation(last);
-    if first_o == last_o {
-        return first_o == Orientation::Forward;
-    }
-
-    // Otherwise we consider the path a single edge.
-    edge_is_canonical(
-        (support::node_id(first), first_o),
-        (support::node_id(last), last_o)
-    )
-}
-
 // Extract the handle sequences and lengths for all paths. The second return
 // value is (offset in result, offset on that path) for the handle corresponding
 // to `ref_pos`.
@@ -368,11 +337,11 @@ fn extract_paths(
                 curr = next_pos(pos, &successors);
             }
             if is_ref {
-                if !path_is_canonical(&path) {
+                if !support::encoded_path_is_canonical(&path) {
                     eprintln!("Warning: the reference path is not in canonical orientation");
                 }
                 result.push((path, len));
-            } else if path_is_canonical(&path) {
+            } else if support::encoded_path_is_canonical(&path) {
                 result.push((path, len));
             }
         }
@@ -404,13 +373,13 @@ fn write_gfa<T: Write>(records: &BTreeMap<usize, GBZRecord>, reference_samples: 
 
     // Links.
     for (handle, record) in records.iter() {
-        let (from_id, from_o) = support::decode_node(*handle);
+        let from = support::decode_node(*handle);
         for edge in record.edges.iter() {
-            let (to_id, to_o) = support::decode_node(edge.node);
-            if records.contains_key(&edge.node) && edge_is_canonical((from_id, from_o), (to_id, to_o)) {
+            let to = support::decode_node(edge.node);
+            if records.contains_key(&edge.node) && support::edge_is_canonical(from, to) {
                 write_gfa_link(
-                    (from_id.to_string().as_bytes(), from_o),
-                    (to_id.to_string().as_bytes(), to_o),
+                    (from.0.to_string().as_bytes(), from.1),
+                    (to.0.to_string().as_bytes(), to.1),
                     output
                 )?;
             }
