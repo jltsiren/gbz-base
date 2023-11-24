@@ -85,6 +85,10 @@ impl GBZBase {
         connection.is_ok()
     }
 
+    pub fn filename(&self) -> Result<&str, String> {
+        self.connection.path().ok_or(format!("No filename for the database"))
+    }
+
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -131,13 +135,15 @@ impl GBZBase {
 // Creating the database.
 impl GBZBase {
     pub fn create<P: AsRef<Path>>(graph: &GBZ, filename: P) -> Result<(), String> {
-        let mut connection = Connection::open(filename).map_err(|x| x.to_string())?;
+        if Self::exists(&filename) {
+            return Err(format!("Database {} already exists", filename.as_ref().display()));
+        }
 
+        let mut connection = Connection::open(filename).map_err(|x| x.to_string())?;
         Self::insert_tags(graph, &mut connection).map_err(|x| x.to_string())?;
         Self::insert_nodes(graph, &mut connection).map_err(|x| x.to_string())?;
         Self::insert_paths(graph, &mut connection).map_err(|x| x.to_string())?;
         Self::index_reference_paths(graph, &mut connection).map_err(|x| x.to_string())?;
-
         Ok(())
     }
 
@@ -407,7 +413,7 @@ impl GBZPath {
 //-----------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub struct Cursor<'a> {
+pub struct GraphInterface<'a> {
     get_tag: Statement<'a>,
     get_record: Statement<'a>,
     get_path: Statement<'a>,
@@ -416,7 +422,7 @@ pub struct Cursor<'a> {
     indexed_position: Statement<'a>,
 }
 
-impl<'a> Cursor<'a> {
+impl<'a> GraphInterface<'a> {
     pub fn new(database: &'a GBZBase) -> Result<Self, String> {
 
         let get_tag = database.connection.prepare(
@@ -446,7 +452,7 @@ impl<'a> Cursor<'a> {
             LIMIT 1"
         ).map_err(|x| x.to_string())?;
 
-        Ok(Cursor {
+        Ok(GraphInterface {
             get_tag,
             get_record,
             get_path, find_path, paths_for_sample,

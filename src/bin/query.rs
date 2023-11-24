@@ -1,4 +1,4 @@
-use gbz_base::{Cursor, GBZBase, GBZRecord, GBZPath};
+use gbz_base::{GBZBase, GBZRecord, GBZPath, GraphInterface};
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap};
@@ -22,10 +22,10 @@ fn main() -> Result<(), String> {
 
     // Open the database.
     let database = GBZBase::open(&config.filename)?;
-    let mut cursor = Cursor::new(&database)?;
+    let mut graph = GraphInterface::new(&database)?;
 
     // Find the reference path.
-    let ref_path = cursor.find_path(
+    let ref_path = graph.find_path(
         &config.sample, &config.contig, config.haplotype, config.fragment
     )?;
     let ref_info = ref_path.ok_or(format!("Cannot find path {}", config.path_name()))?;
@@ -35,13 +35,13 @@ fn main() -> Result<(), String> {
 
     // Find the query position on the reference path.
     let (query_pos, gbwt_pos) = query_position(
-        &mut cursor,
+        &mut graph,
         &ref_info,
         config.offset
     )?;
 
     // Extract all GBWT records within the context.
-    let subgraph = extract_context(&mut cursor, query_pos, config.context)?;
+    let subgraph = extract_context(&mut graph, query_pos, config.context)?;
 
     // Extract paths.
     let (paths, (ref_id, path_offset)) = extract_paths(&subgraph, gbwt_pos)?;
@@ -50,7 +50,7 @@ fn main() -> Result<(), String> {
 
     // GFA output.
     let mut output = io::stdout();
-    let reference_samples = cursor.get_gbwt_tag(REFERENCE_SAMPLES_KEY)?;
+    let reference_samples = graph.get_gbwt_tag(REFERENCE_SAMPLES_KEY)?;
     write_gfa(&subgraph, reference_samples, &mut output).map_err(|x| x.to_string())?;
     let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval);
     write_gfa_walk(&paths[ref_id].0, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
@@ -186,15 +186,15 @@ struct GraphPosition {
 //-----------------------------------------------------------------------------
 
 // Returns the graph position and the GBWT position for the given offset.
-fn query_position(cursor: &mut Cursor, path: &GBZPath, query_offset: usize) -> Result<(GraphPosition, Pos), String> {
-    let result = cursor.indexed_position(path.handle, query_offset)?;
+fn query_position(graph: &mut GraphInterface, path: &GBZPath, query_offset: usize) -> Result<(GraphPosition, Pos), String> {
+    let result = graph.indexed_position(path.handle, query_offset)?;
     let (mut path_offset, mut pos) = result.ok_or(format!("Path {} is not indexed", path.name()))?;
 
     let mut graph_pos: Option<GraphPosition> = None;
     let mut gbwt_pos: Option<Pos> = None;
     loop {
         let handle = pos.node;
-        let record = cursor.get_record(handle)?;
+        let record = graph.get_record(handle)?;
         let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
         if path_offset + record.sequence.len() > query_offset {
             graph_pos = Some(GraphPosition {
@@ -234,7 +234,7 @@ fn distance_to_end(record: &GBZRecord, orientation: Orientation, offset: usize) 
 }
 
 fn extract_context(
-    cursor: &mut Cursor,
+    graph: &mut GraphInterface,
     from: GraphPosition,
     context: usize
 ) -> Result<BTreeMap<usize, GBZRecord>, String> {
@@ -251,7 +251,7 @@ fn extract_context(
             if selected.contains_key(&handle) {
                 continue;
             }
-            let record = cursor.get_record(handle)?;
+            let record = graph.get_record(handle)?;
             let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
             let next_distance = if node_id == from.node {
                 distance_to_end(&record, from.orientation, from.offset)
