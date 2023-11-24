@@ -1,3 +1,7 @@
+// TODO top-level documentation
+// TODO: document node / path handles
+// TODO: indexed paths
+
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -9,6 +13,7 @@ use gbwt::support;
 
 //-----------------------------------------------------------------------------
 
+// TODO document, example
 #[derive(Debug)]
 pub struct GBZBase {
     connection: Connection,
@@ -20,7 +25,7 @@ pub struct GBZBase {
     paths: usize,
 }
 
-// Using the database.
+/// Using the database.
 impl GBZBase {
     // Index positions at the start of a node on reference paths approximately
     // every this many base pairs.
@@ -29,7 +34,7 @@ impl GBZBase {
     // Key for database version.
     const KEY_VERSION: &'static str = "version";
 
-    // Current database version.
+    /// Current database version.
     pub const VERSION: &'static str = "0.1.0";
 
     // Key for node count.
@@ -53,6 +58,9 @@ impl GBZBase {
     // Prefix for GBZ tag keys.
     const KEY_GBZ: &'static str = "gbz_";
 
+    /// Opens a connection to the database in the given file.
+    ///
+    /// Reads the header information and passes through any database errors.
     pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self, String> {
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let connection = Connection::open_with_flags(filename, flags).map_err(|x| x.to_string())?;
@@ -79,36 +87,44 @@ impl GBZBase {
         })
     }
 
+    /// Returns `true` if the database `filename` exists.
     pub fn exists<P: AsRef<Path>>(filename: P) -> bool {
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let connection = Connection::open_with_flags(filename, flags);
         connection.is_ok()
     }
 
+    /// Returns the filename of the database.
     pub fn filename(&self) -> Result<&str, String> {
         self.connection.path().ok_or(format!("No filename for the database"))
     }
 
+    /// Returns the version of the database.
     pub fn version(&self) -> &str {
         &self.version
     }
 
+    /// Returns the number of nodes in the graph.
     pub fn nodes(&self) -> usize {
         self.nodes
     }
 
+    /// Returns the number of samples in path metadata.
     pub fn samples(&self) -> usize {
         self.samples
     }
 
+    /// Returns the number of haplotypes in path metadata.
     pub fn haplotypes(&self) -> usize {
         self.haplotypes
     }
 
+    /// Returns the number of contigs in path metadata.
     pub fn contigs(&self) -> usize {
         self.contigs
     }
 
+    /// Returns the number of paths in the graph.
     pub fn paths(&self) -> usize {
         self.paths
     }
@@ -132,8 +148,14 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// Creating the database.
+/// Creating the database.
 impl GBZBase {
+    /// Creates a new database in file `filename` from the given GBZ graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database already exists.
+    /// Passes through any database errors.
     pub fn create<P: AsRef<Path>>(graph: &GBZ, filename: P) -> Result<(), String> {
         if Self::exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
@@ -374,15 +396,37 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
+/// A record for an oriented node.
+///
+/// The record corresponds to one row in table `Nodes`.
+/// It stores the information in a GBWT node record ([`Record`]) and the sequence of the node in the correct orientation.
+/// The edges and the sequence are decompressed, while the BWT fragment remains in compressed form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GBZRecord {
+    /// Node handle / [`GBWT`] node identifier.
     pub handle: usize,
+
+    /// List of outgoing edges sorted by destination node.
+    ///
+    /// Each edge is a pair consisting of a destination node handle and a offset in the corresponding GBWT record.
+    /// If the destination handle is [`gbwt::ENDMARKER`], the edge is not a real edge.
     pub edges: Vec<Pos>,
+
+    /// Run-length encoded BWT fragment stored in the node.
     pub bwt: Vec<u8>,
+
+    /// Sequence of the node, in the orientation corresponding to the handle.
+    ///
+    /// The sequence is a valid [`String`] over the alphabet `ACGTN`.
     pub sequence: Vec<u8>,
 }
 
 impl GBZRecord {
+    /// Returns a GBWT record based on this record.
+    ///
+    /// The lifetime of the returned record is tied to this record.
+    /// Returns [`None`] if the record would be empty.
+    /// This should never happen with a valid database.
     pub fn to_gbwt_record(&self) -> Option<Record> {
         if self.edges.is_empty() {
             None
@@ -392,19 +436,41 @@ impl GBZRecord {
     }
 }
 
+/// A record for a path in the graph.
+///
+/// The record corresponds to one row in table `Paths`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GBZPath {
+    /// Path handle / identifier of the path in the original graph.
     pub handle: usize,
+
+    /// Starting position of the path in the forward orientation.
     pub fw_start: Pos,
+
+    /// Starting position of the path in the reverse orientation.
     pub rev_start: Pos,
+
+    /// Sample name.
     pub sample: String,
+
+    /// Contig name.
     pub contig: String,
+
+    /// Haplotype number.
     pub haplotype: usize,
+
+    /// Fragment number or starting offset of the fragment.
     pub fragment: usize,
+
+    /// Has this path been indexed for random access with [`GraphInterface::indexed_position`]?
     pub is_reference: bool,
 }
 
 impl GBZPath {
+    /// Returns a string representation of the name of the path.
+    ///
+    /// The format is `sample#haplotype#contig@fragment`.
+    /// If the path is based on a GFA W-line, `fragment` is the starting offset of this path fragment.
     pub fn name(&self) -> String {
         format!("{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
     }
@@ -412,6 +478,7 @@ impl GBZPath {
 
 //-----------------------------------------------------------------------------
 
+// TODO document, example
 #[derive(Debug)]
 pub struct GraphInterface<'a> {
     get_tag: Statement<'a>,
@@ -423,8 +490,10 @@ pub struct GraphInterface<'a> {
 }
 
 impl<'a> GraphInterface<'a> {
+    /// Returns a new interface to the given database.
+    ///
+    /// Passes through any database errors.
     pub fn new(database: &'a GBZBase) -> Result<Self, String> {
-
         let get_tag = database.connection.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
         ).map_err(|x| x.to_string())?;
@@ -460,6 +529,7 @@ impl<'a> GraphInterface<'a> {
         })
     }
 
+    /// Returns the value of the [`GBWT`] tag with the given key, or [`None`] if the tag does not exist.
     pub fn get_gbwt_tag(&mut self, key: &str) -> Result<Option<String>, String> {
         let key = format!("{}{}", GBZBase::KEY_GBWT, key);
         self.get_tag.query_row(
@@ -468,6 +538,7 @@ impl<'a> GraphInterface<'a> {
         ).optional().map_err(|x| x.to_string())
     }
 
+    /// Returns the value of the [`GBZ`] tag with the given key, or [`None`] if the tag does not exist.
     pub fn get_gbz_tag(&mut self, key: &str) -> Result<Option<String>, String> {
         let key = format!("{}{}", GBZBase::KEY_GBZ, key);
         self.get_tag.query_row(
@@ -476,6 +547,7 @@ impl<'a> GraphInterface<'a> {
         ).optional().map_err(|x| x.to_string())
     }
 
+    /// Returns the node record for the given handle, or [`None`] if the node does not exist.
     pub fn get_record(&mut self, handle: usize) -> Result<Option<GBZRecord>, String> {
         self.get_record.query_row(
             (handle,),
@@ -507,10 +579,19 @@ impl<'a> GraphInterface<'a> {
         })
     }
 
+    /// Returns the path with the given handle, or [`None`] if the path does not exist.
     pub fn get_path(&mut self, handle: usize) -> Result<Option<GBZPath>, String> {
         self.get_path.query_row((handle,), Self::row_to_gbz_path).optional().map_err(|x| x.to_string())
     }
 
+    /// Returns the path with the given metadata, or [`None`] if the path does not exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `sample`: Sample name.
+    /// * `contig`: Contig name.
+    /// * `haplotype`: Haplotype number.
+    /// * `fragment`: Fragment number or starting offset of the fragment.
     pub fn find_path(&mut self, sample: &str, contig: &str, haplotype: usize, fragment: usize) -> Result<Option<GBZPath>, String> {
         self.find_path.query_row(
             (sample, contig, haplotype, fragment),
@@ -518,6 +599,7 @@ impl<'a> GraphInterface<'a> {
         ).optional().map_err(|x| x.to_string())
     }
 
+    /// Returns all paths with the given sample name.
     pub fn paths_for_sample(&mut self, sample_name: &str) -> Result<Vec<GBZPath>, String> {
         let mut result: Vec<GBZPath> = Vec::new();
         let mut rows = self.paths_for_sample.query((sample_name,)).map_err(|x| x.to_string())?;
@@ -528,6 +610,9 @@ impl<'a> GraphInterface<'a> {
         Ok(result)
     }
 
+    /// Returns the last indexed position at or before offset `path_offset` on path `path_handle`.
+    ///
+    /// Returns [`None`] if the path does not exist or it has not been indexed.
     pub fn indexed_position(&mut self, path_handle: usize, path_offset: usize) -> Result<Option<(usize, Pos)>, String> {
         self.indexed_position.query_row(
             (path_handle, path_offset),
