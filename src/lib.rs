@@ -1,6 +1,29 @@
-// TODO top-level documentation
-// TODO: document node / path handles
-// TODO: indexed paths
+//! # GBZ-base: an immutable pangenome graph stored in a SQLite database
+//!
+//! This is a prototype for storing a GBZ graph in a SQLite database.
+//! It is intended for interactive applications that need immediate access to the graph.
+//! In such applications, the overhead from loading the GBZ graph into memory can be significant (e.g. 20 seconds for a human graph).
+//! As long as the application needs only a fraction of the entire graph (e.g. 1 Mbp context in a human graph), using the database is faster than loading the graph.
+//! This assumes that the database is stored on a local SSD.
+//!
+//! The prototype builds on the [`gbwt`] crate.
+//! Once the implementation has stabilized, it will become an optional feature in the [`gbwt`] crate.
+//!
+//! ### Basic concepts
+//!
+//! Nodes are accessed by handles, which are [`GBWT`] node identifiers.
+//! A handle encodes both the identifier of the node in the underlying graph and its orientation.
+//! Each node record corresponds to a row in table `Nodes`, with the handle as its primary key.
+//!
+//! Paths are accessed by handles, which are path identifiers in the original graph.
+//! Each path record corresponds to a row in table `Paths`, with the handle as its primary key.
+//! The record contains information for both orientations of the path.
+//!
+//! Paths can be indexed for random access, which can be useful for e.g. finding a graph region by its reference coordinates.
+//! Indexing is based on storing the sequence offset and the GBWT position at the start of a node once every ~1000 bp.
+//! The indexed positions are stored in table `ReferenceIndex`.
+//! By default, only generic paths (sample name `_gbwt_ref`) and reference paths (sample name listed in GBWT tag `reference_samples`) are indexed.
+//! The database can become excessively large if all paths are indexed.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -13,7 +36,43 @@ use gbwt::support;
 
 //-----------------------------------------------------------------------------
 
-// TODO document, example
+/// A database connection.
+///
+/// This structure stores a database connection and some header information.
+/// In multi-threaded applications, each thread should have its own connection.
+/// Graph operations are supported through the [`GraphInterface`] structure.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::GBZBase;
+/// use gbwt::support;
+/// use simple_sds::serialize;
+/// use std::fs;
+///
+/// // Load the graph.
+/// let graph_file = support::get_test_data("example.gbz");
+/// let graph = serialize::load_from(&graph_file).unwrap();
+///
+/// // Create the database.
+/// let database_file = serialize::temp_file_name("gbz-base");
+/// assert!(!GBZBase::exists(&database_file));
+/// let result = GBZBase::create(&graph, &database_file);
+/// assert!(result.is_ok());
+///
+/// // Open the database and check some header information.
+/// let database = GBZBase::open(&database_file).unwrap();
+/// assert_eq!(database.nodes(), graph.nodes());
+/// assert_eq!(database.paths(), graph.paths());
+/// let metadata = graph.metadata().unwrap();
+/// assert_eq!(database.samples(), metadata.samples());
+/// assert_eq!(database.haplotypes(), metadata.haplotypes());
+/// assert_eq!(database.contigs(), metadata.contigs());
+///
+/// // Clean up.
+/// drop(database);
+/// fs::remove_file(&database_file).unwrap();
+/// ```
 #[derive(Debug)]
 pub struct GBZBase {
     connection: Connection,
@@ -150,6 +209,8 @@ impl GBZBase {
 
 /// Creating the database.
 impl GBZBase {
+    // TODO: Create from a GBZ file.
+
     /// Creates a new database in file `filename` from the given GBZ graph.
     ///
     /// # Errors
@@ -478,7 +539,60 @@ impl GBZPath {
 
 //-----------------------------------------------------------------------------
 
-// TODO document, example
+/// Database query interface.
+///
+/// This structure stores prepared statements for accessing the graph.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{GBZBase, GraphInterface};
+/// use gbwt::Orientation;
+/// use gbwt::support;
+/// use simple_sds::serialize;
+/// use std::fs;
+///
+/// // Load the graph.
+/// let graph_file = support::get_test_data("example.gbz");
+/// let graph = serialize::load_from(&graph_file).unwrap();
+///
+/// // Create the database.
+/// let database_file = serialize::temp_file_name("gbz-base");
+/// assert!(!GBZBase::exists(&database_file));
+/// let result = GBZBase::create(&graph, &database_file);
+/// assert!(result.is_ok());
+///
+/// // Open the database and create a graph interface.
+/// let database = GBZBase::open(&database_file).unwrap();
+/// let mut interface = GraphInterface::new(&database).unwrap();
+///
+/// // The example graph does not have a reference samples tag.
+/// assert!(interface.get_gbwt_tag("reference_samples").unwrap().is_none());
+///
+/// // Node 21 with edges to 22 and 23, all in forward orientation.
+/// let handle = support::encode_node(21, Orientation::Forward);
+/// let record = interface.get_record(handle).unwrap().unwrap();
+/// assert_eq!(record.handle, handle);
+/// assert_eq!(record.edges.len(), 2);
+/// assert_eq!(record.edges[0].node, support::encode_node(22, Orientation::Forward));
+/// assert_eq!(record.edges[1].node, support::encode_node(23, Orientation::Forward));
+///
+/// // Reference path for contig B goes from 21 to 22.
+/// let path = interface.find_path("_gbwt_ref", "B", 0, 0).unwrap().unwrap();
+/// assert_eq!(path.fw_start.node, handle);
+/// let next = record.to_gbwt_record().unwrap().lf(path.fw_start.offset).unwrap();
+/// assert_eq!(next.node, support::encode_node(22, Orientation::Forward));
+///
+/// // The first indexed position is at the start of the path.
+/// assert!(path.is_reference);
+/// let indexed_pos = interface.indexed_position(path.handle, 3).unwrap().unwrap();
+/// assert_eq!(indexed_pos, (0, path.fw_start));
+///
+/// // Clean up.
+/// drop(interface);
+/// drop(database);
+/// fs::remove_file(&database_file).unwrap();
+/// ```
 #[derive(Debug)]
 pub struct GraphInterface<'a> {
     get_tag: Statement<'a>,
