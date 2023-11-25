@@ -1,11 +1,8 @@
 use std::time::Instant;
 use std::{env, fs, process};
 
-use gbwt::GBZ;
 use gbz_base::GBZBase;
 use getopts::Options;
-
-use simple_sds::serialize;
 
 //-----------------------------------------------------------------------------
 
@@ -25,14 +22,8 @@ fn main() -> Result<(), String> {
         }
     }
 
-    // Load input graph.
-    eprintln!("Loading GBZ graph {}", config.gbz_file);
-    let graph: GBZ = serialize::load_from(&config.gbz_file).map_err(|x| x.to_string())?;
-    sanity_checks(&graph)?;
-
-    // Create database.
-    eprintln!("Creating database {}", config.db_file);
-    GBZBase::create(&graph, &config.db_file)?;
+    // Create the database.
+    GBZBase::create_from_file(&config.gbz_file, &config.db_file)?;
 
     // Statistics.
     let database = GBZBase::open(&config.db_file)?;
@@ -102,27 +93,6 @@ impl Config {
             overwrite,
         }
     }
-}
-
-//-----------------------------------------------------------------------------
-
-fn sanity_checks(graph: &GBZ) -> Result<(), String> {
-    if !graph.has_metadata() {
-        return Err("The graph does not contain metadata".to_string());
-    }
-    let metadata = graph.metadata().unwrap();
-
-    if !metadata.has_path_names() {
-        return Err("The metadata does not contain path names".to_string());
-    }
-    if !metadata.has_sample_names() {
-        return Err("The metadata does not contain sample names".to_string());
-    }
-    if !metadata.has_contig_names() {
-        return Err("The metadata does not contain contig names".to_string());
-    }
-
-    Ok(())
 }
 
 //-----------------------------------------------------------------------------

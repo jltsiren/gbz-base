@@ -34,6 +34,8 @@ use gbwt::{GBWT, GBZ, Orientation, Pos, REF_SAMPLE, REFERENCE_SAMPLES_KEY};
 use gbwt::bwt::{BWT, Record};
 use gbwt::support;
 
+use simple_sds::serialize;
+
 //-----------------------------------------------------------------------------
 
 /// A database connection.
@@ -50,28 +52,24 @@ use gbwt::support;
 /// use simple_sds::serialize;
 /// use std::fs;
 ///
-/// // Load the graph.
-/// let graph_file = support::get_test_data("example.gbz");
-/// let graph = serialize::load_from(&graph_file).unwrap();
-///
 /// // Create the database.
-/// let database_file = serialize::temp_file_name("gbz-base");
-/// assert!(!GBZBase::exists(&database_file));
-/// let result = GBZBase::create(&graph, &database_file);
+/// let gbz_file = support::get_test_data("example.gbz");
+/// let db_file = serialize::temp_file_name("gbz-base");
+/// assert!(!GBZBase::exists(&db_file));
+/// let result = GBZBase::create_from_file(&gbz_file, &db_file);
 /// assert!(result.is_ok());
 ///
 /// // Open the database and check some header information.
-/// let database = GBZBase::open(&database_file).unwrap();
-/// assert_eq!(database.nodes(), graph.nodes());
-/// assert_eq!(database.paths(), graph.paths());
-/// let metadata = graph.metadata().unwrap();
-/// assert_eq!(database.samples(), metadata.samples());
-/// assert_eq!(database.haplotypes(), metadata.haplotypes());
-/// assert_eq!(database.contigs(), metadata.contigs());
+/// let database = GBZBase::open(&db_file).unwrap();
+/// assert_eq!(database.nodes(), 12);
+/// assert_eq!(database.samples(), 2);
+/// assert_eq!(database.haplotypes(), 3);
+/// assert_eq!(database.contigs(), 2);
+/// assert_eq!(database.paths(), 6);
 ///
 /// // Clean up.
 /// drop(database);
-/// fs::remove_file(&database_file).unwrap();
+/// fs::remove_file(&db_file).unwrap();
 /// ```
 #[derive(Debug)]
 pub struct GBZBase {
@@ -209,18 +207,50 @@ impl GBZBase {
 
 /// Creating the database.
 impl GBZBase {
-    // TODO: Create from a GBZ file.
+    /// Creates a new database from the GBZ graph in file `gbz_file` and stores the database in file `db_file`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
+    /// Passes through any database errors.
+    pub fn create_from_file<P: AsRef<Path>, Q: AsRef<Path>>(gbz_file: P, db_file: Q) -> Result<(), String> {
+        eprintln!("Loading GBZ graph {}", gbz_file.as_ref().display());
+        let graph: GBZ = serialize::load_from(&gbz_file).map_err(|x| x.to_string())?;
+        Self::create(&graph, db_file)
+    }
+
+    // Sanity checks for the GBZ graph. We do not want to handle graphs without sufficient metadata.
+    fn sanity_checks(graph: &GBZ) -> Result<(), String> {
+        if !graph.has_metadata() {
+            return Err("The graph does not contain metadata".to_string());
+        }
+        let metadata = graph.metadata().unwrap();
+
+        if !metadata.has_path_names() {
+            return Err("The metadata does not contain path names".to_string());
+        }
+        if !metadata.has_sample_names() {
+            return Err("The metadata does not contain sample names".to_string());
+        }
+        if !metadata.has_contig_names() {
+            return Err("The metadata does not contain contig names".to_string());
+        }
+
+        Ok(())
+    }
 
     /// Creates a new database in file `filename` from the given GBZ graph.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database already exists.
+    /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>>(graph: &GBZ, filename: P) -> Result<(), String> {
+        eprintln!("Creating database {}", filename.as_ref().display());
         if Self::exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
         }
+        Self::sanity_checks(graph)?;
 
         let mut connection = Connection::open(filename).map_err(|x| x.to_string())?;
         Self::insert_tags(graph, &mut connection).map_err(|x| x.to_string())?;
@@ -552,18 +582,14 @@ impl GBZPath {
 /// use simple_sds::serialize;
 /// use std::fs;
 ///
-/// // Load the graph.
-/// let graph_file = support::get_test_data("example.gbz");
-/// let graph = serialize::load_from(&graph_file).unwrap();
-///
 /// // Create the database.
-/// let database_file = serialize::temp_file_name("gbz-base");
-/// assert!(!GBZBase::exists(&database_file));
-/// let result = GBZBase::create(&graph, &database_file);
+/// let gbz_file = support::get_test_data("example.gbz");
+/// let db_file = serialize::temp_file_name("graph-interface");
+/// let result = GBZBase::create_from_file(&gbz_file, &db_file);
 /// assert!(result.is_ok());
 ///
 /// // Open the database and create a graph interface.
-/// let database = GBZBase::open(&database_file).unwrap();
+/// let database = GBZBase::open(&db_file).unwrap();
 /// let mut interface = GraphInterface::new(&database).unwrap();
 ///
 /// // The example graph does not have a reference samples tag.
@@ -591,7 +617,7 @@ impl GBZPath {
 /// // Clean up.
 /// drop(interface);
 /// drop(database);
-/// fs::remove_file(&database_file).unwrap();
+/// fs::remove_file(&db_file).unwrap();
 /// ```
 #[derive(Debug)]
 pub struct GraphInterface<'a> {
