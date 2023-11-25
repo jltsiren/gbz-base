@@ -29,8 +29,8 @@ fn main() -> Result<(), String> {
         &config.sample, &config.contig, config.haplotype, config.fragment
     )?;
     let ref_info = ref_path.ok_or(format!("Cannot find path {}", config.path_name()))?;
-    if !ref_info.is_reference {
-        return Err(format!("Path {} is not a reference path", config.path_name()));
+    if !ref_info.is_indexed {
+        return Err(format!("Path {} has not been indexed for random access", config.path_name()));
     }
 
     // Find the query position on the reference path.

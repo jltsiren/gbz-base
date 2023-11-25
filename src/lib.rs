@@ -94,7 +94,7 @@ impl GBZBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "0.1.0";
+    pub const VERSION: &'static str = "0.2.0";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -345,7 +345,7 @@ impl GBZBase {
                 contig TEXT NOT NULL,
                 haplotype INTEGER NOT NULL,
                 fragment INTEGER NOT NULL,
-                is_reference INTEGER NOT NULL
+                is_indexed INTEGER NOT NULL
             )",
             (),
         )?;
@@ -356,7 +356,7 @@ impl GBZBase {
         {
             let mut insert = transaction.prepare(
                 "INSERT INTO
-                    Paths(handle, fw_node, fw_offset, rev_node, rev_offset, sample, contig, haplotype, fragment, is_reference)
+                    Paths(handle, fw_node, fw_offset, rev_node, rev_offset, sample, contig, haplotype, fragment, is_indexed)
                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, FALSE)"
             )?;
             let index: &GBWT = graph.as_ref();
@@ -421,8 +421,8 @@ impl GBZBase {
         let mut indexed_positions = 0;
         let transaction = connection.transaction()?;
         {
-            let mut set_as_reference = transaction.prepare(
-                "UPDATE Paths SET is_reference = TRUE WHERE handle = ?1"
+            let mut set_as_indexed = transaction.prepare(
+                "UPDATE Paths SET is_indexed = TRUE WHERE handle = ?1"
             )?;
             let mut insert_position = transaction.prepare(
                 "INSERT INTO ReferenceIndex(path_handle, path_offset, node_handle, node_offset)
@@ -430,7 +430,7 @@ impl GBZBase {
             )?;
             for (path_handle, name) in metadata.path_iter().enumerate() {
                 if ref_samples.contains(&name.sample()) {
-                    set_as_reference.execute((path_handle,))?;
+                    set_as_indexed.execute((path_handle,))?;
                     let mut path_offset = 0;
                     let mut next = 0;
                     let sequence_id = support::encode_path(path_handle, Orientation::Forward);
@@ -524,7 +524,7 @@ pub struct GBZPath {
     pub fragment: usize,
 
     /// Has this path been indexed for random access with [`GraphInterface::indexed_position`]?
-    pub is_reference: bool,
+    pub is_indexed: bool,
 }
 
 impl GBZPath {
@@ -584,7 +584,7 @@ impl GBZPath {
 /// assert_eq!(next.node, support::encode_node(22, Orientation::Forward));
 ///
 /// // The first indexed position is at the start of the path.
-/// assert!(path.is_reference);
+/// assert!(path.is_indexed);
 /// let indexed_pos = interface.indexed_position(path.handle, 3).unwrap().unwrap();
 /// assert_eq!(indexed_pos, (0, path.fw_start));
 ///
@@ -684,12 +684,12 @@ impl<'a> GraphInterface<'a> {
         let contig = row.get(6)?;
         let haplotype = row.get(7)?;
         let fragment = row.get(8)?;
-        let is_reference = row.get(9)?;
+        let is_indexed = row.get(9)?;
         Ok(GBZPath {
             handle,
             fw_start, rev_start,
             sample, contig, haplotype, fragment,
-            is_reference,
+            is_indexed,
         })
     }
 
