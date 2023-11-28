@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::time::Instant;
 use std::{env, io, process};
 
-use gbwt::{Orientation, Pos, REFERENCE_SAMPLES_KEY, ENDMARKER};
+use gbwt::{Orientation, Pos, ENDMARKER};
 use getopts::Options;
 
 use gbwt::support;
@@ -50,24 +50,26 @@ fn main() -> Result<(), String> {
 
     // GFA output: segments and links.
     let mut output = io::stdout();
-    let reference_samples = graph.get_gbwt_tag(REFERENCE_SAMPLES_KEY)?;
+    let reference_samples = Some(ref_info.sample.clone());
     write_gfa(&subgraph, reference_samples, &mut output).map_err(|x| x.to_string())?;
 
     // GFA output: walks.
-    if config.distinct {
+    if config.output == HaplotypeOutput::Distinct {
         // TODO: We should use bidirectional search in GBWT to find the distinct paths directly.
         (paths, ref_id) = distinct_paths(paths, ref_id);
     }
     let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval, paths[ref_id].2);
     write_gfa_walk(&paths[ref_id].0, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
-    let mut haplotype = 1;
-    for (id, (path, len, weight)) in paths.iter().enumerate() {
-        if id == ref_id {
-            continue;
+    if config.output != HaplotypeOutput::ReferenceOnly {
+        let mut haplotype = 1;
+        for (id, (path, len, weight)) in paths.iter().enumerate() {
+            if id == ref_id {
+                continue;
+            }
+            let metadata = WalkMetadata::anonymous(haplotype, &ref_info.contig, *len, *weight);
+            write_gfa_walk(path, &metadata, &mut output).map_err(|x| x.to_string())?;
+            haplotype += 1;
         }
-        let metadata = WalkMetadata::anonymous(haplotype, &ref_info.contig, *len, *weight);
-        write_gfa_walk(path, &metadata, &mut output).map_err(|x| x.to_string())?;
-        haplotype += 1;
     }
 
     let end_time = Instant::now();
@@ -79,6 +81,13 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HaplotypeOutput {
+    All,
+    Distinct,
+    ReferenceOnly,
+}
+
 // TODO: haplotype, fragment
 pub struct Config {
     pub filename: String,
@@ -88,7 +97,7 @@ pub struct Config {
     pub fragment: usize,
     pub offset: usize,
     pub context: usize,
-    pub distinct: bool, // TODO: Should be enum: ref, ref + distinct, ref + all.
+    pub output: HaplotypeOutput,
 }
 
 impl Config {
@@ -104,6 +113,7 @@ impl Config {
         opts.optopt("i", "interval", "sequence interval (-o or -i is required)", "INT..INT");
         opts.optopt("n", "context", "context length in bp (default 100)", "INT");
         opts.optflag("d", "distinct", "output distinct haplotypes with weights");
+        opts.optflag("r", "reference-only", "output the reference but no other haplotypes");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let filename = if let Some(s) = matches.free.first() {
@@ -125,9 +135,16 @@ impl Config {
         let haplotype: usize = 0;
         let fragment: usize = 0;
         let (offset, context) = Self::parse_offset_and_context(&matches)?;
-        let distinct = matches.opt_present("d");
 
-        Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, distinct, })
+        let mut output = HaplotypeOutput::All;
+        if matches.opt_present("d") {
+            output = HaplotypeOutput::Distinct;
+        }
+        if matches.opt_present("r") {
+            output = HaplotypeOutput::ReferenceOnly;
+        }
+
+        Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, output, })
     }
 
     pub fn path_name(&self) -> String {
