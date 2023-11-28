@@ -44,22 +44,28 @@ fn main() -> Result<(), String> {
     let subgraph = extract_context(&mut graph, query_pos, config.context)?;
 
     // Extract paths.
-    let (paths, (ref_id, path_offset)) = extract_paths(&subgraph, gbwt_pos)?;
+    let (mut paths, (mut ref_id, path_offset)) = extract_paths(&subgraph, gbwt_pos)?;
     let ref_start = config.offset - distance_to(&subgraph, &paths[ref_id].0, path_offset, query_pos.offset);
     let ref_interval = ref_start..ref_start + paths[ref_id].1;
 
-    // GFA output.
+    // GFA output: segments and links.
     let mut output = io::stdout();
     let reference_samples = graph.get_gbwt_tag(REFERENCE_SAMPLES_KEY)?;
     write_gfa(&subgraph, reference_samples, &mut output).map_err(|x| x.to_string())?;
-    let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval);
+
+    // GFA output: walks.
+    if config.distinct {
+        // TODO: We should use bidirectional search in GBWT to find the distinct paths directly.
+        (paths, ref_id) = distinct_paths(paths, ref_id);
+    }
+    let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval, paths[ref_id].2);
     write_gfa_walk(&paths[ref_id].0, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
     let mut haplotype = 1;
-    for (id, (path, len)) in paths.iter().enumerate() {
+    for (id, (path, len, weight)) in paths.iter().enumerate() {
         if id == ref_id {
             continue;
         }
-        let metadata = WalkMetadata::anonymous(haplotype, &ref_info.contig, *len);
+        let metadata = WalkMetadata::anonymous(haplotype, &ref_info.contig, *len, *weight);
         write_gfa_walk(path, &metadata, &mut output).map_err(|x| x.to_string())?;
         haplotype += 1;
     }
@@ -74,7 +80,6 @@ fn main() -> Result<(), String> {
 //-----------------------------------------------------------------------------
 
 // TODO: haplotype, fragment
-// TODO: ref path only, ref + distinct haplotypes, ref + all haplotypes
 pub struct Config {
     pub filename: String,
     pub sample: String,
@@ -83,6 +88,7 @@ pub struct Config {
     pub fragment: usize,
     pub offset: usize,
     pub context: usize,
+    pub distinct: bool, // TODO: Should be enum: ref, ref + distinct, ref + all.
 }
 
 impl Config {
@@ -97,6 +103,7 @@ impl Config {
         opts.optopt("o", "offset", "sequence offset (-o or -i is required)", "INT");
         opts.optopt("i", "interval", "sequence interval (-o or -i is required)", "INT..INT");
         opts.optopt("n", "context", "context length in bp (default 100)", "INT");
+        opts.optflag("d", "distinct", "output distinct haplotypes with weights");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let filename = if let Some(s) = matches.free.first() {
@@ -118,8 +125,9 @@ impl Config {
         let haplotype: usize = 0;
         let fragment: usize = 0;
         let (offset, context) = Self::parse_offset_and_context(&matches)?;
+        let distinct = matches.opt_present("d");
 
-        Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, })
+        Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, distinct, })
     }
 
     pub fn path_name(&self) -> String {
@@ -287,13 +295,14 @@ fn next_pos(pos: Pos, successors: &BTreeMap<usize, Vec<(Pos, bool)>>) -> Option<
     }
 }
 
-// Extract the handle sequences and lengths for all paths. The second return
+// Extract the handle sequences and lengths for all paths. The third component is
+// weight, which is always `None` when returned by this function. The second return
 // value is (offset in result, offset on that path) for the handle corresponding
 // to `ref_pos`.
 fn extract_paths(
     subgraph: &BTreeMap<usize, GBZRecord>,
     ref_pos: Pos
-) -> Result<(Vec<(Vec<usize>, usize)>, (usize, usize)), String> {
+) -> Result<(Vec<(Vec<usize>, usize, Option<usize>)>, (usize, usize)), String> {
     // Decompress the GBWT node records for the subgraph.
     let mut keys: Vec<usize> = Vec::new();
     let mut successors: BTreeMap<usize, Vec<(Pos, bool)>> = BTreeMap::new();
@@ -316,7 +325,7 @@ fn extract_paths(
 
     // FIXME: Check for infinite loops.
     // Extract all paths and note if one of them passes through `ref_pos`.
-    let mut result: Vec<(Vec<usize>, usize)> = Vec::new();
+    let mut result: Vec<(Vec<usize>, usize, Option<usize>)> = Vec::new();
     let mut ref_id_offset: Option<(usize, usize)> = None;
     for (handle, positions) in successors.iter() {
         for (offset, (_, has_predecessor)) in positions.iter().enumerate() {
@@ -340,9 +349,9 @@ fn extract_paths(
                 if !support::encoded_path_is_canonical(&path) {
                     eprintln!("Warning: the reference path is not in canonical orientation");
                 }
-                result.push((path, len));
+                result.push((path, len, None));
             } else if support::encoded_path_is_canonical(&path) {
-                result.push((path, len));
+                result.push((path, len, None));
             }
         }
     }
@@ -357,6 +366,33 @@ fn distance_to(subgraph: &BTreeMap<usize, GBZRecord>, path: &[usize], path_offse
         result += subgraph.get(handle).unwrap().sequence.len();
     }
     result
+}
+
+// Returns all distinct paths and uses the weight field for storing their counts.
+// Also updates `ref_id`.
+fn distinct_paths(
+    paths: Vec<(Vec<usize>, usize, Option<usize>)>,
+    ref_id: usize
+) -> (Vec<(Vec<usize>, usize, Option<usize>)>, usize) {
+    let ref_path = paths[ref_id].0.clone();
+    let mut paths = paths;
+    paths.sort_unstable();
+
+    let mut new_paths: Vec<(Vec<usize>, usize, Option<usize>)> = Vec::new();
+    let mut ref_id = 0;
+    for (path, len, _) in paths.iter() {
+        if new_paths.is_empty() || new_paths.last().unwrap().0 != *path {
+            if path == &ref_path {
+                ref_id = new_paths.len();
+            }
+            new_paths.push((path.clone(), *len, Some(1)));
+        } else {
+            let weight = new_paths.last_mut().unwrap().2.unwrap() + 1;
+            new_paths.last_mut().unwrap().2 = Some(weight);
+        }
+    }
+
+    (new_paths, ref_id)
 }
 
 //-----------------------------------------------------------------------------
@@ -436,20 +472,28 @@ struct WalkMetadata {
     haplotype: usize,
     contig: String,
     interval: Range<usize>,
+    weight: Option<usize>,
 }
 
 impl WalkMetadata {
-    fn from_gbz_path(path: &GBZPath, interval: Range<usize>) -> Self {
+    fn from_gbz_path(path: &GBZPath, interval: Range<usize>, weight: Option<usize>) -> Self {
         WalkMetadata {
             sample: path.sample.clone(),
             haplotype: path.haplotype,
             contig: path.contig.clone(),
             interval,
+            weight,
         }
     }
 
-    fn anonymous(haplotype: usize, contig: &str, len: usize) -> Self {
-        WalkMetadata { sample: "unknown".to_string(), haplotype, contig: contig.to_owned(), interval: 0..len }
+    fn anonymous(haplotype: usize, contig: &str, len: usize, weight: Option<usize>) -> Self {
+        WalkMetadata {
+            sample: "unknown".to_string(),
+            haplotype,
+            contig: contig.to_owned(),
+            interval: 0..len,
+            weight,
+        }
     }
 }
 
@@ -473,6 +517,10 @@ fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mu
             Orientation::Reverse => buffer.push(b'<'),
         }
         buffer.extend_from_slice(support::node_id(*handle).to_string().as_bytes());
+    }
+    if let Some(weight) = metadata.weight {
+        buffer.extend_from_slice(b"\tWT:i:");
+        buffer.extend_from_slice(weight.to_string().as_bytes());
     }
     buffer.push(b'\n');
     output.write_all(&buffer)?;
