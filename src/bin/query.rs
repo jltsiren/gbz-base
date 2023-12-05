@@ -101,6 +101,9 @@ pub struct Config {
 }
 
 impl Config {
+    // Default context length in bp.
+    pub const DEFAULT_CONTEXT: usize = 100;
+
     pub fn new() -> Result<Config, String> {
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
@@ -111,7 +114,8 @@ impl Config {
         opts.optopt("c", "contig", "contig name (required)", "STR");
         opts.optopt("o", "offset", "sequence offset (-o or -i is required)", "INT");
         opts.optopt("i", "interval", "sequence interval (-o or -i is required)", "INT..INT");
-        opts.optopt("n", "context", "context length in bp (default 100)", "INT");
+        let context_desc = format!("context length in bp (default: {})", Self::DEFAULT_CONTEXT);
+        opts.optopt("n", "context", &context_desc, "INT");
         opts.optflag("d", "distinct", "output distinct haplotypes with weights");
         opts.optflag("r", "reference-only", "output the reference but no other haplotypes");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
@@ -167,7 +171,7 @@ impl Config {
         let mut context = if let Some(s) = matches.opt_str("n") {
             s.parse::<usize>().map_err(|x| format!("--context: {}", x))?
         } else {
-            100 // FIXME source for this
+            Self::DEFAULT_CONTEXT
         };
 
         let mut offset: Option<usize> = None;
@@ -478,8 +482,8 @@ fn write_gfa_link<T: Write>(from: (&[u8], Orientation), to: (&[u8], Orientation)
     }
     output.write_all(to.0)?;
     match to.1 {
-        Orientation::Forward => output.write_all(b"\t+\t*\n")?,
-        Orientation::Reverse => output.write_all(b"\t-\t*\n")?,
+        Orientation::Forward => output.write_all(b"\t+\t0M\n")?,
+        Orientation::Reverse => output.write_all(b"\t-\t0M\n")?,
     }
     Ok(())
 }
