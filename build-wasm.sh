@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -ex
 
 # build-wasm.sh: Build for WebAssembly. Must run from the root of the project.
 
@@ -10,7 +11,7 @@ if [[ -z "${CC_wasm32_wasi}" ]] ; then
         echo >&2 "Installing WASI C SDK..."
         if [[ "$(uname)" == "Darwin" ]] ; then
             # Get the toolchain for Mac
-            curl -O https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-macos.tar.gz
+            curl -O -L https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-macos.tar.gz
         else
             # Get the toolchain for Linux
             wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-20/wasi-sdk-20.0-linux.tar.gz

@@ -28,3 +28,9 @@ name = "query"
 test = false
 bench = false
 doc = false
+
+[lib]
+# Build a .wasm file of the library in addition to the .rlib to link Rust code
+crate-type = ["cdylib", "rlib"]
+name = "gbz_base"
+path = "src/lib.rs"
