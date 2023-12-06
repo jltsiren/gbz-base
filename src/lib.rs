@@ -36,6 +36,9 @@ use gbwt::support;
 
 use simple_sds::serialize;
 
+#[cfg(test)]
+mod tests;
+
 //-----------------------------------------------------------------------------
 
 /// A database connection.
@@ -818,77 +821,6 @@ fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
     result.push(byte);
 
     result
-}
-
-//-----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-
-use super::*;
-use gbwt::GBWT;
-
-#[test]
-fn example_test() {
-    // Load the graph.
-    let gbz_file = support::get_test_data("example.gbz");
-    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    let metadata = graph.metadata().unwrap();
-    let gbwt: &GBWT = graph.as_ref();
-
-    // Create the database.
-    let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!GBZBase::exists(&db_file), "Database {} already exists", db_file.display());
-    let result = GBZBase::create(&graph, &db_file);
-    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
-
-    // Open the database and create a graph interface.
-    let database = GBZBase::open(&db_file);
-    assert!(database.is_ok(), "Failed to open database: {}", database.unwrap_err());
-    let database = database.unwrap();
-    let interface = GraphInterface::new(&database);
-    assert!(interface.is_ok(), "Failed to create graph interface: {}", interface.unwrap_err());
-    let mut interface = interface.unwrap();
-
-    // Header.
-    assert_eq!(database.nodes(), graph.nodes(), "Wrong number of nodes");
-    assert_eq!(database.samples(), metadata.samples(), "Wrong number of samples");
-    assert_eq!(database.haplotypes(), metadata.haplotypes(), "Wrong number of haplotypes");
-    assert_eq!(database.contigs(), metadata.contigs(), "Wrong number of contigs");
-    assert_eq!(database.paths(), metadata.paths(), "Wrong number of paths");
-
-    // GBWT tags.
-    for (key, value) in gbwt.tags().iter() {
-        let tag = interface.get_gbwt_tag(key);
-        assert!(tag.is_ok(), "Failed to get GBWT tag: {}", tag.unwrap_err());
-        let tag = tag.unwrap();
-        assert!(tag.is_some(), "Missing GBWT tag {}", key);
-        assert_eq!(tag.unwrap(), *value, "Wrong GBWT tag value for {}", key);
-    }
-
-    // GBZ tags.
-    for (key, value) in graph.tags().iter() {
-        let tag = interface.get_gbz_tag(key);
-        assert!(tag.is_ok(), "Failed to get GBZ tag: {}", tag.unwrap_err());
-        let tag = tag.unwrap();
-        assert!(tag.is_some(), "Missing GBZ tag {}", key);
-        assert_eq!(tag.unwrap(), *value, "Wrong GBZ tag value for {}", key);
-    }
-
-    // TODO: Nodes using get_record.
-
-    drop(interface);
-    drop(database);
-    assert!(GBZBase::exists(&db_file));
-    assert!(std::fs::remove_file(&db_file).is_ok());
-}
-
-// TODO: create from file vs. GBZ
-
-// TODO: get_path, find_path, paths_for_sample
-
-// TODO: get_indexed_position
-
 }
 
 //-----------------------------------------------------------------------------
