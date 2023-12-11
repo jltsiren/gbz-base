@@ -235,9 +235,7 @@ fn query_position(graph: &mut GraphInterface, path: &GBZPath, query_offset: usiz
             break;
         }
         path_offset += record.sequence_len();
-        let gbwt_record = record.to_gbwt_record().ok_or(
-            format!("The record for handle {} is invalid", handle)
-        )?;
+        let gbwt_record = record.to_gbwt_record();
         let next = gbwt_record.lf(pos.offset);
         if next.is_none() {
             break;
@@ -349,7 +347,7 @@ fn extract_paths(
     let mut keys: Vec<usize> = Vec::new();
     let mut successors: BTreeMap<usize, Vec<(Pos, bool)>> = BTreeMap::new();
     for (handle, gbz_record) in subgraph.iter() {
-        let gbwt_record = gbz_record.to_gbwt_record().unwrap();
+        let gbwt_record = gbz_record.to_gbwt_record();
         let decompressed: Vec<(Pos, bool)> = gbwt_record.decompress().into_iter().map(|x| (x, false)).collect();
         keys.push(*handle);
         successors.insert(*handle, decompressed);

@@ -507,14 +507,16 @@ impl GBZRecord {
     /// Returns a GBWT record based on this record.
     ///
     /// The lifetime of the returned record is tied to this record.
-    /// Returns [`None`] if the record would be empty.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the record would be empty.
     /// This should never happen with a valid database.
-    pub fn to_gbwt_record(&self) -> Option<Record> {
+    pub fn to_gbwt_record(&self) -> Record {
         if self.edges.is_empty() {
-            None
-        } else {
-            Some(unsafe { Record::from_raw_parts(self.handle, self.edges.clone(), &self.bwt) })
+            panic!();
         }
+        unsafe { Record::from_raw_parts(self.handle, self.edges.clone(), &self.bwt) }
     }
 
     /// Returns the handle of the record.
@@ -656,7 +658,7 @@ impl GBZPath {
 /// // Reference path for contig B goes from 21 to 22.
 /// let path = interface.find_path("_gbwt_ref", "B", 0, 0).unwrap().unwrap();
 /// assert_eq!(path.fw_start.node, handle);
-/// let next = record.to_gbwt_record().unwrap().lf(path.fw_start.offset).unwrap();
+/// let next = record.to_gbwt_record().lf(path.fw_start.offset).unwrap();
 /// assert_eq!(next.node, support::encode_node(22, Orientation::Forward));
 ///
 /// // The first indexed position is at the start of the path.

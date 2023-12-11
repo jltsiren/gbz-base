@@ -142,8 +142,6 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
 
             // Records: edges and BWT.
             let db_record = record.to_gbwt_record();
-            assert!(db_record.is_some(), "Failed to convert node record for handle {} to GBWT record", handle);
-            let db_record = db_record.unwrap();
             let record_index = gbwt.node_to_record(handle);
             let gbwt_record = bwt.record(record_index).unwrap();
             assert_eq!(db_record.outdegree(), gbwt_record.outdegree(), "Wrong outdegree for handle {}", handle);
