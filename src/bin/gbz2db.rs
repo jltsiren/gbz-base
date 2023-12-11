@@ -41,7 +41,7 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
-pub struct Config {
+struct Config {
     pub gbz_file: String,
     pub db_file: String,
     pub overwrite: bool,
@@ -59,7 +59,7 @@ impl Config {
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
             Err(f) => {
-                eprintln!("{}", f.to_string());
+                eprintln!("{}", f);
                 process::exit(1);
             }
         };

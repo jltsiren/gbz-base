@@ -119,15 +119,28 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
             let record = record.unwrap();
 
             // Handle and sequence.
-            assert_eq!(record.handle, handle, "Wrong node record handle");
+            assert_eq!(record.handle(), handle, "Wrong node record handle");
             if orientation == Orientation::Forward {
-                assert_eq!(record.sequence, sequence, "Wrong sequence for handle {}", handle);
+                assert_eq!(record.sequence(), sequence, "Wrong sequence for handle {}", handle);
             } else {
                 let rc = support::reverse_complement(sequence);
-                assert_eq!(record.sequence, rc, "Wrong sequence for handle {}", handle);
+                assert_eq!(record.sequence(), rc, "Wrong sequence for handle {}", handle);
             }
 
-            // Edges and BWT.
+            // Successors using the graph / iterator.
+            let truth: Vec<(usize, Orientation)> = graph.successors(node_id, orientation).unwrap().collect();
+            let successors: Vec<usize> = record.successors().collect();
+            assert_eq!(successors.len(), truth.len(), "Wrong number of successors for handle {} using successors()", handle);
+            let edges: Vec<Pos> = record.edges().collect();
+            assert_eq!(edges.len(), truth.len(), "Wrong number of successors for handle {} using edges()", handle);
+            for i in 0..successors.len() {
+                let (truth_id, truth_orientation) = truth[i];
+                let truth_handle = support::encode_node(truth_id, truth_orientation);
+                assert_eq!(successors[i], truth_handle, "Wrong {}-th successor for handle {} using successors()", i, handle);
+                assert_eq!(edges[i].node, truth_handle, "Wrong {}-th successor for handle {} using edges()", i, handle);
+            }
+
+            // Records: edges and BWT.
             let db_record = record.to_gbwt_record();
             assert!(db_record.is_some(), "Failed to convert node record for handle {} to GBWT record", handle);
             let db_record = db_record.unwrap();
