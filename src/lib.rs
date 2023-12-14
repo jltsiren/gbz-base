@@ -36,6 +36,7 @@ use gbwt::support;
 
 use simple_sds::serialize;
 
+pub mod query;
 pub mod gfa;
 
 #[cfg(test)]
