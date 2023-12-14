@@ -36,6 +36,9 @@ use gbwt::support;
 
 use simple_sds::serialize;
 
+#[cfg(test)]
+mod tests;
+
 //-----------------------------------------------------------------------------
 
 /// A database connection.
@@ -153,7 +156,7 @@ impl GBZBase {
 
     /// Returns the filename of the database.
     pub fn filename(&self) -> Result<&str, String> {
-        self.connection.path().ok_or(format!("No filename for the database"))
+        self.connection.path().ok_or("No filename for the database".to_string())
     }
 
     /// Returns the version of the database.
@@ -193,7 +196,7 @@ impl GBZBase {
         );
         match result {
             Ok(value) => Ok(value),
-            Err(x) => Err(format!("Key not found: {} ({})", key, x.to_string())),
+            Err(x) => Err(format!("Key not found: {} ({})", key, x)),
         }
     }
 
@@ -494,36 +497,77 @@ impl GBZBase {
 /// The edges and the sequence are decompressed, while the BWT fragment remains in compressed form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GBZRecord {
-    /// Node handle / [`GBWT`] node identifier.
-    pub handle: usize,
-
-    /// List of outgoing edges sorted by destination node.
-    ///
-    /// Each edge is a pair consisting of a destination node handle and a offset in the corresponding GBWT record.
-    /// If the destination handle is [`gbwt::ENDMARKER`], the edge is not a real edge.
-    pub edges: Vec<Pos>,
-
-    /// Run-length encoded BWT fragment stored in the node.
-    pub bwt: Vec<u8>,
-
-    /// Sequence of the node, in the orientation corresponding to the handle.
-    ///
-    /// The sequence is a valid [`String`] over the alphabet `ACGTN`.
-    pub sequence: Vec<u8>,
+    handle: usize,
+    edges: Vec<Pos>,
+    bwt: Vec<u8>,
+    sequence: Vec<u8>,
 }
 
 impl GBZRecord {
     /// Returns a GBWT record based on this record.
     ///
     /// The lifetime of the returned record is tied to this record.
-    /// Returns [`None`] if the record would be empty.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the record would be empty.
     /// This should never happen with a valid database.
-    pub fn to_gbwt_record(&self) -> Option<Record> {
+    pub fn to_gbwt_record(&self) -> Record {
         if self.edges.is_empty() {
-            None
-        } else {
-            Some(unsafe { Record::from_raw_parts(self.handle, self.edges.clone(), &self.bwt) })
+            panic!();
         }
+        unsafe { Record::from_raw_parts(self.handle, self.edges.clone(), &self.bwt) }
+    }
+
+    /// Returns the handle of the record.
+    ///
+    /// The handle is a [`GBWT`] node identifier.
+    #[inline]
+    pub fn handle(&self) -> usize {
+        self.handle
+    }
+
+    /// Returns the node identifier of the record.
+    #[inline]
+    pub fn id(&self) -> usize {
+        support::node_id(self.handle)
+    }
+
+    /// Returns the orientation of the record.
+    #[inline]
+    pub fn orientation(&self) -> Orientation {
+        support::node_orientation(self.handle)
+    }
+
+    /// Returns an iterator over the handles of successor nodes.
+    #[inline]
+    pub fn successors(&self) -> impl Iterator<Item = usize> + '_ {
+        self.edges.iter().filter(|x| x.node != gbwt::ENDMARKER).map(|x| x.node)
+    }
+
+    /// Returns an iterator over the outgoing edges from the record.
+    ///
+    /// Each edge is a pair consisting of a destination node handle and a offset in the corresponding GBWT record.
+    /// The edges are sorted by destination node.
+    /// This iterator does not list the possible edge to [`gbwt::ENDMARKER`], as it only exists for technical purposes.
+    #[inline]
+    pub fn edges(&self) -> impl Iterator<Item = Pos> + '_ {
+        self.edges.iter().filter(|x| x.node != gbwt::ENDMARKER).copied()
+    }
+
+    /// Returns the sequence of the record.
+    ///
+    /// This is the sequence of the node in the correct orientation.
+    /// The sequence is a valid [`String`] over the alphabet `ACGTN`.
+    #[inline]
+    pub fn sequence(&self) -> &[u8] {
+        &self.sequence
+    }
+
+    /// Returns the length of the sequence stored in the record.
+    #[inline]
+    pub fn sequence_len(&self) -> usize {
+        self.sequence.len()
     }
 }
 
@@ -596,17 +640,25 @@ impl GBZPath {
 /// assert!(interface.get_gbwt_tag("reference_samples").unwrap().is_none());
 ///
 /// // Node 21 with edges to 22 and 23, all in forward orientation.
-/// let handle = support::encode_node(21, Orientation::Forward);
+/// let id = 21;
+/// let orientation = Orientation::Forward;
+/// let handle = support::encode_node(id, orientation);
 /// let record = interface.get_record(handle).unwrap().unwrap();
-/// assert_eq!(record.handle, handle);
-/// assert_eq!(record.edges.len(), 2);
-/// assert_eq!(record.edges[0].node, support::encode_node(22, Orientation::Forward));
-/// assert_eq!(record.edges[1].node, support::encode_node(23, Orientation::Forward));
+/// assert_eq!(record.id(), id);
+/// assert_eq!(record.orientation(), orientation);
+/// let successors: Vec<usize> = record.successors().collect();
+/// assert_eq!(
+///     successors,
+///     vec![
+///         support::encode_node(22, Orientation::Forward),
+///         support::encode_node(23, Orientation::Forward)
+///     ]
+/// );
 ///
 /// // Reference path for contig B goes from 21 to 22.
 /// let path = interface.find_path("_gbwt_ref", "B", 0, 0).unwrap().unwrap();
 /// assert_eq!(path.fw_start.node, handle);
-/// let next = record.to_gbwt_record().unwrap().lf(path.fw_start.offset).unwrap();
+/// let next = record.to_gbwt_record().lf(path.fw_start.offset).unwrap();
 /// assert_eq!(next.node, support::encode_node(22, Orientation::Forward));
 ///
 /// // The first indexed position is at the start of the path.
@@ -818,77 +870,6 @@ fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
     result.push(byte);
 
     result
-}
-
-//-----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-
-use super::*;
-use gbwt::GBWT;
-
-#[test]
-fn example_test() {
-    // Load the graph.
-    let gbz_file = support::get_test_data("example.gbz");
-    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    let metadata = graph.metadata().unwrap();
-    let gbwt: &GBWT = graph.as_ref();
-
-    // Create the database.
-    let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!GBZBase::exists(&db_file), "Database {} already exists", db_file.display());
-    let result = GBZBase::create(&graph, &db_file);
-    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
-
-    // Open the database and create a graph interface.
-    let database = GBZBase::open(&db_file);
-    assert!(database.is_ok(), "Failed to open database: {}", database.unwrap_err());
-    let database = database.unwrap();
-    let interface = GraphInterface::new(&database);
-    assert!(interface.is_ok(), "Failed to create graph interface: {}", interface.unwrap_err());
-    let mut interface = interface.unwrap();
-
-    // Header.
-    assert_eq!(database.nodes(), graph.nodes(), "Wrong number of nodes");
-    assert_eq!(database.samples(), metadata.samples(), "Wrong number of samples");
-    assert_eq!(database.haplotypes(), metadata.haplotypes(), "Wrong number of haplotypes");
-    assert_eq!(database.contigs(), metadata.contigs(), "Wrong number of contigs");
-    assert_eq!(database.paths(), metadata.paths(), "Wrong number of paths");
-
-    // GBWT tags.
-    for (key, value) in gbwt.tags().iter() {
-        let tag = interface.get_gbwt_tag(key);
-        assert!(tag.is_ok(), "Failed to get GBWT tag: {}", tag.unwrap_err());
-        let tag = tag.unwrap();
-        assert!(tag.is_some(), "Missing GBWT tag {}", key);
-        assert_eq!(tag.unwrap(), *value, "Wrong GBWT tag value for {}", key);
-    }
-
-    // GBZ tags.
-    for (key, value) in graph.tags().iter() {
-        let tag = interface.get_gbz_tag(key);
-        assert!(tag.is_ok(), "Failed to get GBZ tag: {}", tag.unwrap_err());
-        let tag = tag.unwrap();
-        assert!(tag.is_some(), "Missing GBZ tag {}", key);
-        assert_eq!(tag.unwrap(), *value, "Wrong GBZ tag value for {}", key);
-    }
-
-    // TODO: Nodes using get_record.
-
-    drop(interface);
-    drop(database);
-    assert!(GBZBase::exists(&db_file));
-    assert!(std::fs::remove_file(&db_file).is_ok());
-}
-
-// TODO: create from file vs. GBZ
-
-// TODO: get_path, find_path, paths_for_sample
-
-// TODO: get_indexed_position
-
 }
 
 //-----------------------------------------------------------------------------
