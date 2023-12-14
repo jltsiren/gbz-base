@@ -7,6 +7,8 @@ use gbwt::{Orientation, Pos, ENDMARKER};
 
 use gbwt::support;
 
+//-----------------------------------------------------------------------------
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphPosition {
     pub node: usize,
