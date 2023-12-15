@@ -82,29 +82,28 @@ fn main() -> Result<(), String> {
 //-----------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum HaplotypeOutput {
+enum HaplotypeOutput {
     All,
     Distinct,
     ReferenceOnly,
 }
 
-// TODO: haplotype, fragment
-pub struct Config {
-    pub filename: String,
-    pub sample: String,
-    pub contig: String,
-    pub haplotype: usize,
-    pub fragment: usize,
-    pub offset: usize,
-    pub context: usize,
-    pub output: HaplotypeOutput,
+struct Config {
+    filename: String,
+    sample: String,
+    contig: String,
+    haplotype: usize,
+    fragment: usize,
+    offset: usize,
+    context: usize,
+    output: HaplotypeOutput,
 }
 
 impl Config {
     // Default context length in bp.
-    pub const DEFAULT_CONTEXT: usize = 100;
+    const DEFAULT_CONTEXT: usize = 100;
 
-    pub fn new() -> Result<Config, String> {
+    fn new() -> Result<Config, String> {
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
 
@@ -151,8 +150,12 @@ impl Config {
         Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, output, })
     }
 
-    pub fn path_name(&self) -> String {
-        format!("{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
+    fn path_name(&self) -> String {
+        if self.haplotype == 0 && self.fragment == 0 {
+            format!("{}#{}", self.sample, self.contig)
+        } else {
+            format!("{}#{}#{}#{}", self.sample, self.haplotype, self.contig, self.fragment)
+        }
     }
 
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {
@@ -207,9 +210,9 @@ impl Config {
 // TODO: Should this be in the library?
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct GraphPosition {
-    pub node: usize,
-    pub orientation: Orientation,
-    pub offset: usize,
+    node: usize,
+    orientation: Orientation,
+    offset: usize,
 }
 
 //-----------------------------------------------------------------------------

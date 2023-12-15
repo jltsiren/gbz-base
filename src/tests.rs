@@ -357,3 +357,16 @@ fn indexed_position() {
 }
 
 //-----------------------------------------------------------------------------
+
+#[test]
+fn sequence_encoding() {
+    let full_sequence = b"GATTACACACCAGATNNNNNACATTGAACCTTACACAGTCTGAC";
+    for i in 0..full_sequence.len() {
+        let sequence = &full_sequence[0..i];
+        let encoded = encode_sequence(sequence);
+        let decoded = decode_sequence(&encoded);
+        assert_eq!(decoded, sequence, "Wrong sequence encoding for length {}", i);
+    }
+}
+
+//-----------------------------------------------------------------------------
