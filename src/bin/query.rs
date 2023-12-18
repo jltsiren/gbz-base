@@ -28,49 +28,21 @@ fn main() -> Result<(), String> {
     let ref_path = graph.find_path(
         &config.sample, &config.contig, config.haplotype, config.fragment
     )?;
-    let ref_info = ref_path.ok_or(format!("Cannot find path {}", config.path_name()))?;
-    if !ref_info.is_indexed {
+    let ref_path = ref_path.ok_or(format!("Cannot find path {}", config.path_name()))?;
+    if !ref_path.is_indexed {
         return Err(format!("Path {} has not been indexed for random access", config.path_name()));
     }
 
-    // Find the query position on the reference path.
-    let (query_pos, gbwt_pos) = query_position(
+    // Extract the subgraph.
+    let subgraph = Subgraph::new(
         &mut graph,
-        &ref_info,
-        config.offset
+        ref_path, config.offset, config.context,
+        config.output
     )?;
 
-    // Extract all GBWT records within the context.
-    let subgraph = extract_context(&mut graph, query_pos, config.context)?;
-
-    // Extract paths.
-    let (mut paths, (mut ref_id, path_offset)) = extract_paths(&subgraph, gbwt_pos)?;
-    let ref_start = config.offset - distance_to(&subgraph, &paths[ref_id].path, path_offset, query_pos.offset);
-    let ref_interval = ref_start..ref_start + paths[ref_id].len;
-
-    // GFA output: segments and links.
+    // Write the output.
     let mut output = io::stdout();
-    let reference_samples = Some(ref_info.sample.clone());
-    write_gfa(&subgraph, reference_samples, &mut output).map_err(|x| x.to_string())?;
-
-    // GFA output: walks.
-    if config.output == HaplotypeOutput::Distinct {
-        // TODO: We should use bidirectional search in GBWT to find the distinct paths directly.
-        (paths, ref_id) = distinct_paths(paths, ref_id);
-    }
-    let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval, paths[ref_id].weight);
-    write_gfa_walk(&paths[ref_id].path, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
-    if config.output != HaplotypeOutput::ReferenceOnly {
-        let mut haplotype = 1;
-        for (id, path_info) in paths.iter().enumerate() {
-            if id == ref_id {
-                continue;
-            }
-            let metadata = WalkMetadata::anonymous(haplotype, &ref_info.contig, path_info.len, path_info.weight);
-            write_gfa_walk(&path_info.path, &metadata, &mut output).map_err(|x| x.to_string())?;
-            haplotype += 1;
-        }
-    }
+    subgraph.write_gfa(&mut output).map_err(|x| x.to_string())?;
 
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
@@ -213,6 +185,94 @@ struct GraphPosition {
     node: usize,
     orientation: Orientation,
     offset: usize,
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: Maybe this should be in the library.
+struct Subgraph {
+    records: BTreeMap<usize, GBZRecord>,
+    paths: Vec<PathInfo>,
+    ref_id: usize,
+    ref_path: GBZPath,
+    ref_interval: Range<usize>,
+}
+
+impl Subgraph {
+    // TODO: Maybe this should not be in the library.
+    fn new(graph: &mut GraphInterface, ref_path: GBZPath, query_offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
+        let (query_pos, gbwt_pos) = query_position(graph, &ref_path, query_offset)?;
+        let records = extract_context(graph, query_pos, context)?;
+        let (mut paths, (mut ref_id, path_offset)) = extract_paths(&records, gbwt_pos)?;
+        let ref_start = query_offset - distance_to(&records, &paths[ref_id].path, path_offset, query_pos.offset);
+        let ref_interval = ref_start..ref_start + paths[ref_id].len;
+
+        if haplotype_output == HaplotypeOutput::Distinct {
+            // TODO: We should use bidirectional search in GBWT to find the distinct paths directly.
+            (paths, ref_id) = make_distinct(paths, ref_id);
+        } else if haplotype_output == HaplotypeOutput::ReferenceOnly {
+            paths = vec![paths[ref_id].clone()];
+            ref_id = 0;
+        }
+
+        Ok(Subgraph { records, paths, ref_id, ref_path, ref_interval, })
+    }
+
+    fn write_gfa<T: Write>(&self, output: &mut T) -> io::Result<()> {
+        // Header.
+        let reference_samples = Some(self.ref_path.sample.clone());
+        write_gfa_header(reference_samples, output)?;
+
+        // Segments.
+        for (handle, record) in self.records.iter() {
+            if support::node_orientation(*handle) == Orientation::Forward {
+                write_gfa_segment(record, output)?;
+            }
+        }
+
+        // Links.
+        for (handle, record) in self.records.iter() {
+            let from = support::decode_node(*handle);
+            for successor in record.successors() {
+                let to = support::decode_node(successor);
+                if self.records.contains_key(&successor) && support::edge_is_canonical(from, to) {
+                    write_gfa_link(
+                        (from.0.to_string().as_bytes(), from.1),
+                        (to.0.to_string().as_bytes(), to.1),
+                        output
+                    )?;
+                }
+            }
+        }
+
+        // Paths.
+        let ref_metadata = WalkMetadata::from_gbz_path(
+            &self.ref_path,
+            self.ref_interval.clone(),
+            self.paths[self.ref_id].weight
+        );
+        write_gfa_walk(&self.paths[self.ref_id].path, &ref_metadata, output)?;
+        if self.paths.len() > 1 {
+            let mut haplotype = 1;
+            for (id, path_info) in self.paths.iter().enumerate() {
+                if id == self.ref_id {
+                    continue;
+                }
+                let metadata = WalkMetadata::anonymous(
+                    haplotype,
+                    &self.ref_path.contig,
+                    path_info.len,
+                    path_info.weight
+                );
+                write_gfa_walk(&path_info.path, &metadata, output)?;
+                haplotype += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    // TODO: write_json()
 }
 
 //-----------------------------------------------------------------------------
@@ -413,7 +473,7 @@ fn distance_to(subgraph: &BTreeMap<usize, GBZRecord>, path: &[usize], path_offse
 
 // Returns all distinct paths and uses the weight field for storing their counts.
 // Also updates `ref_id`.
-fn distinct_paths(
+fn make_distinct(
     paths: Vec<PathInfo>,
     ref_id: usize
 ) -> (Vec<PathInfo>, usize) {
@@ -439,34 +499,6 @@ fn distinct_paths(
 
 //-----------------------------------------------------------------------------
 
-fn write_gfa<T: Write>(records: &BTreeMap<usize, GBZRecord>, reference_samples: Option<String>, output: &mut T) -> io::Result<()> {
-    write_gfa_header(reference_samples, output)?;
-
-    // Segments.
-    for (handle, record) in records.iter() {
-        if support::node_orientation(*handle) == Orientation::Forward {
-            write_gfa_segment(record, output)?;
-        }
-    }
-
-    // Links.
-    for (handle, record) in records.iter() {
-        let from = support::decode_node(*handle);
-        for successor in record.successors() {
-            let to = support::decode_node(successor);
-            if records.contains_key(&successor) && support::edge_is_canonical(from, to) {
-                write_gfa_link(
-                    (from.0.to_string().as_bytes(), from.1),
-                    (to.0.to_string().as_bytes(), to.1),
-                    output
-                )?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 // TODO: These GFA writing support functions should be shared with gbunzip in gbwt-rs.
 
 fn write_gfa_header<T: Write>(reference_samples: Option<String>, output: &mut T) -> io::Result<()> {
@@ -480,32 +512,40 @@ fn write_gfa_header<T: Write>(reference_samples: Option<String>, output: &mut T)
 }
 
 fn write_gfa_segment<T: Write>(record: &GBZRecord, output: &mut T) -> io::Result<()> {
+    let mut buffer: Vec<u8> = Vec::new();
+
     let (id, orientation) = support::decode_node(record.handle());
-    output.write_all(b"S\t")?;
-    output.write_all(id.to_string().as_bytes())?;
-    output.write_all(b"\t")?;
+    buffer.extend_from_slice(b"S\t");
+    buffer.extend_from_slice(id.to_string().as_bytes());
+    buffer.push(b'\t');
     if orientation == Orientation::Reverse {
-        output.write_all(record.sequence())?;
+        buffer.extend_from_slice(record.sequence());
     } else {
         let rc = support::reverse_complement(record.sequence());
-        output.write_all(&rc)?;
+        buffer.extend_from_slice(&rc);
     }
-    output.write_all(b"\n")?;
+    buffer.push(b'\n');
+
+    output.write_all(&buffer)?;
     Ok(())
 }
 
 fn write_gfa_link<T: Write>(from: (&[u8], Orientation), to: (&[u8], Orientation), output: &mut T) -> io::Result<()> {
-    output.write_all(b"L\t")?;
-    output.write_all(from.0)?;
+    let mut buffer: Vec<u8> = Vec::new();
+
+    buffer.extend_from_slice(b"L\t");
+    buffer.extend_from_slice(from.0);
     match from.1 {
-        Orientation::Forward => output.write_all(b"\t+\t")?,
-        Orientation::Reverse => output.write_all(b"\t-\t")?,
+        Orientation::Forward => buffer.extend_from_slice(b"\t+\t"),
+        Orientation::Reverse => buffer.extend_from_slice(b"\t-\t"),
     }
-    output.write_all(to.0)?;
+    buffer.extend_from_slice(to.0);
     match to.1 {
-        Orientation::Forward => output.write_all(b"\t+\t0M\n")?,
-        Orientation::Reverse => output.write_all(b"\t-\t0M\n")?,
+        Orientation::Forward => buffer.extend_from_slice(b"\t+\t0M\n"),
+        Orientation::Reverse => buffer.extend_from_slice(b"\t-\t0M\n"),
     }
+
+    output.write_all(&buffer)?;
     Ok(())
 }
 
@@ -541,8 +581,8 @@ impl WalkMetadata {
 
 fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mut T) -> io::Result<()> {
     let mut buffer: Vec<u8> = Vec::new();
-    buffer.push(b'W');
-    buffer.push(b'\t');
+
+    buffer.extend_from_slice(b"W\t");
     buffer.extend_from_slice(metadata.sample.as_bytes());
     buffer.push(b'\t');
     buffer.extend_from_slice(metadata.haplotype.to_string().as_bytes());
@@ -565,6 +605,7 @@ fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mu
         buffer.extend_from_slice(weight.to_string().as_bytes());
     }
     buffer.push(b'\n');
+
     output.write_all(&buffer)?;
     Ok(())
 }
