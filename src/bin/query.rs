@@ -122,11 +122,12 @@ impl Config {
         Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, output, })
     }
 
+    // Compatible with `GBZPath::name()`.
     fn path_name(&self) -> String {
         if self.haplotype == 0 && self.fragment == 0 {
             format!("{}#{}", self.sample, self.contig)
         } else {
-            format!("{}#{}#{}#{}", self.sample, self.haplotype, self.contig, self.fragment)
+            format!("{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
         }
     }
 
@@ -200,11 +201,12 @@ struct Subgraph {
 
 impl Subgraph {
     // TODO: Maybe this should not be in the library.
-    fn new(graph: &mut GraphInterface, ref_path: GBZPath, query_offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
-        let (query_pos, gbwt_pos) = query_position(graph, &ref_path, query_offset)?;
+    fn new(graph: &mut GraphInterface, ref_path: GBZPath, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
+        let (query_pos, gbwt_pos) = query_position(graph, &ref_path, offset)?;
         let records = extract_context(graph, query_pos, context)?;
         let (mut paths, (mut ref_id, path_offset)) = extract_paths(&records, gbwt_pos)?;
-        let ref_start = query_offset - distance_to(&records, &paths[ref_id].path, path_offset, query_pos.offset);
+        let mut ref_start = offset - distance_to(&records, &paths[ref_id].path, path_offset, query_pos.offset);
+        ref_start += ref_path.fragment; // If the reference is fragmented, we assume this is the starting offset.
         let ref_interval = ref_start..ref_start + paths[ref_id].len;
 
         if haplotype_output == HaplotypeOutput::Distinct {
