@@ -1,4 +1,4 @@
-use gbz_base::{GBZBase, GBZRecord, GBZPath, GraphInterface};
+use gbz_base::{GBZBase, GBZRecord, GBZPath, GraphInterface, GBZPathName};
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap};
@@ -24,19 +24,10 @@ fn main() -> Result<(), String> {
     let database = GBZBase::open(&config.filename)?;
     let mut graph = GraphInterface::new(&database)?;
 
-    // Find the reference path.
-    let ref_path = graph.find_path(
-        &config.sample, &config.contig, config.haplotype, config.fragment
-    )?;
-    let ref_path = ref_path.ok_or(format!("Cannot find path {}", config.path_name()))?;
-    if !ref_path.is_indexed {
-        return Err(format!("Path {} has not been indexed for random access", config.path_name()));
-    }
-
     // Extract the subgraph.
     let subgraph = Subgraph::new(
         &mut graph,
-        ref_path, config.offset, config.context,
+        &config.path_name, config.offset, config.context,
         config.output
     )?;
 
@@ -62,10 +53,7 @@ enum HaplotypeOutput {
 
 struct Config {
     filename: String,
-    sample: String,
-    contig: String,
-    haplotype: usize,
-    fragment: usize,
+    path_name: GBZPathName,
     offset: usize,
     context: usize,
     output: HaplotypeOutput,
@@ -107,8 +95,7 @@ impl Config {
 
         let sample = matches.opt_str("s").ok_or("Sample name must be provided with --sample".to_string())?;
         let contig = matches.opt_str("c").ok_or("Contig name must be provided with --contig".to_string())?;
-        let haplotype: usize = 0;
-        let fragment: usize = 0;
+        let path_name = GBZPathName::reference(&sample, &contig);
         let (offset, context) = Self::parse_offset_and_context(&matches)?;
 
         let mut output = HaplotypeOutput::All;
@@ -119,16 +106,7 @@ impl Config {
             output = HaplotypeOutput::ReferenceOnly;
         }
 
-        Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, output, })
-    }
-
-    // Compatible with `GBZPath::name()`.
-    fn path_name(&self) -> String {
-        if self.haplotype == 0 && self.fragment == 0 {
-            format!("{}#{}", self.sample, self.contig)
-        } else {
-            format!("{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
-        }
+        Ok(Config { filename, path_name, offset, context, output, })
     }
 
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {
@@ -200,13 +178,18 @@ struct Subgraph {
 }
 
 impl Subgraph {
-    // TODO: Maybe this should not be in the library.
-    fn new(graph: &mut GraphInterface, ref_path: GBZPath, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
+    fn new(graph: &mut GraphInterface, path_name: &GBZPathName, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
+        // Find the reference path.
+        let ref_path = graph.find_path(path_name)?;
+        let ref_path = ref_path.ok_or(format!("Cannot find path {}", path_name))?;
+        if !ref_path.is_indexed {
+            return Err(format!("Path {} has not been indexed for random access", path_name));
+        }
+
         let (query_pos, gbwt_pos) = query_position(graph, &ref_path, offset)?;
         let records = extract_context(graph, query_pos, context)?;
         let (mut paths, (mut ref_id, path_offset)) = extract_paths(&records, gbwt_pos)?;
-        let mut ref_start = offset - distance_to(&records, &paths[ref_id].path, path_offset, query_pos.offset);
-        ref_start += ref_path.fragment; // If the reference is fragmented, we assume this is the starting offset.
+        let ref_start = offset - distance_to(&records, &paths[ref_id].path, path_offset, query_pos.offset);
         let ref_interval = ref_start..ref_start + paths[ref_id].len;
 
         if haplotype_output == HaplotypeOutput::Distinct {
@@ -222,7 +205,7 @@ impl Subgraph {
 
     fn write_gfa<T: Write>(&self, output: &mut T) -> io::Result<()> {
         // Header.
-        let reference_samples = Some(self.ref_path.sample.clone());
+        let reference_samples = Some(self.ref_path.name.sample.clone());
         write_gfa_header(reference_samples, output)?;
 
         // Segments.
@@ -248,7 +231,7 @@ impl Subgraph {
         }
 
         // Paths.
-        let ref_metadata = WalkMetadata::from_gbz_path(
+        let ref_metadata = WalkMetadata::path_interval(
             &self.ref_path,
             self.ref_interval.clone(),
             self.paths[self.ref_id].weight
@@ -262,7 +245,7 @@ impl Subgraph {
                 }
                 let metadata = WalkMetadata::anonymous(
                     haplotype,
-                    &self.ref_path.contig,
+                    &self.ref_path.name.contig,
                     path_info.len,
                     path_info.weight
                 );
@@ -552,30 +535,24 @@ fn write_gfa_link<T: Write>(from: (&[u8], Orientation), to: (&[u8], Orientation)
 }
 
 struct WalkMetadata {
-    sample: String,
-    haplotype: usize,
-    contig: String,
-    interval: Range<usize>,
+    name: GBZPathName,
+    end: usize,
     weight: Option<usize>,
 }
 
 impl WalkMetadata {
-    fn from_gbz_path(path: &GBZPath, interval: Range<usize>, weight: Option<usize>) -> Self {
-        WalkMetadata {
-            sample: path.sample.clone(),
-            haplotype: path.haplotype,
-            contig: path.contig.clone(),
-            interval,
-            weight,
-        }
+    fn path_interval(path: &GBZPath, interval: Range<usize>, weight: Option<usize>) -> Self {
+        let mut name = path.name.clone();
+        let end = name.fragment + interval.end;
+        name.fragment += interval.start;
+        WalkMetadata { name, end, weight }
     }
 
     fn anonymous(haplotype: usize, contig: &str, len: usize, weight: Option<usize>) -> Self {
+        let path_name = GBZPathName::haplotype("unknown", contig, haplotype, 0);
         WalkMetadata {
-            sample: "unknown".to_string(),
-            haplotype,
-            contig: contig.to_owned(),
-            interval: 0..len,
+            name: path_name,
+            end: len,
             weight,
         }
     }
@@ -585,15 +562,15 @@ fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mu
     let mut buffer: Vec<u8> = Vec::new();
 
     buffer.extend_from_slice(b"W\t");
-    buffer.extend_from_slice(metadata.sample.as_bytes());
+    buffer.extend_from_slice(metadata.name.sample.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.haplotype.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.name.haplotype.to_string().as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.contig.as_bytes());
+    buffer.extend_from_slice(metadata.name.contig.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.interval.start.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.name.fragment.to_string().as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.interval.end.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.end.to_string().as_bytes());
     buffer.push(b'\t');
     for handle in path.iter() {
         match support::node_orientation(*handle) {

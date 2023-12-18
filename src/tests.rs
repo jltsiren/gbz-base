@@ -47,9 +47,9 @@ fn existing_path_by_handle(interface: &mut GraphInterface, path_handle: usize) -
     path.unwrap()
 }
 
-fn path_by_metadata(interface: &mut GraphInterface, sample: &str, contig: &str, haplotype: usize, fragment: usize) -> Option<GBZPath> {
-    let path = interface.find_path(sample, contig, haplotype, fragment);
-    assert!(path.is_ok(), "Failed to get path by metadata: {}", path.unwrap_err());
+fn path_by_name(interface: &mut GraphInterface, name: &GBZPathName) -> Option<GBZPath> {
+    let path = interface.find_path(name);
+    assert!(path.is_ok(), "Failed to get path by name: {}", path.unwrap_err());
     path.unwrap()
 }
 
@@ -226,16 +226,16 @@ fn get_path() {
 
         let path_name = metadata.path(path_handle).unwrap();
         let sample_name = metadata.sample(path_name.sample()).unwrap();
-        assert_eq!(path.sample, sample_name, "Wrong sample name for path {}", path_handle);
+        assert_eq!(path.name.sample, sample_name, "Wrong sample name for path {}", path_handle);
         let contig_name = metadata.contig(path_name.contig()).unwrap();
-        assert_eq!(path.contig, contig_name, "Wrong contig name for path {}", path_handle);
-        assert_eq!(path.haplotype, path_name.phase(), "Wrong haplotype number for path {}", path_handle);
-        assert_eq!(path.fragment, path_name.fragment(), "Wrong fragment number for path {}", path_handle);
+        assert_eq!(path.name.contig, contig_name, "Wrong contig name for path {}", path_handle);
+        assert_eq!(path.name.haplotype, path_name.phase(), "Wrong haplotype number for path {}", path_handle);
+        assert_eq!(path.name.fragment, path_name.fragment(), "Wrong fragment number for path {}", path_handle);
 
-        let found_path = path_by_metadata(&mut interface, &path.sample, &path.contig, path.haplotype, path.fragment);
-        assert!(found_path.is_some(), "Could not find path {} by metadata", path_handle);
+        let found_path = path_by_name(&mut interface, &path.name);
+        assert!(found_path.is_some(), "Could not find path {} by name", path_handle);
         let found_path = found_path.unwrap();
-        assert_eq!(found_path, path, "Wrong path found by metadata for path {}", path_handle);
+        assert_eq!(found_path, path, "Wrong path found by name for path {}", path_handle);
     }
 
     drop(interface);
@@ -286,9 +286,10 @@ fn nonexistent_paths() {
     let by_handle = path_by_handle(&mut interface, database.paths());
     assert!(by_handle.is_none(), "Found a nonexistent path by handle");
 
-    // Paths by metadata.
-    let by_metadata = path_by_metadata(&mut interface, "fake", "path", 0, 0);
-    assert!(by_metadata.is_none(), "Found a nonexistent path by metadata");
+    // Paths by name.
+    let path_name = GBZPathName::reference("fake", "path");
+    let by_metadata = path_by_name(&mut interface, &path_name);
+    assert!(by_metadata.is_none(), "Found a nonexistent path by name");
 
     // Paths by sample name.
     let by_sample = paths_by_sample(&mut interface, "fake");
@@ -330,7 +331,7 @@ fn indexed_position() {
     for path_handle in 0..database.paths() {
         let path = existing_path_by_handle(&mut interface, path_handle);
         if path.is_indexed {
-            assert_eq!(path.sample, REF_SAMPLE, "Path {} with sample name {} is indexed", path_handle, path.sample);
+            assert_eq!(path.name.sample, REF_SAMPLE, "Path {} with sample name {} is indexed", path_handle, path.name.sample);
             let mut previous = 0;
             let visited = visited_positions(gbwt, path_handle);
             for offset in 0..MAX_LEN {
@@ -341,7 +342,7 @@ fn indexed_position() {
                 assert!(visited.contains(&pos), "Path {} does not visit indexed position ({}, {}) at offset {}", path_handle, pos.node, pos.offset, indexed);
             }
         } else {
-            assert_ne!(path.sample, REF_SAMPLE, "Path {} with sample name {} is not indexed", path_handle, path.sample);
+            assert_ne!(path.name.sample, REF_SAMPLE, "Path {} with sample name {} is not indexed", path_handle, path.name.sample);
             let result = indexed_pos(&mut interface, path_handle, MAX_LEN);
             assert!(result.is_none(), "Found indexed position for non-indeded path {}", path_handle);
             continue;
