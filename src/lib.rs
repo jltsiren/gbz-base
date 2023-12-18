@@ -31,7 +31,7 @@ use std::fmt;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
-use gbwt::{GBWT, GBZ, Orientation, Pos, REF_SAMPLE, REFERENCE_SAMPLES_KEY};
+use gbwt::{GBWT, GBZ, Metadata, Orientation, Pos, REF_SAMPLE, REFERENCE_SAMPLES_KEY};
 use gbwt::bwt::{BWT, Record};
 use gbwt::support;
 
@@ -395,16 +395,15 @@ impl GBZBase {
             )?;
             let index: &GBWT = graph.as_ref();
             let metadata = graph.metadata().unwrap();
-            for (handle, name) in metadata.path_iter().enumerate() {
+            for handle in 0..metadata.paths() {
                 let fw_start = index.start(support::encode_node(handle, Orientation::Forward)).unwrap();
                 let rev_start = index.start(support::encode_node(handle, Orientation::Reverse)).unwrap();
+                let name = GBZPathName::from_metadata(metadata, handle).unwrap();
                 insert.execute((
                     handle,
                     fw_start.node, fw_start.offset,
                     rev_start.node, rev_start.offset,
-                    metadata.sample_name(name.sample()),
-                    metadata.contig_name(name.contig()),
-                    name.phase(), name.fragment()
+                    name.sample, name.contig, name.haplotype, name.fragment
                 ))?;
                 inserted += 1;
             }
@@ -576,15 +575,18 @@ impl GBZRecord {
 
 /// A structured path name.
 ///
-/// This is a stand-alone structure stores the same information as [`gbwt::PathName`]:
+/// This is a stand-alone structure storing the same information as [`gbwt::PathName`]:
 ///
 /// * Sample name.
 /// * Contig name.
 /// * Haplotype/phase number.
 /// * Fragment number or starting offset of the fragment.
 ///
-/// A string representation of the path name is `sample#haplotype#contig@fragment`.
-/// If both haplotype and fragment are zero, the string representation is `sample#contig`.
+/// The path can be a generic path, a reference path, or a haplotype path in a similar way to vg path senses.
+///
+/// * Generic paths have [`REF_SAMPLE`] as their sample name, and their actual name is stored as contig name.
+/// * Reference paths have `0` both as the haplotype and the fragment, and their names are of the form `sample#contig`.
+/// * Haplotype paths start their haplotype numbers from `1`, and their names are of the form `sample#haplotype#contig@fragment`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GBZPathName {
     /// Sample name.
@@ -601,6 +603,28 @@ pub struct GBZPathName {
 }
 
 impl GBZPathName {
+    /// Returns the name of the path with the given handle in GBWT metadata, or [`None`] if the path does not exist.
+    pub fn from_metadata(metadata: &Metadata, handle: usize) -> Option<Self> {
+        let name = metadata.path(handle)?;
+        let sample = metadata.sample_name(name.sample());
+        let contig = metadata.contig_name(name.contig());
+        Some(GBZPathName {
+            sample, contig,
+            haplotype: name.phase(),
+            fragment: name.fragment(),
+        })
+    }
+
+    /// Returns a new generic path name.
+    pub fn generic(name: &str) -> Self {
+        GBZPathName {
+            sample: REF_SAMPLE.to_string(),
+            contig: name.to_string(),
+            haplotype: 0,
+            fragment: 0,
+        }
+    }
+
     /// Returns a new reference path name.
     pub fn reference(sample: &str, contig: &str) -> Self {
         GBZPathName {
@@ -620,11 +644,20 @@ impl GBZPathName {
             fragment,
         }
     }
+
+    /// Returns a PanSN representation of the path name.
+    ///
+    /// The fragment field is assumed to be `0`.
+    pub fn pan_sn_name(&self) -> String {
+        format!("{}#{}#{}", self.sample, self.haplotype, self.contig)
+    }
 }
 
 impl fmt::Display for GBZPathName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.haplotype == 0 && self.fragment == 0 {
+        if self.sample == REF_SAMPLE {
+            write!(f, "{}", self.contig)
+        } else if self.haplotype == 0 && self.fragment == 0 {
             write!(f, "{}#{}", self.sample, self.contig)
         } else {
             write!(f, "{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
@@ -707,7 +740,7 @@ impl GBZPath {
 /// );
 ///
 /// // Reference path for contig B goes from 21 to 22.
-/// let path_name = GBZPathName::reference("_gbwt_ref", "B");
+/// let path_name = GBZPathName::generic("B");
 /// let path = interface.find_path(&path_name).unwrap().unwrap();
 /// assert_eq!(path.fw_start.node, handle);
 /// let next = record.to_gbwt_record().lf(path.fw_start.offset).unwrap();
