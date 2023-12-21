@@ -651,6 +651,13 @@ impl GBZPathName {
     pub fn pan_sn_name(&self) -> String {
         format!("{}#{}#{}", self.sample, self.haplotype, self.contig)
     }
+
+    /// Returns a path fragment name compatible with vg.
+    ///
+    /// The name is of the form `sample#haplotype#contig[fragment-end]`.
+    pub fn path_fragment_name(&self, end: usize) -> String {
+        format!("{}#{}#{}[{}-{}]", self.sample, self.haplotype, self.contig, self.fragment, end)
+    }
 }
 
 impl fmt::Display for GBZPathName {

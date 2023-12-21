@@ -2,6 +2,7 @@ use gbz_base::{GBZBase, GBZRecord, GBZPath, GraphInterface, GBZPathName};
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap};
+use std::fmt::Display;
 use std::io::Write;
 use std::ops::Range;
 use std::time::Instant;
@@ -33,7 +34,10 @@ fn main() -> Result<(), String> {
 
     // Write the output.
     let mut output = io::stdout();
-    subgraph.write_gfa(&mut output).map_err(|x| x.to_string())?;
+    match config.format {
+        OutputFormat::GFA => subgraph.write_gfa(&mut output).map_err(|x| x.to_string())?,
+        OutputFormat::JSON => subgraph.write_json(&mut output).map_err(|x| x.to_string())?,
+    }
 
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
@@ -51,12 +55,19 @@ enum HaplotypeOutput {
     ReferenceOnly,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum OutputFormat {
+    GFA,
+    JSON,
+}
+
 struct Config {
     filename: String,
     path_name: GBZPathName,
     offset: usize,
     context: usize,
     output: HaplotypeOutput,
+    format: OutputFormat,
 }
 
 impl Config {
@@ -77,6 +88,7 @@ impl Config {
         opts.optopt("n", "context", &context_desc, "INT");
         opts.optflag("d", "distinct", "output distinct haplotypes with weights");
         opts.optflag("r", "reference-only", "output the reference but no other haplotypes");
+        opts.optopt("f", "format", "output format (gfa or json, default: gfa)", "STR");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let filename = if let Some(s) = matches.free.first() {
@@ -106,7 +118,16 @@ impl Config {
             output = HaplotypeOutput::ReferenceOnly;
         }
 
-        Ok(Config { filename, path_name, offset, context, output, })
+        let mut format: OutputFormat = OutputFormat::GFA;
+        if let Some(s) = matches.opt_str("f") {
+            match s.to_lowercase().as_str() {
+                "gfa" => format = OutputFormat::GFA,
+                "json" => format = OutputFormat::JSON,
+                _ => return Err(format!("Invalid output format: {}", s)),
+            }
+        }
+
+        Ok(Config { filename, path_name, offset, context, output, format, })
     }
 
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {
@@ -257,7 +278,73 @@ impl Subgraph {
         Ok(())
     }
 
-    // TODO: write_json()
+    fn write_json<T: Write>(&self, output: &mut T) -> io::Result<()> {
+        // Nodes.
+        let mut nodes: Vec<JSONValue> = Vec::new();
+        for (_, record) in self.records.iter() {
+            let (id, orientation) = support::decode_node(record.handle());
+            if orientation == Orientation::Reverse {
+                continue;
+            }
+            let node = JSONValue::Object(vec![
+                ("id".to_string(), JSONValue::String(id.to_string())),
+                ("sequence".to_string(), JSONValue::String(String::from_utf8_lossy(record.sequence()).to_string())),
+            ]);
+            nodes.push(node);
+        }
+
+        // Edges.
+        let mut edges: Vec<JSONValue> = Vec::new();
+        for (handle, record) in self.records.iter() {
+            let from = support::decode_node(*handle);
+            for successor in record.successors() {
+                let to = support::decode_node(successor);
+                if self.records.contains_key(&successor) && support::edge_is_canonical(from, to) {
+                    let edge = JSONValue::Object(vec![
+                        ("from".to_string(), JSONValue::String(from.0.to_string())),
+                        ("from_is_reverse".to_string(), JSONValue::Boolean(from.1 == Orientation::Reverse)),
+                        ("to".to_string(), JSONValue::String(to.0.to_string())),
+                        ("to_is_reverse".to_string(), JSONValue::Boolean(to.1 == Orientation::Reverse)),
+                    ]);
+                    edges.push(edge);
+                }
+            }
+        }
+
+        // Paths.
+        let mut paths: Vec<JSONValue> = Vec::new();
+        let ref_metadata = WalkMetadata::path_interval(
+            &self.ref_path,
+            self.ref_interval.clone(),
+            self.paths[self.ref_id].weight
+        );
+        let ref_path = json_path(&self.paths[self.ref_id].path, &ref_metadata);
+        paths.push(ref_path);
+        let mut haplotype = 1;
+        for (id, path_info) in self.paths.iter().enumerate() {
+            if id == self.ref_id {
+                continue;
+            }
+            let metadata = WalkMetadata::anonymous(
+                haplotype,
+                &self.ref_path.name.contig,
+                path_info.len,
+                path_info.weight
+            );
+            let path = json_path(&path_info.path, &metadata);
+            paths.push(path);
+            haplotype += 1;
+        }
+
+        let result = JSONValue::Object(vec![
+            ("nodes".to_string(), JSONValue::Array(nodes)),
+            ("edges".to_string(), JSONValue::Array(edges)),
+            ("paths".to_string(), JSONValue::Array(paths)),
+        ]);
+        output.write_all(result.to_string().as_bytes())?;
+
+        Ok(())
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -587,6 +674,68 @@ fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mu
 
     output.write_all(&buffer)?;
     Ok(())
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: This JSON output should also be in the library.
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JSONValue {
+    Boolean(bool),
+    String(String),
+    Number(usize),
+    Array(Vec<JSONValue>),
+    Object(Vec<(String, JSONValue)>),
+}
+
+impl Display for JSONValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JSONValue::Boolean(b) => write!(f, "{}", b),
+            JSONValue::String(s) => write!(f, "\"{}\"", s),
+            JSONValue::Number(n) => write!(f, "{}", n),
+            JSONValue::Array(v) => {
+                write!(f, "[")?;
+                let mut first = true;
+                for value in v.iter() {
+                    if first {
+                        first = false;
+                    } else {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", value)?;
+                }
+                write!(f, "]")
+            },
+            JSONValue::Object(v) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (key, value) in v.iter() {
+                    if first {
+                        first = false;
+                    } else {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{}\": {}", key, value)?;
+                }
+                write!(f, "}}")
+            },
+        }
+    }
+}
+
+fn json_path(path: &[usize], metadata: &WalkMetadata) -> JSONValue {
+    JSONValue::Object(vec![
+        ("name".to_string(), JSONValue::String(metadata.name.path_fragment_name(metadata.end))),
+        ("weight".to_string(), JSONValue::Number(metadata.weight.unwrap_or(1))),
+        ("path".to_string(), JSONValue::Array(path.iter().map(
+            |x| JSONValue::Object(vec![
+                ("id".to_string(), JSONValue::String(support::node_id(*x).to_string())),
+                ("is_reverse".to_string(), JSONValue::Boolean(support::node_orientation(*x) == Orientation::Reverse)),
+            ])
+        ).collect())),
+    ])
 }
 
 //-----------------------------------------------------------------------------
