@@ -1,6 +1,6 @@
 {
   "name": "gbz-base",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.0",
   "description": "Prototype for an immutable pangenome graph in SQLite",
   "homepage": "https://github.com/jltsiren/gbz-base",
   "author": "Jouni Sirén",
