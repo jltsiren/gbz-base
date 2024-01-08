@@ -1,7 +1,8 @@
-use gbz_base::{GBZBase, GBZRecord, GBZPath, GraphInterface};
+use gbz_base::{GBZBase, GBZRecord, GBZPath, GraphInterface, GBZPathName};
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap};
+use std::fmt::Display;
 use std::io::Write;
 use std::ops::Range;
 use std::time::Instant;
@@ -24,52 +25,18 @@ fn main() -> Result<(), String> {
     let database = GBZBase::open(&config.filename)?;
     let mut graph = GraphInterface::new(&database)?;
 
-    // Find the reference path.
-    let ref_path = graph.find_path(
-        &config.sample, &config.contig, config.haplotype, config.fragment
-    )?;
-    let ref_info = ref_path.ok_or(format!("Cannot find path {}", config.path_name()))?;
-    if !ref_info.is_indexed {
-        return Err(format!("Path {} has not been indexed for random access", config.path_name()));
-    }
-
-    // Find the query position on the reference path.
-    let (query_pos, gbwt_pos) = query_position(
+    // Extract the subgraph.
+    let subgraph = Subgraph::new(
         &mut graph,
-        &ref_info,
-        config.offset
+        &config.path_name, config.offset, config.context,
+        config.output
     )?;
 
-    // Extract all GBWT records within the context.
-    let subgraph = extract_context(&mut graph, query_pos, config.context)?;
-
-    // Extract paths.
-    let (mut paths, (mut ref_id, path_offset)) = extract_paths(&subgraph, gbwt_pos)?;
-    let ref_start = config.offset - distance_to(&subgraph, &paths[ref_id].path, path_offset, query_pos.offset);
-    let ref_interval = ref_start..ref_start + paths[ref_id].len;
-
-    // GFA output: segments and links.
+    // Write the output.
     let mut output = io::stdout();
-    let reference_samples = Some(ref_info.sample.clone());
-    write_gfa(&subgraph, reference_samples, &mut output).map_err(|x| x.to_string())?;
-
-    // GFA output: walks.
-    if config.output == HaplotypeOutput::Distinct {
-        // TODO: We should use bidirectional search in GBWT to find the distinct paths directly.
-        (paths, ref_id) = distinct_paths(paths, ref_id);
-    }
-    let ref_metadata = WalkMetadata::from_gbz_path(&ref_info, ref_interval, paths[ref_id].weight);
-    write_gfa_walk(&paths[ref_id].path, &ref_metadata, &mut output).map_err(|x| x.to_string())?;
-    if config.output != HaplotypeOutput::ReferenceOnly {
-        let mut haplotype = 1;
-        for (id, path_info) in paths.iter().enumerate() {
-            if id == ref_id {
-                continue;
-            }
-            let metadata = WalkMetadata::anonymous(haplotype, &ref_info.contig, path_info.len, path_info.weight);
-            write_gfa_walk(&path_info.path, &metadata, &mut output).map_err(|x| x.to_string())?;
-            haplotype += 1;
-        }
+    match config.format {
+        OutputFormat::GFA => subgraph.write_gfa(&mut output).map_err(|x| x.to_string())?,
+        OutputFormat::JSON => subgraph.write_json(&mut output).map_err(|x| x.to_string())?,
     }
 
     let end_time = Instant::now();
@@ -82,29 +49,32 @@ fn main() -> Result<(), String> {
 //-----------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum HaplotypeOutput {
+enum HaplotypeOutput {
     All,
     Distinct,
     ReferenceOnly,
 }
 
-// TODO: haplotype, fragment
-pub struct Config {
-    pub filename: String,
-    pub sample: String,
-    pub contig: String,
-    pub haplotype: usize,
-    pub fragment: usize,
-    pub offset: usize,
-    pub context: usize,
-    pub output: HaplotypeOutput,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum OutputFormat {
+    GFA,
+    JSON,
+}
+
+struct Config {
+    filename: String,
+    path_name: GBZPathName,
+    offset: usize,
+    context: usize,
+    output: HaplotypeOutput,
+    format: OutputFormat,
 }
 
 impl Config {
     // Default context length in bp.
-    pub const DEFAULT_CONTEXT: usize = 100;
+    const DEFAULT_CONTEXT: usize = 100;
 
-    pub fn new() -> Result<Config, String> {
+    fn new() -> Result<Config, String> {
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
 
@@ -118,6 +88,7 @@ impl Config {
         opts.optopt("n", "context", &context_desc, "INT");
         opts.optflag("d", "distinct", "output distinct haplotypes with weights");
         opts.optflag("r", "reference-only", "output the reference but no other haplotypes");
+        opts.optopt("f", "format", "output format (gfa or json, default: gfa)", "STR");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let filename = if let Some(s) = matches.free.first() {
@@ -136,8 +107,7 @@ impl Config {
 
         let sample = matches.opt_str("s").ok_or("Sample name must be provided with --sample".to_string())?;
         let contig = matches.opt_str("c").ok_or("Contig name must be provided with --contig".to_string())?;
-        let haplotype: usize = 0;
-        let fragment: usize = 0;
+        let path_name = GBZPathName::reference(&sample, &contig);
         let (offset, context) = Self::parse_offset_and_context(&matches)?;
 
         let mut output = HaplotypeOutput::All;
@@ -148,11 +118,16 @@ impl Config {
             output = HaplotypeOutput::ReferenceOnly;
         }
 
-        Ok(Config { filename, sample, contig, haplotype, fragment, offset, context, output, })
-    }
+        let mut format: OutputFormat = OutputFormat::GFA;
+        if let Some(s) = matches.opt_str("f") {
+            match s.to_lowercase().as_str() {
+                "gfa" => format = OutputFormat::GFA,
+                "json" => format = OutputFormat::JSON,
+                _ => return Err(format!("Invalid output format: {}", s)),
+            }
+        }
 
-    pub fn path_name(&self) -> String {
-        format!("{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
+        Ok(Config { filename, path_name, offset, context, output, format, })
     }
 
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {
@@ -207,9 +182,169 @@ impl Config {
 // TODO: Should this be in the library?
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct GraphPosition {
-    pub node: usize,
-    pub orientation: Orientation,
-    pub offset: usize,
+    node: usize,
+    orientation: Orientation,
+    offset: usize,
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: Maybe this should be in the library.
+struct Subgraph {
+    records: BTreeMap<usize, GBZRecord>,
+    paths: Vec<PathInfo>,
+    ref_id: usize,
+    ref_path: GBZPath,
+    ref_interval: Range<usize>,
+}
+
+impl Subgraph {
+    fn new(graph: &mut GraphInterface, path_name: &GBZPathName, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
+        // Find the reference path.
+        let ref_path = graph.find_path(path_name)?;
+        let ref_path = ref_path.ok_or(format!("Cannot find path {}", path_name))?;
+        if !ref_path.is_indexed {
+            return Err(format!("Path {} has not been indexed for random access", path_name));
+        }
+
+        let (query_pos, gbwt_pos) = query_position(graph, &ref_path, offset)?;
+        let records = extract_context(graph, query_pos, context)?;
+        let (mut paths, (mut ref_id, path_offset)) = extract_paths(&records, gbwt_pos)?;
+        let ref_start = offset - distance_to(&records, &paths[ref_id].path, path_offset, query_pos.offset);
+        let ref_interval = ref_start..ref_start + paths[ref_id].len;
+
+        if haplotype_output == HaplotypeOutput::Distinct {
+            // TODO: We should use bidirectional search in GBWT to find the distinct paths directly.
+            (paths, ref_id) = make_distinct(paths, ref_id);
+        } else if haplotype_output == HaplotypeOutput::ReferenceOnly {
+            paths = vec![paths[ref_id].clone()];
+            ref_id = 0;
+        }
+
+        Ok(Subgraph { records, paths, ref_id, ref_path, ref_interval, })
+    }
+
+    fn write_gfa<T: Write>(&self, output: &mut T) -> io::Result<()> {
+        // Header.
+        let reference_samples = Some(self.ref_path.name.sample.clone());
+        write_gfa_header(reference_samples, output)?;
+
+        // Segments.
+        for (handle, record) in self.records.iter() {
+            if support::node_orientation(*handle) == Orientation::Forward {
+                write_gfa_segment(record, output)?;
+            }
+        }
+
+        // Links.
+        for (handle, record) in self.records.iter() {
+            let from = support::decode_node(*handle);
+            for successor in record.successors() {
+                let to = support::decode_node(successor);
+                if self.records.contains_key(&successor) && support::edge_is_canonical(from, to) {
+                    write_gfa_link(
+                        (from.0.to_string().as_bytes(), from.1),
+                        (to.0.to_string().as_bytes(), to.1),
+                        output
+                    )?;
+                }
+            }
+        }
+
+        // Paths.
+        let ref_metadata = WalkMetadata::path_interval(
+            &self.ref_path,
+            self.ref_interval.clone(),
+            self.paths[self.ref_id].weight
+        );
+        write_gfa_walk(&self.paths[self.ref_id].path, &ref_metadata, output)?;
+        if self.paths.len() > 1 {
+            let mut haplotype = 1;
+            for (id, path_info) in self.paths.iter().enumerate() {
+                if id == self.ref_id {
+                    continue;
+                }
+                let metadata = WalkMetadata::anonymous(
+                    haplotype,
+                    &self.ref_path.name.contig,
+                    path_info.len,
+                    path_info.weight
+                );
+                write_gfa_walk(&path_info.path, &metadata, output)?;
+                haplotype += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_json<T: Write>(&self, output: &mut T) -> io::Result<()> {
+        // Nodes.
+        let mut nodes: Vec<JSONValue> = Vec::new();
+        for (_, record) in self.records.iter() {
+            let (id, orientation) = support::decode_node(record.handle());
+            if orientation == Orientation::Reverse {
+                continue;
+            }
+            let node = JSONValue::Object(vec![
+                ("id".to_string(), JSONValue::String(id.to_string())),
+                ("sequence".to_string(), JSONValue::String(String::from_utf8_lossy(record.sequence()).to_string())),
+            ]);
+            nodes.push(node);
+        }
+
+        // Edges.
+        let mut edges: Vec<JSONValue> = Vec::new();
+        for (handle, record) in self.records.iter() {
+            let from = support::decode_node(*handle);
+            for successor in record.successors() {
+                let to = support::decode_node(successor);
+                if self.records.contains_key(&successor) && support::edge_is_canonical(from, to) {
+                    let edge = JSONValue::Object(vec![
+                        ("from".to_string(), JSONValue::String(from.0.to_string())),
+                        ("from_is_reverse".to_string(), JSONValue::Boolean(from.1 == Orientation::Reverse)),
+                        ("to".to_string(), JSONValue::String(to.0.to_string())),
+                        ("to_is_reverse".to_string(), JSONValue::Boolean(to.1 == Orientation::Reverse)),
+                    ]);
+                    edges.push(edge);
+                }
+            }
+        }
+
+        // Paths.
+        let mut paths: Vec<JSONValue> = Vec::new();
+        let ref_metadata = WalkMetadata::path_interval(
+            &self.ref_path,
+            self.ref_interval.clone(),
+            self.paths[self.ref_id].weight
+        );
+        let ref_path = json_path(&self.paths[self.ref_id].path, &ref_metadata);
+        paths.push(ref_path);
+        let mut haplotype = 1;
+        for (id, path_info) in self.paths.iter().enumerate() {
+            if id == self.ref_id {
+                continue;
+            }
+            let metadata = WalkMetadata::anonymous(
+                haplotype,
+                &self.ref_path.name.contig,
+                path_info.len,
+                path_info.weight
+            );
+            let path = json_path(&path_info.path, &metadata);
+            paths.push(path);
+            haplotype += 1;
+        }
+
+        let result = JSONValue::Object(vec![
+            ("nodes".to_string(), JSONValue::Array(nodes)),
+            ("edges".to_string(), JSONValue::Array(edges)),
+            ("paths".to_string(), JSONValue::Array(paths)),
+        ]);
+        output.write_all(result.to_string().as_bytes())?;
+
+        Ok(())
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -410,7 +545,7 @@ fn distance_to(subgraph: &BTreeMap<usize, GBZRecord>, path: &[usize], path_offse
 
 // Returns all distinct paths and uses the weight field for storing their counts.
 // Also updates `ref_id`.
-fn distinct_paths(
+fn make_distinct(
     paths: Vec<PathInfo>,
     ref_id: usize
 ) -> (Vec<PathInfo>, usize) {
@@ -436,34 +571,6 @@ fn distinct_paths(
 
 //-----------------------------------------------------------------------------
 
-fn write_gfa<T: Write>(records: &BTreeMap<usize, GBZRecord>, reference_samples: Option<String>, output: &mut T) -> io::Result<()> {
-    write_gfa_header(reference_samples, output)?;
-
-    // Segments.
-    for (handle, record) in records.iter() {
-        if support::node_orientation(*handle) == Orientation::Forward {
-            write_gfa_segment(record, output)?;
-        }
-    }
-
-    // Links.
-    for (handle, record) in records.iter() {
-        let from = support::decode_node(*handle);
-        for successor in record.successors() {
-            let to = support::decode_node(successor);
-            if records.contains_key(&successor) && support::edge_is_canonical(from, to) {
-                write_gfa_link(
-                    (from.0.to_string().as_bytes(), from.1),
-                    (to.0.to_string().as_bytes(), to.1),
-                    output
-                )?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 // TODO: These GFA writing support functions should be shared with gbunzip in gbwt-rs.
 
 fn write_gfa_header<T: Write>(reference_samples: Option<String>, output: &mut T) -> io::Result<()> {
@@ -477,60 +584,62 @@ fn write_gfa_header<T: Write>(reference_samples: Option<String>, output: &mut T)
 }
 
 fn write_gfa_segment<T: Write>(record: &GBZRecord, output: &mut T) -> io::Result<()> {
+    let mut buffer: Vec<u8> = Vec::new();
+
     let (id, orientation) = support::decode_node(record.handle());
-    output.write_all(b"S\t")?;
-    output.write_all(id.to_string().as_bytes())?;
-    output.write_all(b"\t")?;
+    buffer.extend_from_slice(b"S\t");
+    buffer.extend_from_slice(id.to_string().as_bytes());
+    buffer.push(b'\t');
     if orientation == Orientation::Reverse {
-        output.write_all(record.sequence())?;
+        buffer.extend_from_slice(record.sequence());
     } else {
         let rc = support::reverse_complement(record.sequence());
-        output.write_all(&rc)?;
+        buffer.extend_from_slice(&rc);
     }
-    output.write_all(b"\n")?;
+    buffer.push(b'\n');
+
+    output.write_all(&buffer)?;
     Ok(())
 }
 
 fn write_gfa_link<T: Write>(from: (&[u8], Orientation), to: (&[u8], Orientation), output: &mut T) -> io::Result<()> {
-    output.write_all(b"L\t")?;
-    output.write_all(from.0)?;
+    let mut buffer: Vec<u8> = Vec::new();
+
+    buffer.extend_from_slice(b"L\t");
+    buffer.extend_from_slice(from.0);
     match from.1 {
-        Orientation::Forward => output.write_all(b"\t+\t")?,
-        Orientation::Reverse => output.write_all(b"\t-\t")?,
+        Orientation::Forward => buffer.extend_from_slice(b"\t+\t"),
+        Orientation::Reverse => buffer.extend_from_slice(b"\t-\t"),
     }
-    output.write_all(to.0)?;
+    buffer.extend_from_slice(to.0);
     match to.1 {
-        Orientation::Forward => output.write_all(b"\t+\t0M\n")?,
-        Orientation::Reverse => output.write_all(b"\t-\t0M\n")?,
+        Orientation::Forward => buffer.extend_from_slice(b"\t+\t0M\n"),
+        Orientation::Reverse => buffer.extend_from_slice(b"\t-\t0M\n"),
     }
+
+    output.write_all(&buffer)?;
     Ok(())
 }
 
 struct WalkMetadata {
-    sample: String,
-    haplotype: usize,
-    contig: String,
-    interval: Range<usize>,
+    name: GBZPathName,
+    end: usize,
     weight: Option<usize>,
 }
 
 impl WalkMetadata {
-    fn from_gbz_path(path: &GBZPath, interval: Range<usize>, weight: Option<usize>) -> Self {
-        WalkMetadata {
-            sample: path.sample.clone(),
-            haplotype: path.haplotype,
-            contig: path.contig.clone(),
-            interval,
-            weight,
-        }
+    fn path_interval(path: &GBZPath, interval: Range<usize>, weight: Option<usize>) -> Self {
+        let mut name = path.name.clone();
+        let end = name.fragment + interval.end;
+        name.fragment += interval.start;
+        WalkMetadata { name, end, weight }
     }
 
     fn anonymous(haplotype: usize, contig: &str, len: usize, weight: Option<usize>) -> Self {
+        let path_name = GBZPathName::haplotype("unknown", contig, haplotype, 0);
         WalkMetadata {
-            sample: "unknown".to_string(),
-            haplotype,
-            contig: contig.to_owned(),
-            interval: 0..len,
+            name: path_name,
+            end: len,
             weight,
         }
     }
@@ -538,17 +647,17 @@ impl WalkMetadata {
 
 fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mut T) -> io::Result<()> {
     let mut buffer: Vec<u8> = Vec::new();
-    buffer.push(b'W');
+
+    buffer.extend_from_slice(b"W\t");
+    buffer.extend_from_slice(metadata.name.sample.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.sample.as_bytes());
+    buffer.extend_from_slice(metadata.name.haplotype.to_string().as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.haplotype.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.name.contig.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.contig.as_bytes());
+    buffer.extend_from_slice(metadata.name.fragment.to_string().as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.interval.start.to_string().as_bytes());
-    buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.interval.end.to_string().as_bytes());
+    buffer.extend_from_slice(metadata.end.to_string().as_bytes());
     buffer.push(b'\t');
     for handle in path.iter() {
         match support::node_orientation(*handle) {
@@ -562,8 +671,71 @@ fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mu
         buffer.extend_from_slice(weight.to_string().as_bytes());
     }
     buffer.push(b'\n');
+
     output.write_all(&buffer)?;
     Ok(())
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: This JSON output should also be in the library.
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JSONValue {
+    Boolean(bool),
+    String(String),
+    Number(usize),
+    Array(Vec<JSONValue>),
+    Object(Vec<(String, JSONValue)>),
+}
+
+impl Display for JSONValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JSONValue::Boolean(b) => write!(f, "{}", b),
+            JSONValue::String(s) => write!(f, "\"{}\"", s),
+            JSONValue::Number(n) => write!(f, "{}", n),
+            JSONValue::Array(v) => {
+                write!(f, "[")?;
+                let mut first = true;
+                for value in v.iter() {
+                    if first {
+                        first = false;
+                    } else {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", value)?;
+                }
+                write!(f, "]")
+            },
+            JSONValue::Object(v) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (key, value) in v.iter() {
+                    if first {
+                        first = false;
+                    } else {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{}\": {}", key, value)?;
+                }
+                write!(f, "}}")
+            },
+        }
+    }
+}
+
+fn json_path(path: &[usize], metadata: &WalkMetadata) -> JSONValue {
+    JSONValue::Object(vec![
+        ("name".to_string(), JSONValue::String(metadata.name.path_fragment_name(metadata.end))),
+        ("weight".to_string(), JSONValue::Number(metadata.weight.unwrap_or(1))),
+        ("path".to_string(), JSONValue::Array(path.iter().map(
+            |x| JSONValue::Object(vec![
+                ("id".to_string(), JSONValue::String(support::node_id(*x).to_string())),
+                ("is_reverse".to_string(), JSONValue::Boolean(support::node_orientation(*x) == Orientation::Reverse)),
+            ])
+        ).collect())),
+    ])
 }
 
 //-----------------------------------------------------------------------------
