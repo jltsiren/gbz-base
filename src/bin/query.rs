@@ -35,8 +35,8 @@ fn main() -> Result<(), String> {
     // Write the output.
     let mut output = io::stdout();
     match config.format {
-        OutputFormat::GFA => subgraph.write_gfa(&mut output).map_err(|x| x.to_string())?,
-        OutputFormat::JSON => subgraph.write_json(&mut output).map_err(|x| x.to_string())?,
+        OutputFormat::GFA => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string())?,
+        OutputFormat::JSON => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string())?,
     }
 
     let end_time = Instant::now();
@@ -67,6 +67,7 @@ struct Config {
     offset: usize,
     context: usize,
     output: HaplotypeOutput,
+    cigar: bool,
     format: OutputFormat,
 }
 
@@ -87,6 +88,7 @@ impl Config {
         let context_desc = format!("context length in bp (default: {})", Self::DEFAULT_CONTEXT);
         opts.optopt("n", "context", &context_desc, "INT");
         opts.optflag("d", "distinct", "output distinct haplotypes with weights");
+        opts.optflag("C", "cigar", "output CIGAR strings for the haplotypes");
         opts.optflag("r", "reference-only", "output the reference but no other haplotypes");
         opts.optopt("f", "format", "output format (gfa or json, default: gfa)", "STR");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
@@ -117,6 +119,7 @@ impl Config {
         if matches.opt_present("r") {
             output = HaplotypeOutput::ReferenceOnly;
         }
+        let cigar = matches.opt_present("C");
 
         let mut format: OutputFormat = OutputFormat::GFA;
         if let Some(s) = matches.opt_str("f") {
@@ -127,7 +130,7 @@ impl Config {
             }
         }
 
-        Ok(Config { filename, path_name, offset, context, output, format, })
+        Ok(Config { filename, path_name, offset, context, output, cigar, format, })
     }
 
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {
@@ -187,6 +190,23 @@ struct GraphPosition {
     offset: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum EditOperation {
+    Match,
+    Insertion,
+    Deletion,
+}
+
+impl Display for EditOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditOperation::Match => write!(f, "M"),
+            EditOperation::Insertion => write!(f, "I"),
+            EditOperation::Deletion => write!(f, "D"),
+        }
+    }
+}
+
 //-----------------------------------------------------------------------------
 
 // TODO: Maybe this should be in the library.
@@ -224,7 +244,106 @@ impl Subgraph {
         Ok(Subgraph { records, paths, ref_id, ref_path, ref_interval, })
     }
 
-    fn write_gfa<T: Write>(&self, output: &mut T) -> io::Result<()> {
+    // Returns the total length of the nodes in the given path interval.
+    fn path_len(&self, path: &[usize], interval: Range<usize>) -> usize {
+        let mut result = 0;
+        for i in interval {
+            let record = self.records.get(&path[i]).unwrap();
+            result += record.sequence_len();
+        }
+        result
+    }
+
+    // Appends a new edit or extends the previous one.
+    fn append_edit(edits: &mut Vec<(EditOperation, usize)>, op: EditOperation, len: usize) {
+        if let Some((prev_op, prev_len)) = edits.last_mut() {
+            if *prev_op == op {
+                *prev_len += len;
+                return;
+            }
+        }
+        edits.push((op, len));
+    }
+
+    // Appends the relevant edits for two path intervals, which are assumed to be diverging.
+    fn append_edits(&self, edits: &mut Vec<(EditOperation, usize)>, path: &[usize], path_interval: Range<usize>, ref_path: &[usize], ref_interval: Range<usize>) {
+        let path_len = self.path_len(path, path_interval);
+        let ref_len = self.path_len(ref_path, ref_interval);
+        if path_len == ref_len && path_len > 0 && path_len < 5 {
+            Self::append_edit(edits, EditOperation::Match, path_len);
+        } else {
+            if path_len > 0 {
+                Self::append_edit(edits, EditOperation::Insertion, path_len);
+            }
+            if ref_len > 0 {
+                Self::append_edit(edits, EditOperation::Deletion, ref_len);
+            }
+        }
+    }
+
+    // Returns the CIGAR string for the given path, aligned to the reference path.
+    // Takes the alignment from the longest common subsequence of the node sequences.
+    // Diverging parts that are of equal length and at most 4 bp are represented as
+    // matches. Otherwise they are represented as an insertion and/or a deletion.
+    fn align_to_ref(&self, path_id: usize) -> Option<String> {
+        if path_id == self.ref_id || path_id >= self.paths.len() {
+            return None;
+        }
+
+        // Fill in the LCS matrix.
+        // TODO: Something more efficient?
+        let ref_path = &self.paths[self.ref_id].path;
+        let path = &self.paths[path_id].path;
+        let mut dp_matrix = vec![vec![0; ref_path.len() + 1]; path.len() + 1];
+        for path_offset in 0..path.len() {
+            for ref_offset in 0..ref_path.len() {
+                if path[path_offset] == ref_path[ref_offset] {
+                    dp_matrix[path_offset + 1][ref_offset + 1] = dp_matrix[path_offset][ref_offset] + 1;
+                } else {
+                    dp_matrix[path_offset + 1][ref_offset + 1] = dp_matrix[path_offset][ref_offset + 1].max(dp_matrix[path_offset + 1][ref_offset]);
+                }
+            }
+        }
+
+        // Trace back the LCS.
+        let mut lcs: Vec<(usize, usize)> = Vec::new();
+        let mut path_offset = path.len();
+        let mut ref_offset = ref_path.len();
+        while path_offset > 0 && ref_offset > 0 {
+            if path[path_offset - 1] == ref_path[ref_offset - 1] {
+                lcs.push((path_offset - 1, ref_offset - 1));
+                path_offset -= 1;
+                ref_offset -= 1;
+            } else if dp_matrix[path_offset - 1][ref_offset] > dp_matrix[path_offset][ref_offset - 1] {
+                path_offset -= 1;
+            } else {
+                ref_offset -= 1;
+            }
+        }
+        lcs.reverse();
+
+        // Convert the LCS to a sequence of edit operations
+        let mut edits: Vec<(EditOperation, usize)> = Vec::new();
+        path_offset = 0;
+        ref_offset = 0;
+        for (next_path_offset, next_ref_offset) in lcs.iter() {
+            self.append_edits(&mut edits, path, path_offset..*next_path_offset, ref_path, ref_offset..*next_ref_offset);
+            let node_len = self.records.get(&path[*next_path_offset]).unwrap().sequence_len();
+            Self::append_edit(&mut edits, EditOperation::Match, node_len);
+            path_offset = next_path_offset + 1;
+            ref_offset = next_ref_offset + 1;
+        }
+        self.append_edits(&mut edits, path, path_offset..path.len(), ref_path, ref_offset..ref_path.len());
+
+        // Convert the edits to a CIGAR string.
+        let mut result = String::new();
+        for (op, len) in edits.iter() {
+            result.push_str(&format!("{}{}", len, op));
+        }
+        Some(result)
+    }
+
+    fn write_gfa<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Header.
         let reference_samples = Some(self.ref_path.name.sample.clone());
         write_gfa_header(reference_samples, output)?;
@@ -264,12 +383,15 @@ impl Subgraph {
                 if id == self.ref_id {
                     continue;
                 }
-                let metadata = WalkMetadata::anonymous(
+                let mut metadata = WalkMetadata::anonymous(
                     haplotype,
                     &self.ref_path.name.contig,
                     path_info.len,
                     path_info.weight
                 );
+                if cigar {
+                    metadata.cigar = self.align_to_ref(id);
+                }
                 write_gfa_walk(&path_info.path, &metadata, output)?;
                 haplotype += 1;
             }
@@ -278,7 +400,7 @@ impl Subgraph {
         Ok(())
     }
 
-    fn write_json<T: Write>(&self, output: &mut T) -> io::Result<()> {
+    fn write_json<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Nodes.
         let mut nodes: Vec<JSONValue> = Vec::new();
         for (_, record) in self.records.iter() {
@@ -325,12 +447,15 @@ impl Subgraph {
             if id == self.ref_id {
                 continue;
             }
-            let metadata = WalkMetadata::anonymous(
+            let mut metadata = WalkMetadata::anonymous(
                 haplotype,
                 &self.ref_path.name.contig,
                 path_info.len,
                 path_info.weight
             );
+            if cigar {
+                metadata.cigar = self.align_to_ref(id);
+            }
             let path = json_path(&path_info.path, &metadata);
             paths.push(path);
             haplotype += 1;
@@ -625,6 +750,7 @@ struct WalkMetadata {
     name: GBZPathName,
     end: usize,
     weight: Option<usize>,
+    cigar: Option<String>,
 }
 
 impl WalkMetadata {
@@ -632,7 +758,7 @@ impl WalkMetadata {
         let mut name = path.name.clone();
         let end = name.fragment + interval.end;
         name.fragment += interval.start;
-        WalkMetadata { name, end, weight }
+        WalkMetadata { name, end, weight, cigar: None }
     }
 
     fn anonymous(haplotype: usize, contig: &str, len: usize, weight: Option<usize>) -> Self {
@@ -641,6 +767,7 @@ impl WalkMetadata {
             name: path_name,
             end: len,
             weight,
+            cigar: None,
         }
     }
 }
@@ -669,6 +796,10 @@ fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output: &mu
     if let Some(weight) = metadata.weight {
         buffer.extend_from_slice(b"\tWT:i:");
         buffer.extend_from_slice(weight.to_string().as_bytes());
+    }
+    if let Some(cigar) = &metadata.cigar {
+        buffer.extend_from_slice(b"\tCG:Z:");
+        buffer.extend_from_slice(cigar.as_bytes());
     }
     buffer.push(b'\n');
 
@@ -726,16 +857,20 @@ impl Display for JSONValue {
 }
 
 fn json_path(path: &[usize], metadata: &WalkMetadata) -> JSONValue {
-    JSONValue::Object(vec![
-        ("name".to_string(), JSONValue::String(metadata.name.path_fragment_name(metadata.end))),
-        ("weight".to_string(), JSONValue::Number(metadata.weight.unwrap_or(1))),
-        ("path".to_string(), JSONValue::Array(path.iter().map(
-            |x| JSONValue::Object(vec![
-                ("id".to_string(), JSONValue::String(support::node_id(*x).to_string())),
-                ("is_reverse".to_string(), JSONValue::Boolean(support::node_orientation(*x) == Orientation::Reverse)),
-            ])
-        ).collect())),
-    ])
+    let mut values: Vec<(String, JSONValue)> = Vec::new();
+    values.push(("name".to_string(), JSONValue::String(metadata.name.path_fragment_name(metadata.end))));
+    values.push(("weight".to_string(), JSONValue::Number(metadata.weight.unwrap_or(1))));
+    if let Some(cigar) = &metadata.cigar {
+        values.push(("cigar".to_string(), JSONValue::String(cigar.clone())));
+    }
+    values.push(("path".to_string(), JSONValue::Array(path.iter().map(
+        |x| JSONValue::Object(vec![
+            ("id".to_string(), JSONValue::String(support::node_id(*x).to_string())),
+            ("is_reverse".to_string(), JSONValue::Boolean(support::node_orientation(*x) == Orientation::Reverse)),
+        ])
+    ).collect())));
+
+    JSONValue::Object(values)
 }
 
 //-----------------------------------------------------------------------------
