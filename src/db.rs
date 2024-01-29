@@ -374,7 +374,7 @@ impl GBZBase {
             for handle in 0..metadata.paths() {
                 let fw_start = index.start(support::encode_node(handle, Orientation::Forward)).unwrap();
                 let rev_start = index.start(support::encode_node(handle, Orientation::Reverse)).unwrap();
-                let name = GBZPathName::from_metadata(metadata, handle).unwrap();
+                let name = FullPathName::from_metadata(metadata, handle).unwrap();
                 insert.execute((
                     handle,
                     fw_start.node, fw_start.offset,
@@ -466,7 +466,6 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// TODO: This should probably be moved after the integration.
 /// A record for an oriented node.
 ///
 /// The record corresponds to one row in table `Nodes`.
@@ -481,6 +480,8 @@ pub struct GBZRecord {
 }
 
 impl GBZRecord {
+    // TODO: From GBWT record + sequence. Or
+
     /// Returns a GBWT record based on this record.
     ///
     /// The lifetime of the returned record is tied to this record.
@@ -566,7 +567,7 @@ impl GBZRecord {
 /// * Reference paths have `0` both as the haplotype and the fragment, and their names are of the form `sample#contig`.
 /// * Haplotype paths start their haplotype numbers from `1`, and their names are of the form `sample#haplotype#contig@fragment`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GBZPathName {
+pub struct FullPathName {
     /// Sample name.
     pub sample: String,
 
@@ -580,13 +581,13 @@ pub struct GBZPathName {
     pub fragment: usize,
 }
 
-impl GBZPathName {
-    /// Returns the name of the path with the given handle in GBWT metadata, or [`None`] if the path does not exist.
-    pub fn from_metadata(metadata: &Metadata, handle: usize) -> Option<Self> {
-        let name = metadata.path(handle)?;
+impl FullPathName {
+    /// Returns the name of the path with the given identifier in GBWT metadata, or [`None`] if the path does not exist.
+    pub fn from_metadata(metadata: &Metadata, path_id: usize) -> Option<Self> {
+        let name = metadata.path(path_id)?;
         let sample = metadata.sample_name(name.sample());
         let contig = metadata.contig_name(name.contig());
-        Some(GBZPathName {
+        Some(FullPathName {
             sample, contig,
             haplotype: name.phase(),
             fragment: name.fragment(),
@@ -595,7 +596,7 @@ impl GBZPathName {
 
     /// Returns a new generic path name.
     pub fn generic(name: &str) -> Self {
-        GBZPathName {
+        FullPathName {
             sample: REF_SAMPLE.to_string(),
             contig: name.to_string(),
             haplotype: 0,
@@ -605,7 +606,7 @@ impl GBZPathName {
 
     /// Returns a new reference path name.
     pub fn reference(sample: &str, contig: &str) -> Self {
-        GBZPathName {
+        FullPathName {
             sample: sample.to_string(),
             contig: contig.to_string(),
             haplotype: 0,
@@ -615,7 +616,7 @@ impl GBZPathName {
 
     /// Returns a new haplotype path name.
     pub fn haplotype(sample: &str, contig: &str, haplotype: usize, fragment: usize) -> Self {
-        GBZPathName {
+        FullPathName {
             sample: sample.to_string(),
             contig: contig.to_string(),
             haplotype,
@@ -638,7 +639,7 @@ impl GBZPathName {
     }
 }
 
-impl fmt::Display for GBZPathName {
+impl fmt::Display for FullPathName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.sample == REF_SAMPLE {
             write!(f, "{}", self.contig)
@@ -667,7 +668,7 @@ pub struct GBZPath {
     pub rev_start: Pos,
 
     /// Path name.
-    pub name: GBZPathName,
+    pub name: FullPathName,
 
     /// Has this path been indexed for random access with [`GraphInterface::indexed_position`]?
     pub is_indexed: bool,
@@ -678,6 +679,8 @@ impl GBZPath {
     pub fn name(&self) -> String {
         self.name.to_string()
     }
+
+    // TODO: From GBWT index and path identifier.
 }
 
 //-----------------------------------------------------------------------------
@@ -689,7 +692,7 @@ impl GBZPath {
 /// # Examples
 ///
 /// ```
-/// use gbz_base::{GBZBase, GraphInterface, GBZPathName};
+/// use gbz_base::{GBZBase, GraphInterface, FullPathName};
 /// use gbwt::Orientation;
 /// use gbwt::support;
 /// use simple_sds::serialize;
@@ -725,7 +728,7 @@ impl GBZPath {
 /// );
 ///
 /// // Reference path for contig B goes from 21 to 22.
-/// let path_name = GBZPathName::generic("B");
+/// let path_name = FullPathName::generic("B");
 /// let path = interface.find_path(&path_name).unwrap().unwrap();
 /// assert_eq!(path.fw_start.node, handle);
 /// let next = record.to_gbwt_record().lf(path.fw_start.offset).unwrap();
@@ -828,7 +831,7 @@ impl<'a> GraphInterface<'a> {
         let handle = row.get(0)?;
         let fw_start = Pos::new(row.get(1)?, row.get(2)?);
         let rev_start = Pos::new(row.get(3)?, row.get(4)?);
-        let name = GBZPathName {
+        let name = FullPathName {
             sample: row.get(5)?,
             contig: row.get(6)?,
             haplotype: row.get(7)?,
@@ -849,7 +852,7 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns the path with the given name, or [`None`] if the path does not exist.
-    pub fn find_path(&mut self, name: &GBZPathName) -> Result<Option<GBZPath>, String> {
+    pub fn find_path(&mut self, name: &FullPathName) -> Result<Option<GBZPath>, String> {
         self.find_path.query_row(
             (&name.sample, &name.contig, name.haplotype, name.fragment),
             Self::row_to_gbz_path

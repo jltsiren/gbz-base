@@ -1,6 +1,6 @@
 // TODO: document, tests
 
-use crate::{GBZRecord, GBZPath, GraphInterface, GBZPathName};
+use crate::{GBZRecord, GBZPath, GraphInterface, FullPathName};
 use crate::formats::{self, WalkMetadata, JSONValue};
 
 use std::cmp::Reverse;
@@ -59,7 +59,7 @@ pub struct Subgraph {
 }
 
 impl Subgraph {
-    pub fn new(graph: &mut GraphInterface, path_name: &GBZPathName, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
+    pub fn new(graph: &mut GraphInterface, path_name: &FullPathName, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
         // Find the reference path.
         let ref_path = graph.find_path(path_name)?;
         let ref_path = ref_path.ok_or(format!("Cannot find path {}", path_name))?;

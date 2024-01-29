@@ -1,4 +1,4 @@
-use gbz_base::{GBZBase, GraphInterface, GBZPathName, Subgraph, HaplotypeOutput};
+use gbz_base::{GBZBase, GraphInterface, FullPathName, Subgraph, HaplotypeOutput};
 
 use std::ops::Range;
 use std::time::Instant;
@@ -49,7 +49,7 @@ enum OutputFormat {
 
 struct Config {
     filename: String,
-    path_name: GBZPathName,
+    path_name: FullPathName,
     offset: usize,
     context: usize,
     output: HaplotypeOutput,
@@ -95,7 +95,7 @@ impl Config {
 
         let sample = matches.opt_str("s").ok_or("Sample name must be provided with --sample".to_string())?;
         let contig = matches.opt_str("c").ok_or("Contig name must be provided with --contig".to_string())?;
-        let path_name = GBZPathName::reference(&sample, &contig);
+        let path_name = FullPathName::reference(&sample, &contig);
         let (offset, context) = Self::parse_offset_and_context(&matches)?;
 
         let mut output = HaplotypeOutput::All;

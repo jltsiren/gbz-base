@@ -47,7 +47,7 @@ fn existing_path_by_handle(interface: &mut GraphInterface, path_handle: usize) -
     path.unwrap()
 }
 
-fn path_by_name(interface: &mut GraphInterface, name: &GBZPathName) -> Option<GBZPath> {
+fn path_by_name(interface: &mut GraphInterface, name: &FullPathName) -> Option<GBZPath> {
     let path = interface.find_path(name);
     assert!(path.is_ok(), "Failed to get path by name: {}", path.unwrap_err());
     path.unwrap()
@@ -287,7 +287,7 @@ fn nonexistent_paths() {
     assert!(by_handle.is_none(), "Found a nonexistent path by handle");
 
     // Paths by name.
-    let path_name = GBZPathName::reference("fake", "path");
+    let path_name = FullPathName::reference("fake", "path");
     let by_metadata = path_by_name(&mut interface, &path_name);
     assert!(by_metadata.is_none(), "Found a nonexistent path by name");
 

@@ -1,18 +1,18 @@
 // TODO: document, tests
 
-use crate::{GBZPath, GBZPathName, GBZRecord};
+use crate::{GBZPath, FullPathName, GBZRecord};
 
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::ops::Range;
 
-use gbwt::Orientation;
+use gbwt::{Metadata, Orientation};
 use gbwt::support;
 
 //-----------------------------------------------------------------------------
 
 pub struct WalkMetadata {
-    name: GBZPathName,
+    name: FullPathName,
     end: usize,
     weight: Option<usize>,
     cigar: Option<String>,
@@ -26,14 +26,23 @@ impl WalkMetadata {
         WalkMetadata { name, end, weight, cigar: None }
     }
 
+    pub fn haplotype(metadata: &Metadata, path_id: usize, len: usize) -> Option<Self> {
+        let name = FullPathName::from_metadata(metadata, path_id)?;
+        Some(WalkMetadata { name, end: len, weight: None, cigar: None })
+    }
+
     pub fn anonymous(haplotype: usize, contig: &str, len: usize, weight: Option<usize>) -> Self {
-        let path_name = GBZPathName::haplotype("unknown", contig, haplotype, 0);
+        let path_name = FullPathName::haplotype("unknown", contig, haplotype, 0);
         WalkMetadata {
             name: path_name,
             end: len,
             weight,
             cigar: None,
         }
+    }
+
+    pub fn add_weight(&mut self, weight: Option<usize>) {
+        self.weight = weight;
     }
 
     pub fn add_cigar(&mut self, cigar: Option<String>) {
