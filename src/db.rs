@@ -390,6 +390,7 @@ impl GBZBase {
         Ok(())
     }
 
+    // TODO: Extract the functionality for selecting reference paths and indexed positions.
     fn index_reference_paths(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Indexing reference paths");
 

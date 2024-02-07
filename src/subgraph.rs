@@ -1,4 +1,10 @@
-// TODO: document, tests
+//! A subgraph in a GBZ graph.
+//!
+//! This module provides functionality for extracting a subgraph around a specific position or interval of a specific path.
+//! The subgraph contains all nodes within a given context and all edges between them.
+//! All paths within the subgraph are also extracted, but they do not have any metadata associated with them.
+
+// TODO: tests
 
 use crate::{GBZRecord, GBZPath, GraphInterface, FullPathName};
 use crate::formats::{self, WalkMetadata, JSONValue};
@@ -15,50 +21,60 @@ use gbwt::support;
 
 //-----------------------------------------------------------------------------
 
-// TODO: Should these be moved after the integration?
-
+/// Output options for the haplotypes in the subgraph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HaplotypeOutput {
+    /// Output all haplotypes as separate paths.
     All,
+
+    /// Output only distinct haplotypes with the number of duplicates stored in the weight field.
     Distinct,
+
+    /// Output only the reference path.
     ReferenceOnly,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GraphPosition {
-    node: usize,
-    orientation: Orientation,
-    offset: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum EditOperation {
-    Match,
-    Insertion,
-    Deletion,
-}
-
-impl Display for EditOperation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EditOperation::Match => write!(f, "M"),
-            EditOperation::Insertion => write!(f, "I"),
-            EditOperation::Deletion => write!(f, "D"),
-        }
-    }
-}
+// TODO: QueryArguments: path name, offset, context, output?
 
 //-----------------------------------------------------------------------------
 
+// TODO: PathIndex; build it from GBZ, use when creating GBZ-base
+
+//-----------------------------------------------------------------------------
+
+/// A subgraph based on a context around a position or an interval of a specific path.
+///
+/// The path used for extracting the subgraph becomes the reference path for it.
+/// Non-reference haplotypes do not have any metadata associated with them, as we cannot determine the identifier of a path from its GBWT position efficiently.
 pub struct Subgraph {
+    // Node records for the subgraph.
     records: BTreeMap<usize, GBZRecord>,
+
+    // Paths in the subgraph.
     paths: Vec<PathInfo>,
+
+    // Offset in `paths` for the reference path.
     ref_id: usize,
+
+    // Metadata for the reference path.
     ref_path: GBZPath,
+
+    // Interval of the reference path that is present in the subgraph.
     ref_interval: Range<usize>,
 }
 
 impl Subgraph {
+    // TODO: From GBZ + PathIndex
+
+    /// Extracts a subgraph around a specific position in a specific path.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: Graph interface for a GBZ-base graph.
+    /// * `path_name`: Name of the path to use as the reference path.
+    /// * `offset`: Position in the reference path (in bp).
+    /// * `context`: Context size around the reference position (in bp).
+    /// * `haplotype_output`: How to output the haplotypes.
     pub fn new(graph: &mut GraphInterface, path_name: &FullPathName, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
         // Find the reference path.
         let ref_path = graph.find_path(path_name)?;
@@ -183,6 +199,9 @@ impl Subgraph {
         Some(result)
     }
 
+    /// Writes the subgraph in the GFA format to the given output.
+    ///
+    /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
     pub fn write_gfa<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Header.
         let reference_samples = Some(self.ref_path.name.sample.clone());
@@ -240,6 +259,9 @@ impl Subgraph {
         Ok(())
     }
 
+    /// Writes the subgraph in the JSON format to the given output.
+    ///
+    /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
     pub fn write_json<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Nodes.
         let mut nodes: Vec<JSONValue> = Vec::new();
@@ -423,6 +445,32 @@ impl PathInfo {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum EditOperation {
+    Match,
+    Insertion,
+    Deletion,
+}
+
+impl Display for EditOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditOperation::Match => write!(f, "M"),
+            EditOperation::Insertion => write!(f, "I"),
+            EditOperation::Deletion => write!(f, "D"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct GraphPosition {
+    node: usize,
+    orientation: Orientation,
+    offset: usize,
+}
+
+//-----------------------------------------------------------------------------
 
 fn next_pos(pos: Pos, successors: &BTreeMap<usize, Vec<(Pos, bool)>>) -> Option<Pos> {
     if let Some(v) = successors.get(&pos.node) {

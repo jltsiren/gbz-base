@@ -11,7 +11,7 @@
 //!
 //! ### Basic concepts
 //!
-//! Nodes are accessed by handles, which are [`GBWT`] node identifiers.
+//! Nodes are accessed by handles, which are [`gbwt::GBWT`] node identifiers.
 //! A handle encodes both the identifier of the node in the underlying graph and its orientation.
 //! Each node record corresponds to a row in table `Nodes`, with the handle as its primary key.
 //!
