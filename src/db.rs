@@ -390,7 +390,77 @@ impl GBZBase {
         Ok(())
     }
 
-    // TODO: Extract the functionality for selecting reference paths and indexed positions.
+    // TODO: This should be a GBZ method in the algorithms section.
+    // TODO: Tests
+    /// Extracts reference path positions for indexing.
+    ///
+    /// This indexes all generic and reference paths in the graph.
+    /// The positions are indexed approximately every `interval` base pairs at the start of a node.
+    /// The return value contains a tuple for each indexed path.
+    /// The first component is the path handle (its identifier in ther graph).
+    /// The second component lists the indexed positions a
+    pub fn reference_positions(graph: &GBZ, interval: usize, verbose: bool) -> Vec<(usize, Vec<(usize, Pos)>)> {
+        if verbose {
+            eprintln!("Extracting reference path positions");
+        }
+
+        // Determine reference samples.
+        let metadata = graph.metadata().unwrap();
+        let mut ref_samples: HashSet<usize> = HashSet::new();
+        if verbose {
+            eprint!("Reference samples:");
+        }
+        if let Some(id) = metadata.sample_id(REF_SAMPLE) {
+            ref_samples.insert(id);
+            if verbose {
+                eprint!(" {}", REF_SAMPLE);
+            }
+        }
+        let index: &GBWT = graph.as_ref();
+        let tags = index.tags();
+        if let Some(samples) = tags.get(REFERENCE_SAMPLES_KEY) {
+            for sample_name in samples.split(' ') {
+                if let Some(id) = metadata.sample_id(sample_name) {
+                    ref_samples.insert(id);
+                    if verbose {
+                        eprint!(" {}", sample_name);
+                    }
+                }
+            }
+        }
+        eprintln!();
+
+        // Determine and index reference paths.
+        let mut indexed_paths: usize = 0;
+        let mut indexed_positions: usize = 0;
+        let mut result = Vec::new();
+        for (path_handle, name) in metadata.path_iter().enumerate() {
+            if ref_samples.contains(&name.sample()) {
+                let mut indexed_positions_for_path = Vec::new();
+                let mut path_offset = 0;
+                let mut next = 0;
+                let sequence_id = support::encode_path(path_handle, Orientation::Forward);
+                let mut pos = index.start(sequence_id);
+                while let Some(p) = pos {
+                    if path_offset >= next {
+                        indexed_positions_for_path.push((path_offset, p));
+                        indexed_positions += 1;
+                        next = path_offset + interval;
+                    }
+                    path_offset += graph.sequence_len(support::node_id(p.node)).unwrap();
+                    pos = index.forward(p);
+                }
+                result.push((path_handle, indexed_positions_for_path));
+                indexed_paths += 1;
+            }
+        }
+
+        if verbose {
+            eprintln!("Found {} positions on {} reference paths", indexed_positions, indexed_paths);
+        }
+        result
+    }
+
     fn index_reference_paths(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Indexing reference paths");
 
@@ -406,29 +476,14 @@ impl GBZBase {
             (),
         )?;
 
-        // Determine reference samples.
-        eprint!("Reference samples:");
-        let metadata = graph.metadata().unwrap();
-        let mut ref_samples: HashSet<usize> = HashSet::new();
-        if let Some(id) = metadata.sample_id(REF_SAMPLE) {
-            ref_samples.insert(id);
-            eprint!(" {}", REF_SAMPLE);
+        let reference_paths = Self::reference_positions(graph, Self::INDEX_INTERVAL, true);
+        if reference_paths.is_empty() {
+            eprintln!("No reference paths to index");
+            return Ok(());
         }
-        let index: &GBWT = graph.as_ref();
-        let tags = index.tags();
-        if let Some(samples) = tags.get(REFERENCE_SAMPLES_KEY) {
-            for sample_name in samples.split(' ') {
-                if let Some(id) = metadata.sample_id(sample_name) {
-                    ref_samples.insert(id);
-                    eprint!(" {}", sample_name);
-                }
-            }
-        }
-        eprintln!();
 
-        // Determine and index reference paths.
-        let mut indexed_paths = 0;
-        let mut indexed_positions = 0;
+        // Insert the reference positions into the database.
+        eprintln!("Inserting indexed positions");
         let transaction = connection.transaction()?;
         {
             let mut set_as_indexed = transaction.prepare(
@@ -438,29 +493,15 @@ impl GBZBase {
                 "INSERT INTO ReferenceIndex(path_handle, path_offset, node_handle, node_offset)
                 VALUES (?1, ?2, ?3, ?4)"
             )?;
-            for (path_handle, name) in metadata.path_iter().enumerate() {
-                if ref_samples.contains(&name.sample()) {
-                    set_as_indexed.execute((path_handle,))?;
-                    let mut path_offset = 0;
-                    let mut next = 0;
-                    let sequence_id = support::encode_path(path_handle, Orientation::Forward);
-                    let mut pos = index.start(sequence_id);
-                    while let Some(p) = pos {
-                        if path_offset >= next {
-                            insert_position.execute((path_handle, path_offset, p.node, p.offset))?;
-                            indexed_positions += 1;
-                            next = path_offset + Self::INDEX_INTERVAL;
-                        }
-                        path_offset += graph.sequence_len(support::node_id(p.node)).unwrap();
-                        pos = index.forward(p);
-                    }
-                    indexed_paths += 1;
+            for (path_handle, positions) in reference_paths.iter() {
+                set_as_indexed.execute((path_handle,))?;
+                for (path_offset, gbwt_position) in positions.iter() {
+                    insert_position.execute((path_handle, path_offset, gbwt_position.node, gbwt_position.offset))?;
                 }
             }
         }
         transaction.commit()?;
 
-        eprintln!("Indexed {} positions on {} reference paths", indexed_positions, indexed_paths);
         Ok(())
     }
 }

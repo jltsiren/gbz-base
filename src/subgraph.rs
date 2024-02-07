@@ -38,7 +38,7 @@ pub enum HaplotypeOutput {
 
 //-----------------------------------------------------------------------------
 
-// TODO: PathIndex; build it from GBZ, use when creating GBZ-base
+// TODO: PathIndex; build it from GBZ using reference_positions()
 
 //-----------------------------------------------------------------------------
 
