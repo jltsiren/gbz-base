@@ -390,8 +390,27 @@ impl GBZBase {
         Ok(())
     }
 
+    // TODO: This should be a GBZ or GBWT method.
+    /// Returns a list of sample identifiers for reference and generic paths in the graph.
+    pub fn reference_samples(graph: &GBZ) -> HashSet<usize> {
+        let mut result: HashSet<usize> = HashSet::new();
+        let index: &GBWT = graph.as_ref();
+        let tags = index.tags();
+        let metadata = graph.metadata().unwrap();
+        if let Some(id) = metadata.sample_id(REF_SAMPLE) {
+            result.insert(id);
+        }
+        if let Some(samples) = tags.get(REFERENCE_SAMPLES_KEY) {
+            for sample_name in samples.split(' ') {
+                if let Some(id) = metadata.sample_id(sample_name) {
+                    result.insert(id);
+                }
+            }
+        }
+        result
+    }
+
     // TODO: This should be a GBZ method in the algorithms section.
-    // TODO: Tests
     /// Extracts reference path positions for indexing.
     ///
     /// This indexes all generic and reference paths in the graph.
@@ -406,33 +425,23 @@ impl GBZBase {
 
         // Determine reference samples.
         let metadata = graph.metadata().unwrap();
-        let mut ref_samples: HashSet<usize> = HashSet::new();
+        let ref_samples = Self::reference_samples(graph);
+        if ref_samples.is_empty() {
+            eprintln!("No reference samples to index");
+            return Vec::new();
+        }
         if verbose {
             eprint!("Reference samples:");
-        }
-        if let Some(id) = metadata.sample_id(REF_SAMPLE) {
-            ref_samples.insert(id);
-            if verbose {
-                eprint!(" {}", REF_SAMPLE);
+            for id in ref_samples.iter() {
+                eprint!(" {}", metadata.sample_name(*id));
             }
+            eprintln!();
         }
-        let index: &GBWT = graph.as_ref();
-        let tags = index.tags();
-        if let Some(samples) = tags.get(REFERENCE_SAMPLES_KEY) {
-            for sample_name in samples.split(' ') {
-                if let Some(id) = metadata.sample_id(sample_name) {
-                    ref_samples.insert(id);
-                    if verbose {
-                        eprint!(" {}", sample_name);
-                    }
-                }
-            }
-        }
-        eprintln!();
 
         // Determine and index reference paths.
         let mut indexed_paths: usize = 0;
         let mut indexed_positions: usize = 0;
+        let index: &GBWT = graph.as_ref();
         let mut result = Vec::new();
         for (path_handle, name) in metadata.path_iter().enumerate() {
             if ref_samples.contains(&name.sample()) {
@@ -522,7 +531,7 @@ pub struct GBZRecord {
 }
 
 impl GBZRecord {
-    // TODO: From GBWT record + sequence. Or
+    // TODO: From GBWT record + sequence.
 
     /// Returns a GBWT record based on this record.
     ///
@@ -722,7 +731,20 @@ impl GBZPath {
         self.name.to_string()
     }
 
-    // TODO: From GBWT index and path identifier.
+    /// Creates a new path record from the given GBWT index and path identifier.
+    ///
+    /// Returns [`None`] if the path does not exist or the GBWT index does not contain metadata.
+    pub fn from_gbwt(index: &GBWT, path_id: usize) -> Option<Self> {
+        let fw_start = index.start(support::encode_path(path_id, Orientation::Forward))?;
+        let rev_start = index.start(support::encode_path(path_id, Orientation::Reverse))?;
+        let name = FullPathName::from_metadata(index.metadata()?, path_id)?;
+        Some(GBZPath {
+            handle: path_id,
+            fw_start, rev_start,
+            name,
+            is_indexed: false,
+        })
+    }
 }
 
 //-----------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 use super::*;
 
-use gbwt::{GBWT, Metadata};
+use gbwt::{Metadata, GBWT};
 use std::path::PathBuf;
 
 //-----------------------------------------------------------------------------
@@ -236,6 +236,13 @@ fn get_path() {
         assert!(found_path.is_some(), "Could not find path {} by name", path_handle);
         let found_path = found_path.unwrap();
         assert_eq!(found_path, path, "Wrong path found by name for path {}", path_handle);
+
+        // Now we know that `path` is correct, so we can use it to check `GBZPath` creation from a GBWT index.
+        let from_index = GBZPath::from_gbwt(gbwt, path_handle);
+        assert!(from_index.is_some(), "Could not create GBZPath {} from GBWT", path_handle);
+        let mut from_index = from_index.unwrap();
+        from_index.is_indexed = path.is_indexed;
+        assert_eq!(from_index, path, "Wrong GBZPath {} created from GBWT", path_handle);
     }
 
     drop(interface);
@@ -355,6 +362,73 @@ fn indexed_position() {
     drop(interface);
     drop(database);
     let _ = std::fs::remove_file(&db_file);
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: These should be GBZ tests
+
+#[test]
+fn reference_samples() {
+    let filename = support::get_test_data("example.gbz");
+    let graph: GBZ = serialize::load_from(&filename).unwrap();
+    let metadata = graph.metadata().unwrap();
+
+    // The graph contains reference paths and haplotype paths.
+    let samples = GBZBase::reference_samples(&graph);
+    assert_eq!(samples.len(), 1, "Wrong number of reference samples");
+    assert!(samples.contains(&metadata.sample_id(REF_SAMPLE).unwrap()), "Sample {} is not a reference sample", REF_SAMPLE);
+
+    // TODO: We need a way of changing tags in the graph and the index.
+    // Then we can test setting an existent/nonexistent reference sample.
+}
+
+#[test]
+fn reference_positions() {
+    let filename = support::get_test_data("example.gbz");
+    let graph: GBZ = serialize::load_from(&filename).unwrap();
+    let index: &GBWT = graph.as_ref();
+    let metadata = graph.metadata().unwrap();
+    let ref_samples = GBZBase::reference_samples(&graph);
+
+    // For each reference path, collect the starting positions of all nodes.
+    let mut node_starts: Vec<(usize, Vec<(usize, Pos)>)> = Vec::new();
+    for (path_id, path_name) in metadata.path_iter().enumerate() {
+        if !ref_samples.contains(&path_name.sample()) {
+            continue;
+        }
+        let mut path_offset = 0;
+        let mut curr = index.start(support::encode_path(path_id, Orientation::Forward));
+        let mut positions: Vec<(usize, Pos)> = Vec::new();
+        while let Some(p) = curr {
+            positions.push((path_offset, p));
+            path_offset += graph.sequence_len(support::node_id(p.node)).unwrap();
+            curr = index.forward(p);
+        }
+        node_starts.push((path_id, positions));
+    }
+
+    // Check the indexed positions with various intervals.
+    for interval in 0..10 {
+        let paths = GBZBase::reference_positions(&graph, interval, false);
+        assert_eq!(paths.len(), node_starts.len(), "Wrong number of reference positions for interval {}", interval);
+        for i in 0..paths.len() {
+            assert_eq!(paths[i].0, node_starts[i].0, "Wrong path id at offset {} with interval {}", i, interval);
+            let mut next = 0;
+            let mut iter = paths[i].1.iter();
+            for (offset, pos) in node_starts[i].1.iter() {
+                if *offset >= next {
+                    let indexed = iter.next();
+                    assert!(indexed.is_some(), "Missing indexed position for path {} with interval {}", paths[i].0, interval);
+                    let indexed = indexed.unwrap();
+                    assert_eq!(indexed.0, *offset, "Wrong indexed offset for path {} with interval {}", paths[i].0, interval);
+                    assert_eq!(indexed.1, *pos, "Wrong indexed GBWT position for path {} with interval {}", paths[i].0, interval);
+                    next = offset + interval;
+                }
+            }
+            assert!(iter.next().is_none(), "Too many indexed positions for path {} with interval {}", paths[i].0, interval);
+        }
+    }
 }
 
 //-----------------------------------------------------------------------------
