@@ -648,8 +648,8 @@ impl FullPathName {
     /// Returns a new generic path name.
     pub fn generic(name: &str) -> Self {
         FullPathName {
-            sample: REF_SAMPLE.to_string(),
-            contig: name.to_string(),
+            sample: String::from(REF_SAMPLE),
+            contig: String::from(name),
             haplotype: 0,
             fragment: 0,
         }
@@ -658,8 +658,8 @@ impl FullPathName {
     /// Returns a new reference path name.
     pub fn reference(sample: &str, contig: &str) -> Self {
         FullPathName {
-            sample: sample.to_string(),
-            contig: contig.to_string(),
+            sample: String::from(sample),
+            contig: String::from(contig),
             haplotype: 0,
             fragment: 0,
         }
@@ -668,8 +668,8 @@ impl FullPathName {
     /// Returns a new haplotype path name.
     pub fn haplotype(sample: &str, contig: &str, haplotype: usize, fragment: usize) -> Self {
         FullPathName {
-            sample: sample.to_string(),
-            contig: contig.to_string(),
+            sample: String::from(sample),
+            contig: String::from(contig),
             haplotype,
             fragment,
         }
@@ -744,6 +744,12 @@ impl GBZPath {
             name,
             is_indexed: false,
         })
+    }
+}
+
+impl AsRef<FullPathName> for GBZPath {
+    fn as_ref(&self) -> &FullPathName {
+        &self.name
     }
 }
 

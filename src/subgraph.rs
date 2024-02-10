@@ -231,7 +231,7 @@ impl Subgraph {
 
         // Paths.
         let ref_metadata = WalkMetadata::path_interval(
-            &self.ref_path,
+            self.ref_path.as_ref(),
             self.ref_interval.clone(),
             self.paths[self.ref_id].weight
         );
@@ -298,7 +298,7 @@ impl Subgraph {
         // Paths.
         let mut paths: Vec<JSONValue> = Vec::new();
         let ref_metadata = WalkMetadata::path_interval(
-            &self.ref_path,
+            self.ref_path.as_ref(),
             self.ref_interval.clone(),
             self.paths[self.ref_id].weight
         );

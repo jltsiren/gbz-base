@@ -24,9 +24,7 @@
 //! The support for it is based on building a [`JSONValue`] object recursively and then writing it using the [`Display`] trait.
 //! There is also a helper function [`json_path`] for building a JSON object for a path with metadata.
 
-// TODO: tests
-
-use crate::{GBZPath, FullPathName, GBZRecord};
+use crate::{FullPathName, GBZRecord};
 
 use std::fmt::Display;
 use std::io::{self, Write};
@@ -34,6 +32,9 @@ use std::ops::Range;
 
 use gbwt::{Metadata, Orientation};
 use gbwt::support;
+
+#[cfg(test)]
+mod tests;
 
 //-----------------------------------------------------------------------------
 
@@ -57,17 +58,19 @@ impl WalkMetadata {
     ///
     /// # Arguments
     ///
-    /// * `path`: The path.
+    /// * `path_name`: Name of the path.
     /// * `interval`: The interval of the path.
     /// * `weight`: Optional weight for the path.
-    pub fn path_interval(path: &GBZPath, interval: Range<usize>, weight: Option<usize>) -> Self {
-        let mut name = path.name.clone();
+    pub fn path_interval(path_name: &FullPathName, interval: Range<usize>, weight: Option<usize>) -> Self {
+        let mut name = path_name.clone();
         let end = name.fragment + interval.end;
         name.fragment += interval.start;
         WalkMetadata { name, end, weight, cigar: None }
     }
 
-    /// Creates new metadata for a haplotype using GBWT metadata.
+    /// Creates new metadata for a haplotype path using GBWT metadata.
+    ///
+    /// Returns [`None`] if the path does not exist.
     ///
     /// # Arguments
     ///
