@@ -4,7 +4,7 @@
 //! The subgraph contains all nodes within a given context and all edges between them.
 //! All paths within the subgraph are also extracted, but they do not have any metadata associated with them.
 
-// TODO: tests
+// TODO: tests after integration
 
 use crate::{GBZRecord, GBZPath, GraphInterface, FullPathName};
 use crate::formats::{self, WalkMetadata, JSONValue};
@@ -64,7 +64,17 @@ pub struct Subgraph {
 }
 
 impl Subgraph {
-    // TODO: From GBZ + PathIndex
+    /// Returns the number of nodes in the subgraph.
+    pub fn node_count(&self) -> usize {
+        self.records.len() / 2
+    }
+
+    /// Returns the number of paths in the subgraph.
+    pub fn path_count(&self) -> usize {
+        self.paths.len()
+    }
+
+    // TODO: From GBZ + PathIndex; with an example
 
     /// Extracts a subgraph around a specific position in a specific path.
     ///
@@ -75,6 +85,40 @@ impl Subgraph {
     /// * `offset`: Position in the reference path (in bp).
     /// * `context`: Context size around the reference position (in bp).
     /// * `haplotype_output`: How to output the haplotypes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbz_base::{GBZBase, GraphInterface, FullPathName, Subgraph, HaplotypeOutput};
+    /// use gbwt::support;
+    /// use simple_sds::serialize;
+    /// use std::fs;
+    ///
+    /// // Create the database.
+    /// let gbz_file = support::get_test_data("example.gbz");
+    /// let db_file = serialize::temp_file_name("subgraph");
+    /// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    /// assert!(result.is_ok());
+    ///
+    /// // Open the database and create a graph interface.
+    /// let database = GBZBase::open(&db_file).unwrap();
+    /// let mut interface = GraphInterface::new(&database).unwrap();
+    ///
+    /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
+    /// let path_name = FullPathName::generic("A");
+    /// let subgraph = Subgraph::new(&mut interface, &path_name, 2, 1, HaplotypeOutput::All);
+    /// assert!(subgraph.is_ok());
+    /// let subgraph = subgraph.unwrap();
+    ///
+    /// // The subgraph should be centered around 1 bp node 14 of degree 4.
+    /// assert_eq!(subgraph.node_count(), 5);
+    /// assert_eq!(subgraph.path_count(), 3);
+    ///
+    /// // Clean up.
+    /// drop(interface);
+    /// drop(database);
+    /// fs::remove_file(&db_file).unwrap();
+    /// ```
     pub fn new(graph: &mut GraphInterface, path_name: &FullPathName, offset: usize, context: usize, haplotype_output: HaplotypeOutput) -> Result<Self, String> {
         // Find the reference path.
         let ref_path = graph.find_path(path_name)?;
@@ -204,13 +248,12 @@ impl Subgraph {
     /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
     pub fn write_gfa<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Header.
-        let reference_samples = Some(self.ref_path.name.sample.clone());
-        formats::write_gfa_header(reference_samples, output)?;
+        formats::write_gfa_header(Some(&self.ref_path.name.sample), output)?;
 
         // Segments.
         for (handle, record) in self.records.iter() {
             if support::node_orientation(*handle) == Orientation::Forward {
-                formats::write_gfa_segment(record, output)?;
+                formats::write_gfa_node(record.id(), record.sequence(), output)?;
             }
         }
 

@@ -531,7 +531,7 @@ pub struct GBZRecord {
 }
 
 impl GBZRecord {
-    // TODO: From GBWT record + sequence.
+    // TODO: from_gbz(graph, handle) after integration.
 
     /// Returns a GBWT record based on this record.
     ///
