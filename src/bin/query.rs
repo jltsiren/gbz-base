@@ -1,4 +1,6 @@
-use gbz_base::{GBZBase, GraphInterface, FullPathName, Subgraph, HaplotypeOutput};
+use gbz_base::{GBZBase, GraphInterface, Subgraph, HaplotypeOutput};
+
+use gbwt::FullPathName;
 
 use std::ops::Range;
 use std::time::Instant;

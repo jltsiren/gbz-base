@@ -1,13 +1,11 @@
 //! GBZ-base: A SQLite database storing a GBZ graph.
 // TODO: After the integration, move the module-level documentation here.
 
-use std::collections::HashSet;
 use std::path::Path;
-use std::fmt;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
-use gbwt::{GBWT, GBZ, Metadata, Orientation, Pos, REF_SAMPLE, REFERENCE_SAMPLES_KEY};
+use gbwt::{GBWT, GBZ, Orientation, Pos, FullPathName};
 use gbwt::bwt::{BWT, Record};
 use gbwt::support;
 
@@ -390,86 +388,6 @@ impl GBZBase {
         Ok(())
     }
 
-    // TODO: This should be a GBZ or GBWT method.
-    /// Returns a list of sample identifiers for reference and generic paths in the graph.
-    pub fn reference_samples(graph: &GBZ) -> HashSet<usize> {
-        let mut result: HashSet<usize> = HashSet::new();
-        let index: &GBWT = graph.as_ref();
-        let tags = index.tags();
-        let metadata = graph.metadata().unwrap();
-        if let Some(id) = metadata.sample_id(REF_SAMPLE) {
-            result.insert(id);
-        }
-        if let Some(samples) = tags.get(REFERENCE_SAMPLES_KEY) {
-            for sample_name in samples.split(' ') {
-                if let Some(id) = metadata.sample_id(sample_name) {
-                    result.insert(id);
-                }
-            }
-        }
-        result
-    }
-
-    // TODO: This should be a GBZ method in the algorithms section.
-    /// Extracts reference path positions for indexing.
-    ///
-    /// This indexes all generic and reference paths in the graph.
-    /// The positions are indexed approximately every `interval` base pairs at the start of a node.
-    /// The return value contains a tuple for each indexed path.
-    /// The first component is the path handle (its identifier in ther graph).
-    /// The second component lists the indexed positions a
-    pub fn reference_positions(graph: &GBZ, interval: usize, verbose: bool) -> Vec<(usize, Vec<(usize, Pos)>)> {
-        if verbose {
-            eprintln!("Extracting reference path positions");
-        }
-
-        // Determine reference samples.
-        let metadata = graph.metadata().unwrap();
-        let ref_samples = Self::reference_samples(graph);
-        if ref_samples.is_empty() {
-            eprintln!("No reference samples to index");
-            return Vec::new();
-        }
-        if verbose {
-            eprint!("Reference samples:");
-            for id in ref_samples.iter() {
-                eprint!(" {}", metadata.sample_name(*id));
-            }
-            eprintln!();
-        }
-
-        // Determine and index reference paths.
-        let mut indexed_paths: usize = 0;
-        let mut indexed_positions: usize = 0;
-        let index: &GBWT = graph.as_ref();
-        let mut result = Vec::new();
-        for (path_handle, name) in metadata.path_iter().enumerate() {
-            if ref_samples.contains(&name.sample()) {
-                let mut indexed_positions_for_path = Vec::new();
-                let mut path_offset = 0;
-                let mut next = 0;
-                let sequence_id = support::encode_path(path_handle, Orientation::Forward);
-                let mut pos = index.start(sequence_id);
-                while let Some(p) = pos {
-                    if path_offset >= next {
-                        indexed_positions_for_path.push((path_offset, p));
-                        indexed_positions += 1;
-                        next = path_offset + interval;
-                    }
-                    path_offset += graph.sequence_len(support::node_id(p.node)).unwrap();
-                    pos = index.forward(p);
-                }
-                result.push((path_handle, indexed_positions_for_path));
-                indexed_paths += 1;
-            }
-        }
-
-        if verbose {
-            eprintln!("Found {} positions on {} reference paths", indexed_positions, indexed_paths);
-        }
-        result
-    }
-
     fn index_reference_paths(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Indexing reference paths");
 
@@ -485,7 +403,7 @@ impl GBZBase {
             (),
         )?;
 
-        let reference_paths = Self::reference_positions(graph, Self::INDEX_INTERVAL, true);
+        let reference_paths: Vec<(usize, Vec<(usize, Pos)>)> = graph.reference_positions(Self::INDEX_INTERVAL, true);
         if reference_paths.is_empty() {
             eprintln!("No reference paths to index");
             return Ok(());
@@ -531,7 +449,7 @@ pub struct GBZRecord {
 }
 
 impl GBZRecord {
-    // TODO: from_gbz(graph, handle) after integration.
+    // FIXME: from_gbz(graph, handle) -> Option<Self>
 
     /// Returns a GBWT record based on this record.
     ///
@@ -543,7 +461,7 @@ impl GBZRecord {
     /// This should never happen with a valid database.
     pub fn to_gbwt_record(&self) -> Record {
         if self.edges.is_empty() {
-            panic!();
+            panic!("GBZRecord::to_gbwt_record: Empty record");
         }
         unsafe { Record::from_raw_parts(self.handle, self.edges.clone(), &self.bwt) }
     }
@@ -597,108 +515,6 @@ impl GBZRecord {
     #[inline]
     pub fn sequence_len(&self) -> usize {
         self.sequence.len()
-    }
-}
-
-//-----------------------------------------------------------------------------
-
-// TODO: Move this somewhere else after GBWT-rs integration.
-/// A structured path name.
-///
-/// This is a stand-alone structure storing the same information as [`gbwt::PathName`]:
-///
-/// * Sample name.
-/// * Contig name.
-/// * Haplotype/phase number.
-/// * Fragment number or starting offset of the fragment.
-///
-/// The path can be a generic path, a reference path, or a haplotype path in a similar way to vg path senses.
-///
-/// * Generic paths have [`REF_SAMPLE`] as their sample name, and their actual name is stored as contig name.
-/// * Reference paths have `0` both as the haplotype and the fragment, and their names are of the form `sample#contig`.
-/// * Haplotype paths start their haplotype numbers from `1`, and their names are of the form `sample#haplotype#contig@fragment`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FullPathName {
-    /// Sample name.
-    pub sample: String,
-
-    /// Contig name.
-    pub contig: String,
-
-    /// Haplotype/phase number.
-    pub haplotype: usize,
-
-    /// Fragment number or starting offset of the fragment.
-    pub fragment: usize,
-}
-
-impl FullPathName {
-    /// Returns the name of the path with the given identifier in GBWT metadata, or [`None`] if the path does not exist.
-    pub fn from_metadata(metadata: &Metadata, path_id: usize) -> Option<Self> {
-        let name = metadata.path(path_id)?;
-        let sample = metadata.sample_name(name.sample());
-        let contig = metadata.contig_name(name.contig());
-        Some(FullPathName {
-            sample, contig,
-            haplotype: name.phase(),
-            fragment: name.fragment(),
-        })
-    }
-
-    /// Returns a new generic path name.
-    pub fn generic(name: &str) -> Self {
-        FullPathName {
-            sample: String::from(REF_SAMPLE),
-            contig: String::from(name),
-            haplotype: 0,
-            fragment: 0,
-        }
-    }
-
-    /// Returns a new reference path name.
-    pub fn reference(sample: &str, contig: &str) -> Self {
-        FullPathName {
-            sample: String::from(sample),
-            contig: String::from(contig),
-            haplotype: 0,
-            fragment: 0,
-        }
-    }
-
-    /// Returns a new haplotype path name.
-    pub fn haplotype(sample: &str, contig: &str, haplotype: usize, fragment: usize) -> Self {
-        FullPathName {
-            sample: String::from(sample),
-            contig: String::from(contig),
-            haplotype,
-            fragment,
-        }
-    }
-
-    /// Returns a PanSN representation of the path name.
-    ///
-    /// The fragment field is assumed to be `0`.
-    pub fn pan_sn_name(&self) -> String {
-        format!("{}#{}#{}", self.sample, self.haplotype, self.contig)
-    }
-
-    /// Returns a path fragment name compatible with vg.
-    ///
-    /// The name is of the form `sample#haplotype#contig[fragment-end]`.
-    pub fn path_fragment_name(&self, end: usize) -> String {
-        format!("{}#{}#{}[{}-{}]", self.sample, self.haplotype, self.contig, self.fragment, end)
-    }
-}
-
-impl fmt::Display for FullPathName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.sample == REF_SAMPLE {
-            write!(f, "{}", self.contig)
-        } else if self.haplotype == 0 && self.fragment == 0 {
-            write!(f, "{}#{}", self.sample, self.contig)
-        } else {
-            write!(f, "{}#{}#{}@{}", self.sample, self.haplotype, self.contig, self.fragment)
-        }
     }
 }
 
@@ -762,8 +578,8 @@ impl AsRef<FullPathName> for GBZPath {
 /// # Examples
 ///
 /// ```
-/// use gbz_base::{GBZBase, GraphInterface, FullPathName};
-/// use gbwt::Orientation;
+/// use gbz_base::{GBZBase, GraphInterface};
+/// use gbwt::{Orientation, FullPathName};
 /// use gbwt::support;
 /// use simple_sds::serialize;
 /// use std::fs;

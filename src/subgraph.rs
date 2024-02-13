@@ -6,7 +6,7 @@
 
 // TODO: tests after integration
 
-use crate::{GBZRecord, GBZPath, GraphInterface, FullPathName};
+use crate::{GBZRecord, GBZPath, GraphInterface};
 use crate::formats::{self, WalkMetadata, JSONValue};
 
 use std::cmp::Reverse;
@@ -15,7 +15,8 @@ use std::fmt::Display;
 use std::io::{self, Write};
 use std::ops::Range;
 
-use gbwt::{Orientation, Pos, ENDMARKER};
+use gbwt::ENDMARKER;
+use gbwt::{Orientation, Pos, FullPathName};
 
 use gbwt::support;
 
@@ -38,7 +39,7 @@ pub enum HaplotypeOutput {
 
 //-----------------------------------------------------------------------------
 
-// TODO: PathIndex; build it from GBZ using reference_positions()
+// FIXME: PathIndex; build it from GBZ using reference_positions()
 
 //-----------------------------------------------------------------------------
 
@@ -74,7 +75,7 @@ impl Subgraph {
         self.paths.len()
     }
 
-    // TODO: From GBZ + PathIndex; with an example
+    // FIXME: From GBZ + PathIndex; with an example
 
     /// Extracts a subgraph around a specific position in a specific path.
     ///
@@ -89,7 +90,8 @@ impl Subgraph {
     /// # Examples
     ///
     /// ```
-    /// use gbz_base::{GBZBase, GraphInterface, FullPathName, Subgraph, HaplotypeOutput};
+    /// use gbz_base::{GBZBase, GraphInterface, Subgraph, HaplotypeOutput};
+    /// use gbwt::FullPathName;
     /// use gbwt::support;
     /// use simple_sds::serialize;
     /// use std::fs;

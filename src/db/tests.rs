@@ -1,6 +1,9 @@
 use super::*;
 
+use gbwt::REF_SAMPLE;
 use gbwt::{Metadata, GBWT};
+
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 //-----------------------------------------------------------------------------
@@ -152,76 +155,6 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
             assert_eq!(db_record.decompress(), gbwt_record.decompress(), "Wrong BWT for handle {}", handle);
         }
     }
-}
-
-//-----------------------------------------------------------------------------
-
-// TODO: This needs to go somewhere else after integration
-
-fn check_path_name(path_name: &FullPathName, sample: &str, contig: &str, haplotype: usize, fragment: usize, len: usize) {
-    assert_eq!(path_name.sample, sample, "Wrong sample name");
-    assert_eq!(path_name.contig, contig, "Wrong contig name");
-    assert_eq!(path_name.haplotype, haplotype, "Wrong haplotype number");
-    assert_eq!(path_name.fragment, fragment, "Wrong fragment number");
-
-    let pan_sn_name = format!("{}#{}#{}", sample, haplotype, contig);
-    assert_eq!(path_name.pan_sn_name(), pan_sn_name, "Wrong PanSN name");
-
-    let path_fragment_name = format!("{}#{}#{}[{}-{}]", sample, haplotype, contig, fragment, len);
-    assert_eq!(path_name.path_fragment_name(len), path_fragment_name, "Wrong path fragment name");
-}
-
-#[test]
-fn full_path_name_from_metadata() {
-    let filename = support::get_test_data("example.meta");
-    let metadata: Metadata = serialize::load_from(&filename).unwrap();
-
-    for (path_id, path_name) in metadata.path_iter().enumerate() {
-        let from_metadata = FullPathName::from_metadata(&metadata, path_id);
-        assert!(from_metadata.is_some(), "Failed to create FullPathName from metadata for path {}", path_id);
-        let from_metadata = from_metadata.unwrap();
-        let truth = FullPathName {
-            sample: metadata.sample_name(path_name.sample()),
-            contig: metadata.contig_name(path_name.contig()),
-            haplotype: path_name.phase(),
-            fragment: path_name.fragment()
-        };
-        assert_eq!(from_metadata, truth, "Wrong FullPathName from metadata for path {}", path_id);
-    }
-}
-
-#[test]
-fn full_path_name_generic() {
-    let name = "example";
-    let path_name = FullPathName::generic("example");
-
-    let string_name = name;
-    assert_eq!(&path_name.to_string(), string_name, "Wrong string representation");
-    check_path_name(&path_name, REF_SAMPLE, name, 0, 0, 123);
-}
-
-#[test]
-fn full_path_name_reference() {
-    let sample = "GRCh38";
-    let contig = "chr1";
-    let path_name = FullPathName::reference(sample, contig);
-
-    let string_name = format!("{}#{}", sample, contig);
-    assert_eq!(path_name.to_string(), string_name, "Wrong string representation");
-    check_path_name(&path_name, sample, contig, 0, 0, 123);
-}
-
-#[test]
-fn full_path_name_haplotype() {
-    let sample = "NA12878";
-    let contig = "chr1";
-    let haplotype = 1;
-    let fragment = 38000;
-    let path_name = FullPathName::haplotype(sample, contig, haplotype, fragment);
-
-    let string_name = format!("{}#{}#{}@{}", sample, haplotype, contig, fragment);
-    assert_eq!(path_name.to_string(), string_name, "Wrong string representation");
-    check_path_name(&path_name, sample, contig, haplotype, fragment, 4800);
 }
 
 //-----------------------------------------------------------------------------
@@ -401,8 +334,7 @@ fn indexed_position() {
     let mut interface = create_interface(&database);
 
     // Check that paths corresponding to `gbwt::REF_SAMPLE` have been indexed.
-    // TODO: We should also check reference paths specified in the GFA file, but the example
-    // does not have any.
+    // TODO: We should have another test graph with reference paths instead of generic paths.
     const MAX_LEN: usize = 20; // This is enough for the example.
     let gbwt: &GBWT = graph.as_ref();
     for path_handle in 0..database.paths() {
@@ -432,73 +364,6 @@ fn indexed_position() {
     drop(interface);
     drop(database);
     let _ = std::fs::remove_file(&db_file);
-}
-
-//-----------------------------------------------------------------------------
-
-// TODO: These should be GBZ tests
-
-#[test]
-fn reference_samples() {
-    let filename = support::get_test_data("example.gbz");
-    let graph: GBZ = serialize::load_from(&filename).unwrap();
-    let metadata = graph.metadata().unwrap();
-
-    // The graph contains reference paths and haplotype paths.
-    let samples = GBZBase::reference_samples(&graph);
-    assert_eq!(samples.len(), 1, "Wrong number of reference samples");
-    assert!(samples.contains(&metadata.sample_id(REF_SAMPLE).unwrap()), "Sample {} is not a reference sample", REF_SAMPLE);
-
-    // TODO: We need a way of changing tags in the graph and the index.
-    // Then we can test setting an existent/nonexistent reference sample.
-}
-
-#[test]
-fn reference_positions() {
-    let filename = support::get_test_data("example.gbz");
-    let graph: GBZ = serialize::load_from(&filename).unwrap();
-    let index: &GBWT = graph.as_ref();
-    let metadata = graph.metadata().unwrap();
-    let ref_samples = GBZBase::reference_samples(&graph);
-
-    // For each reference path, collect the starting positions of all nodes.
-    let mut node_starts: Vec<(usize, Vec<(usize, Pos)>)> = Vec::new();
-    for (path_id, path_name) in metadata.path_iter().enumerate() {
-        if !ref_samples.contains(&path_name.sample()) {
-            continue;
-        }
-        let mut path_offset = 0;
-        let mut curr = index.start(support::encode_path(path_id, Orientation::Forward));
-        let mut positions: Vec<(usize, Pos)> = Vec::new();
-        while let Some(p) = curr {
-            positions.push((path_offset, p));
-            path_offset += graph.sequence_len(support::node_id(p.node)).unwrap();
-            curr = index.forward(p);
-        }
-        node_starts.push((path_id, positions));
-    }
-
-    // Check the indexed positions with various intervals.
-    for interval in 0..10 {
-        let paths = GBZBase::reference_positions(&graph, interval, false);
-        assert_eq!(paths.len(), node_starts.len(), "Wrong number of reference positions for interval {}", interval);
-        for i in 0..paths.len() {
-            assert_eq!(paths[i].0, node_starts[i].0, "Wrong path id at offset {} with interval {}", i, interval);
-            let mut next = 0;
-            let mut iter = paths[i].1.iter();
-            for (offset, pos) in node_starts[i].1.iter() {
-                if *offset >= next {
-                    let indexed = iter.next();
-                    assert!(indexed.is_some(), "Missing indexed position for path {} with interval {}", paths[i].0, interval);
-                    let indexed = indexed.unwrap();
-                    assert_eq!(indexed.0, *offset, "Wrong indexed offset for path {} with interval {}", paths[i].0, interval);
-                    assert_eq!(indexed.1, *pos, "Wrong indexed GBWT position for path {} with interval {}", paths[i].0, interval);
-                    next = offset + interval;
-                }
-            }
-            assert!(iter.next().is_none(), "Too many indexed positions for path {} with interval {}", paths[i].0, interval);
-        }
-    }
 }
 
 //-----------------------------------------------------------------------------

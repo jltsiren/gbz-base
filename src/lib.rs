@@ -29,5 +29,5 @@ pub mod db;
 pub mod formats;
 pub mod subgraph;
 
-pub use db::{GBZBase, GBZPath, FullPathName, GBZRecord, GraphInterface};
+pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface};
 pub use subgraph::{Subgraph, HaplotypeOutput};
