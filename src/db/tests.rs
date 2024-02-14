@@ -160,6 +160,48 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
 //-----------------------------------------------------------------------------
 
 #[test]
+fn gbz_record_from_graph() {
+    // Load the graph.
+    let gbz_file = support::get_test_data("example.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let gbwt: &GBWT = graph.as_ref();
+    let bwt: &BWT = gbwt.as_ref();
+
+    // Check records for all handles, including ones that do not exist.
+    // Only check the raw data and rely on other tests for GBZRecord methods.
+    for handle in 0..=gbwt.alphabet_size() {
+        let record = GBZRecord::from_gbz(&graph, handle);
+        let node_id = support::node_id(handle);
+        if !graph.has_node(node_id) {
+            assert!(record.is_none(), "Found a record for nonexistent handle {}", handle);
+            continue;
+        } else {
+            assert!(record.is_some(), "Missing record for handle {}", handle);
+        }
+        let record = record.unwrap();
+
+        // Data from the GBWT record.
+        assert_eq!(record.handle, handle, "Wrong handle for handle {}", handle);
+        let record_id = gbwt.node_to_record(handle);
+        let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
+        let (edges, _) = Record::decompress_edges(edge_bytes).unwrap();
+        assert_eq!(record.edges, edges, "Wrong edges for handle {}", handle);
+        assert_eq!(record.bwt, bwt_bytes, "Wrong BWT for handle {}", handle);
+
+        // Sequence.
+        let sequence = graph.sequence(node_id).unwrap();
+        if support::node_orientation(handle) == Orientation::Forward {
+            assert_eq!(record.sequence, sequence, "Wrong sequence for handle {}", handle);
+        } else {
+            let rc = support::reverse_complement(sequence);
+            assert_eq!(record.sequence, rc, "Wrong sequence for handle {}", handle);
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+#[test]
 fn create_from_graph() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");

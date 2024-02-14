@@ -449,7 +449,30 @@ pub struct GBZRecord {
 }
 
 impl GBZRecord {
-    // FIXME: from_gbz(graph, handle) -> Option<Self>
+    /// Creates a new GBZ record from the given GBZ graph and node handle.
+    ///
+    /// Returns [`None`] if the node does not exist in the graph.
+    pub fn from_gbz(graph: &GBZ, handle: usize) -> Option<Self> {
+        let node_id = support::node_id(handle);
+        if !graph.has_node(node_id) {
+            return None;
+        }
+
+        let index: &GBWT = graph.as_ref();
+        let bwt_records: &BWT = index.as_ref();
+        let record_id = index.node_to_record(handle);
+        let (edge_bytes, bwt_bytes) = bwt_records.compressed_record(record_id)?;
+        let (edges, _) = Record::decompress_edges(edge_bytes)?;
+        let bwt = bwt_bytes.to_vec();
+        let sequence = graph.sequence(node_id)?;
+        let sequence = if support::node_orientation(handle) == Orientation::Forward {
+            sequence.to_vec()
+        } else {
+            support::reverse_complement(sequence)
+        };
+
+        Some(GBZRecord { handle, edges, bwt, sequence })
+    }
 
     /// Returns a GBWT record based on this record.
     ///
