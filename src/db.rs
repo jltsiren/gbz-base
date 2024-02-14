@@ -403,7 +403,7 @@ impl GBZBase {
             (),
         )?;
 
-        let reference_paths: Vec<(usize, Vec<(usize, Pos)>)> = graph.reference_positions(Self::INDEX_INTERVAL, true);
+        let reference_paths = graph.reference_positions(Self::INDEX_INTERVAL, true);
         if reference_paths.is_empty() {
             eprintln!("No reference paths to index");
             return Ok(());
@@ -420,10 +420,10 @@ impl GBZBase {
                 "INSERT INTO ReferenceIndex(path_handle, path_offset, node_handle, node_offset)
                 VALUES (?1, ?2, ?3, ?4)"
             )?;
-            for (path_handle, positions) in reference_paths.iter() {
-                set_as_indexed.execute((path_handle,))?;
-                for (path_offset, gbwt_position) in positions.iter() {
-                    insert_position.execute((path_handle, path_offset, gbwt_position.node, gbwt_position.offset))?;
+            for ref_path in reference_paths.iter() {
+                set_as_indexed.execute((ref_path.id,))?;
+                for (path_offset, gbwt_position) in ref_path.positions.iter() {
+                    insert_position.execute((ref_path.id, path_offset, gbwt_position.node, gbwt_position.offset))?;
                 }
             }
         }
