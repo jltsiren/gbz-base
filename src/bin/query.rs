@@ -1,4 +1,4 @@
-use gbz_base::{GBZBase, GraphInterface, Subgraph, HaplotypeOutput};
+use gbz_base::{GBZBase, GraphInterface, Subgraph, SubgraphQuery, HaplotypeOutput};
 
 use gbwt::FullPathName;
 
@@ -21,11 +21,7 @@ fn main() -> Result<(), String> {
     let mut graph = GraphInterface::new(&database)?;
 
     // Extract the subgraph.
-    let subgraph = Subgraph::new(
-        &mut graph,
-        &config.path_name, config.offset, config.context,
-        config.output
-    )?;
+    let subgraph = Subgraph::from_db(&mut graph, &config.query)?;
 
     // Write the output.
     let mut output = io::stdout();
@@ -51,10 +47,7 @@ enum OutputFormat {
 
 struct Config {
     filename: String,
-    path_name: FullPathName,
-    offset: usize,
-    context: usize,
-    output: HaplotypeOutput,
+    query: SubgraphQuery,
     cigar: bool,
     format: OutputFormat,
 }
@@ -118,7 +111,8 @@ impl Config {
             }
         }
 
-        Ok(Config { filename, path_name, offset, context, output, cigar, format, })
+        let query = SubgraphQuery::new(&path_name, offset, context, output);
+        Ok(Config { filename, query, cigar, format, })
     }
 
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {

@@ -199,10 +199,9 @@ impl GBZBase {
 
     // Sanity checks for the GBZ graph. We do not want to handle graphs without sufficient metadata.
     fn sanity_checks(graph: &GBZ) -> Result<(), String> {
-        if !graph.has_metadata() {
-            return Err("The graph does not contain metadata".to_string());
-        }
-        let metadata = graph.metadata().unwrap();
+        let metadata = graph.metadata().ok_or(
+            String::from("The graph does not contain metadata")
+        )?;
 
         if !metadata.has_path_names() {
             return Err("The metadata does not contain path names".to_string());
@@ -570,17 +569,32 @@ impl GBZPath {
         self.name.to_string()
     }
 
-    /// Creates a new path record from the given GBWT index and path identifier.
-    ///
-    /// Returns [`None`] if the path does not exist or the GBWT index does not contain metadata.
-    pub fn from_gbwt(index: &GBWT, path_id: usize) -> Option<Self> {
+    /// Cretes a new path record from the given GBZ graph and a path identifier.
+    pub fn with_id(graph: &GBZ, path_id: usize) -> Option<Self> {
+        let metadata = graph.metadata()?;
+        let index: &GBWT = graph.as_ref();
         let fw_start = index.start(support::encode_path(path_id, Orientation::Forward))?;
         let rev_start = index.start(support::encode_path(path_id, Orientation::Reverse))?;
-        let name = FullPathName::from_metadata(index.metadata()?, path_id)?;
+        let name = FullPathName::from_metadata(metadata, path_id)?;
         Some(GBZPath {
             handle: path_id,
             fw_start, rev_start,
             name,
+            is_indexed: false,
+        })
+    }
+
+    /// Creates a new path record from the given GBZ graph and path name.
+    pub fn with_name(graph: &GBZ, name: &FullPathName) -> Option<Self> {
+        let metadata = graph.metadata()?;
+        let path_id = metadata.find_path(&name)?;
+        let index: &GBWT = graph.as_ref();
+        let fw_start = index.start(support::encode_path(path_id, Orientation::Forward))?;
+        let rev_start = index.start(support::encode_path(path_id, Orientation::Reverse))?;
+        Some(GBZPath {
+            handle: path_id,
+            fw_start, rev_start,
+            name: name.clone(),
             is_indexed: false,
         })
     }

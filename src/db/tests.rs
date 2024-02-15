@@ -282,12 +282,19 @@ fn get_path() {
         let found_path = found_path.unwrap();
         assert_eq!(found_path, path, "Wrong path found by name for path {}", path_handle);
 
-        // Now we know that `path` is correct, so we can use it to check `GBZPath` creation from a GBWT index.
-        let from_index = GBZPath::from_gbwt(gbwt, path_handle);
-        assert!(from_index.is_some(), "Could not create GBZPath {} from GBWT", path_handle);
-        let mut from_index = from_index.unwrap();
-        from_index.is_indexed = path.is_indexed;
-        assert_eq!(from_index, path, "Wrong GBZPath {} created from GBWT", path_handle);
+        // Now we know that `path` is correct, so we can use it to check `GBZPath` creation from a GBZ graph.
+        let with_id = GBZPath::with_id(&graph, path_handle);
+        assert!(with_id.is_some(), "Could not create GBZPath {} from GBZ using id", path_handle);
+        let mut with_id = with_id.unwrap();
+        with_id.is_indexed = path.is_indexed;
+        assert_eq!(with_id, path, "Wrong GBZPath {} created from GBZ using id", path_handle);
+
+        // And again, but using the path name.
+        let with_name = GBZPath::with_name(&graph, &path.name);
+        assert!(with_name.is_some(), "Could not create GBZPath {} from GBZ using name", path.name);
+        let mut with_name = with_name.unwrap();
+        with_name.is_indexed = path.is_indexed;
+        assert_eq!(with_name, path, "Wrong GBZPath {} created from GBZ using name", path.name);
     }
 
     drop(interface);

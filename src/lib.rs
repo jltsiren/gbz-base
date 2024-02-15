@@ -30,4 +30,4 @@ pub mod formats;
 pub mod subgraph;
 
 pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface};
-pub use subgraph::{Subgraph, PathIndex, HaplotypeOutput};
+pub use subgraph::{Subgraph, SubgraphQuery, HaplotypeOutput, PathIndex};
