@@ -62,9 +62,8 @@ pub struct GBZBase {
 
 /// Using the database.
 impl GBZBase {
-    // Index positions at the start of a node on reference paths approximately
-    // every this many base pairs.
-    const INDEX_INTERVAL: usize = 1000;
+    /// Index positions at the start of a node on reference paths approximately every this many base pairs.
+    pub const INDEX_INTERVAL: usize = 1000;
 
     // Key for database version.
     const KEY_VERSION: &'static str = "version";
