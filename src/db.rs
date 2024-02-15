@@ -587,7 +587,7 @@ impl GBZPath {
     /// Creates a new path record from the given GBZ graph and path name.
     pub fn with_name(graph: &GBZ, name: &FullPathName) -> Option<Self> {
         let metadata = graph.metadata()?;
-        let path_id = metadata.find_path(&name)?;
+        let path_id = metadata.find_path(name)?;
         let index: &GBWT = graph.as_ref();
         let fw_start = index.start(support::encode_path(path_id, Orientation::Forward))?;
         let rev_start = index.start(support::encode_path(path_id, Orientation::Reverse))?;

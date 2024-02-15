@@ -26,8 +26,8 @@ fn main() -> Result<(), String> {
     // Write the output.
     let mut output = io::stdout();
     match config.format {
-        OutputFormat::GFA => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string())?,
-        OutputFormat::JSON => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string())?,
+        OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string())?,
+        OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string())?,
     }
 
     let end_time = Instant::now();
@@ -41,8 +41,8 @@ fn main() -> Result<(), String> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum OutputFormat {
-    GFA,
-    JSON,
+    Gfa,
+    Json,
 }
 
 struct Config {
@@ -102,11 +102,11 @@ impl Config {
         }
         let cigar = matches.opt_present("C");
 
-        let mut format: OutputFormat = OutputFormat::GFA;
+        let mut format: OutputFormat = OutputFormat::Gfa;
         if let Some(s) = matches.opt_str("f") {
             match s.to_lowercase().as_str() {
-                "gfa" => format = OutputFormat::GFA,
-                "json" => format = OutputFormat::JSON,
+                "gfa" => format = OutputFormat::Gfa,
+                "json" => format = OutputFormat::Json,
                 _ => return Err(format!("Invalid output format: {}", s)),
             }
         }

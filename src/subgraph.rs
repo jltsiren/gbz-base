@@ -171,14 +171,14 @@ impl PathIndex {
             offset_to_path.insert(offset_to_path.len(), ref_path.id);
             path_lengths.push(ref_path.len);
             let mut sequence = SparseBuilder::new(ref_path.len, ref_path.positions.len()).map_err(
-                |x| String::from(x)
+                String::from
             )?;
             let mut gbwt = Vec::with_capacity(ref_path.positions.len());
             for (sequence_pos, gbwt_pos) in ref_path.positions.iter() {
                 sequence.set(*sequence_pos);
                 gbwt.push(*gbwt_pos);
             }
-            sequence_positions.push(SparseVector::try_from(sequence).map_err(|x| String::from(x))?);
+            sequence_positions.push(SparseVector::try_from(sequence).map_err(String::from)?);
             gbwt_positions.push(gbwt);
         }
 
@@ -444,9 +444,9 @@ impl Subgraph {
         let ref_path = &self.paths[self.ref_id].path;
         let path = &self.paths[path_id].path;
         let mut dp_matrix = vec![vec![0; ref_path.len() + 1]; path.len() + 1];
-        for path_offset in 0..path.len() {
-            for ref_offset in 0..ref_path.len() {
-                if path[path_offset] == ref_path[ref_offset] {
+        for (path_offset, path_value) in path.iter().enumerate() {
+            for (ref_offset, ref_value) in ref_path.iter().enumerate() {
+                if path_value == ref_value {
                     dp_matrix[path_offset + 1][ref_offset + 1] = dp_matrix[path_offset][ref_offset] + 1;
                 } else {
                     dp_matrix[path_offset + 1][ref_offset + 1] = dp_matrix[path_offset][ref_offset + 1].max(dp_matrix[path_offset + 1][ref_offset]);
