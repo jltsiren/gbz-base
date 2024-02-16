@@ -129,16 +129,16 @@ fn queries_and_jsons(cigar: bool) -> (Vec<SubgraphQuery>, Vec<String>){
 
     let mut jsons: Vec<String> = Vec::new();
     let all: Vec<(Vec<usize>, WalkMetadata, Option<usize>, Option<String>)> = vec![
-        (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone(), None), None, None),
-        (vec![24, 28, 30], WalkMetadata::anonymous(1, "A", 3, None), None, Some(String::from("3M"))),
-        (vec![26, 28, 32], WalkMetadata::anonymous(2, "A", 3, None), None, Some(String::from("3M"))),
+        (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone()), None, None),
+        (vec![24, 28, 30], WalkMetadata::anonymous(1, "A", 3), None, Some(String::from("3M"))),
+        (vec![26, 28, 32], WalkMetadata::anonymous(2, "A", 3), None, Some(String::from("3M"))),
     ];
     let distinct: Vec<(Vec<usize>, WalkMetadata, Option<usize>, Option<String>)> = vec![
-        (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone(), None), Some(2), None),
-        (vec![26, 28, 32], WalkMetadata::anonymous(1, "A", 3, None), Some(1), Some(String::from("3M"))),
+        (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone()), Some(2), None),
+        (vec![26, 28, 32], WalkMetadata::anonymous(1, "A", 3), Some(1), Some(String::from("3M"))),
     ];
     let ref_only: Vec<(Vec<usize>, WalkMetadata, Option<usize>, Option<String>)> = vec![
-        (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone(), None), None, None),
+        (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone()), None, None),
     ];
     for paths in [all, distinct, ref_only] {
         let mut json_paths: Vec<JSONValue> = Vec::new();

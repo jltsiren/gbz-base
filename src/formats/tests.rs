@@ -10,7 +10,7 @@ use simple_sds::serialize;
 fn walk_metadata_interval() {
     let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
     let interval = 123..456;
-    let metadata = WalkMetadata::path_interval(&path_name, interval.clone(), None);
+    let metadata = WalkMetadata::path_interval(&path_name, interval.clone());
 
     let interval_name = FullPathName {
         sample: path_name.sample.clone(),
@@ -47,7 +47,7 @@ fn walk_metadata_anonymous() {
     let haplotype = 2;
     let contig = "chr19";
     let len = 456;
-    let metadata = WalkMetadata::anonymous(haplotype, contig, len, None);
+    let metadata = WalkMetadata::anonymous(haplotype, contig, len);
 
     let path_name = FullPathName {
         sample: String::from("unknown"),
@@ -63,7 +63,7 @@ fn walk_metadata_anonymous() {
 
 #[test]
 fn walk_metadata_weight_cigar() {
-    let mut metadata = WalkMetadata::anonymous(2, "chr19", 456, None);
+    let mut metadata = WalkMetadata::anonymous(2, "chr19", 456);
     assert!(metadata.weight.is_none(), "Weight should not be set");
     assert!(metadata.cigar.is_none(), "CIGAR string should not be set");
 
@@ -164,7 +164,7 @@ fn gfa_walk() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let metadata = WalkMetadata::path_interval(&path_name, interval, None);
+        let metadata = WalkMetadata::path_interval(&path_name, interval);
         let mut output: Vec<u8> = Vec::new();
         let result = write_gfa_walk(&path, &metadata, &mut output);
         assert!(result.is_ok(), "Failed to write a GFA walk line with no weight and no CIGAR string");
@@ -176,7 +176,8 @@ fn gfa_walk() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let metadata = WalkMetadata::path_interval(&path_name, interval, Some(42));
+        let mut metadata = WalkMetadata::path_interval(&path_name, interval);
+        metadata.add_weight(Some(42));
         let mut output: Vec<u8> = Vec::new();
         let result = write_gfa_walk(&path, &metadata, &mut output);
         assert!(result.is_ok(), "Failed to write a GFA walk line with weight but no CIGAR string");
@@ -188,7 +189,7 @@ fn gfa_walk() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let mut metadata = WalkMetadata::path_interval(&path_name, interval, None);
+        let mut metadata = WalkMetadata::path_interval(&path_name, interval);
         metadata.add_cigar(Some(String::from("10M2D5M")));
         let mut output: Vec<u8> = Vec::new();
         let result = write_gfa_walk(&path, &metadata, &mut output);
@@ -201,7 +202,8 @@ fn gfa_walk() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let mut metadata = WalkMetadata::path_interval(&path_name, interval, Some(42));
+        let mut metadata = WalkMetadata::path_interval(&path_name, interval);
+        metadata.add_weight(Some(42));
         metadata.add_cigar(Some(String::from("10M2D5M")));
         let mut output: Vec<u8> = Vec::new();
         let result = write_gfa_walk(&path, &metadata, &mut output);
@@ -222,7 +224,7 @@ fn write_json_path() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let metadata = WalkMetadata::path_interval(&path_name, interval, None);
+        let metadata = WalkMetadata::path_interval(&path_name, interval);
         let json_value = json_path(&path, &metadata);
         let result = json_value.to_string();
         let correct = "{\"name\": \"GRCh38#0#chr13[1000-1123]\", \"path\": [{\"id\": \"21\", \"is_reverse\": false}, {\"id\": \"22\", \"is_reverse\": true}, {\"id\": \"23\", \"is_reverse\": false}]}";
@@ -233,7 +235,8 @@ fn write_json_path() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let metadata = WalkMetadata::path_interval(&path_name, interval, Some(42));
+        let mut metadata = WalkMetadata::path_interval(&path_name, interval);
+        metadata.add_weight(Some(42));
         let json_value = json_path(&path, &metadata);
         let result = json_value.to_string();
         let correct = "{\"name\": \"GRCh38#0#chr13[1000-1123]\", \"weight\": 42, \"path\": [{\"id\": \"21\", \"is_reverse\": false}, {\"id\": \"22\", \"is_reverse\": true}, {\"id\": \"23\", \"is_reverse\": false}]}";
@@ -244,7 +247,7 @@ fn write_json_path() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let mut metadata = WalkMetadata::path_interval(&path_name, interval, None);
+        let mut metadata = WalkMetadata::path_interval(&path_name, interval);
         metadata.add_cigar(Some(String::from("10M2D5M")));
         let json_value = json_path(&path, &metadata);
         let result = json_value.to_string();
@@ -256,7 +259,8 @@ fn write_json_path() {
         let path = [42, 45, 46];
         let path_name = FullPathName::haplotype("GRCh38", "chr13", 0, 1000);
         let interval = 0..123;
-        let mut metadata = WalkMetadata::path_interval(&path_name, interval, Some(42));
+        let mut metadata = WalkMetadata::path_interval(&path_name, interval);
+        metadata.add_weight(Some(42));
         metadata.add_cigar(Some(String::from("10M2D5M")));
         let json_value = json_path(&path, &metadata);
         let result = json_value.to_string();

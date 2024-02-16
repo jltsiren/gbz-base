@@ -13,10 +13,6 @@
 //!
 //! A walk line contains metadata, which is stored in a [`WalkMetadata`] object.
 //! The object contains a structured path name, the end position of the path, an optional weight, and an optional CIGAR string.
-//! Weights represent the number of duplicate paths collapsed into a single line.
-//! They are stored as tag `WT` of type `i`.
-//! The CIGAR string is typically relative to the reference path in the same graph component.
-//! It is stored as tag `CG` of type `Z`.
 //!
 //! ### JSON
 //!
@@ -37,6 +33,12 @@ mod tests;
 //-----------------------------------------------------------------------------
 
 /// Metadata for a walk line in a GFA file.
+///
+/// In addition to the standard fields, the metadata may contain an optional weight and an optional CIGAR string.
+/// Weights represent the number of duplicate paths collapsed into a single line.
+/// They are stored as tag `WT` of type `i`.
+/// The CIGAR string is typically relative to the reference path in the same graph component.
+/// It is stored as tag `CG` of type `Z`.
 pub struct WalkMetadata {
     // Structured name with a sample name, contig name, haplotype / phase number, and starting offset.
     name: FullPathName,
@@ -51,20 +53,13 @@ pub struct WalkMetadata {
     cigar: Option<String>,
 }
 
-// FIXME constructors should not take weights
 impl WalkMetadata {
     /// Creates new metadata for an interval of a path.
-    ///
-    /// # Arguments
-    ///
-    /// * `path_name`: Name of the path.
-    /// * `interval`: The interval of the path.
-    /// * `weight`: Optional weight for the path.
-    pub fn path_interval(path_name: &FullPathName, interval: Range<usize>, weight: Option<usize>) -> Self {
+    pub fn path_interval(path_name: &FullPathName, interval: Range<usize>) -> Self {
         let mut name = path_name.clone();
         let end = name.fragment + interval.end;
         name.fragment += interval.start;
-        WalkMetadata { name, end, weight, cigar: None }
+        WalkMetadata { name, end, weight: None, cigar: None }
     }
 
     /// Creates new metadata for a haplotype path using GBWT metadata.
@@ -88,13 +83,12 @@ impl WalkMetadata {
     /// * `haplotype`: The haplotype / phase number.
     /// * `contig`: The contig name.
     /// * `len`: The length of the path in base pairs.
-    /// * `weight`: Optional weight for the path.
-    pub fn anonymous(haplotype: usize, contig: &str, len: usize, weight: Option<usize>) -> Self {
+    pub fn anonymous(haplotype: usize, contig: &str, len: usize) -> Self {
         let path_name = FullPathName::haplotype("unknown", contig, haplotype, 0);
         WalkMetadata {
             name: path_name,
             end: len,
-            weight,
+            weight: None,
             cigar: None,
         }
     }

@@ -540,11 +540,11 @@ impl Subgraph {
         }
 
         // Paths.
-        let ref_metadata = WalkMetadata::path_interval(
+        let mut ref_metadata = WalkMetadata::path_interval(
             self.ref_path.as_ref(),
-            self.ref_interval.clone(),
-            self.paths[self.ref_id].weight
+            self.ref_interval.clone()
         );
+        ref_metadata.add_weight(self.paths[self.ref_id].weight);
         formats::write_gfa_walk(&self.paths[self.ref_id].path, &ref_metadata, output)?;
         if self.paths.len() > 1 {
             let mut haplotype = 1;
@@ -555,9 +555,9 @@ impl Subgraph {
                 let mut metadata = WalkMetadata::anonymous(
                     haplotype,
                     &self.ref_path.name.contig,
-                    path_info.len,
-                    path_info.weight
+                    path_info.len
                 );
+                metadata.add_weight(path_info.weight);
                 if cigar {
                     metadata.add_cigar(self.align_to_ref(id));
                 }
@@ -607,11 +607,11 @@ impl Subgraph {
 
         // Paths.
         let mut paths: Vec<JSONValue> = Vec::new();
-        let ref_metadata = WalkMetadata::path_interval(
+        let mut ref_metadata = WalkMetadata::path_interval(
             self.ref_path.as_ref(),
-            self.ref_interval.clone(),
-            self.paths[self.ref_id].weight
+            self.ref_interval.clone()
         );
+        ref_metadata.add_weight(self.paths[self.ref_id].weight);
         let ref_path = formats::json_path(&self.paths[self.ref_id].path, &ref_metadata);
         paths.push(ref_path);
         let mut haplotype = 1;
@@ -622,9 +622,9 @@ impl Subgraph {
             let mut metadata = WalkMetadata::anonymous(
                 haplotype,
                 &self.ref_path.name.contig,
-                path_info.len,
-                path_info.weight
+                path_info.len
             );
+            metadata.add_weight(path_info.weight);
             if cigar {
                 metadata.add_cigar(self.align_to_ref(id));
             }
