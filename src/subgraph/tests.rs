@@ -21,31 +21,32 @@ fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathInde
     (graph, path_index.unwrap())
 }
 
-// FIXME more queries
 fn queries_and_counts() -> (Vec<SubgraphQuery>, Vec<(usize, usize)>) {
     let path_a = FullPathName::generic("A");
-    //let path_b = FullPathName::generic("B");
+    let path_b = FullPathName::generic("B");
     let queries = vec![
         SubgraphQuery::all(&path_a, 2, 1),
         SubgraphQuery::distinct(&path_a, 2, 1),
         SubgraphQuery::reference_only(&path_a, 2, 1),
+        SubgraphQuery::distinct(&path_b, 2, 1),
     ];
     let counts = vec![
         (5, 3),
         (5, 2),
         (5, 1),
+        (4, 2),
     ];
     (queries, counts)
 }
 
-// FIXME more queries
 fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
     let path_a = FullPathName::generic("A");
-    //let path_b = FullPathName::generic("B");
+    let path_b = FullPathName::generic("B");
     let queries = vec![
         SubgraphQuery::all(&path_a, 2, 1),
         SubgraphQuery::distinct(&path_a, 2, 1),
         SubgraphQuery::reference_only(&path_a, 2, 1),
+        SubgraphQuery::distinct(&path_b, 2, 1),
     ];
     let gfas = vec![
         vec![
@@ -90,6 +91,18 @@ fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
             String::from("L\t14\t+\t16\t+\t0M"),
             String::from("W\t_gbwt_ref\t0\tA\t1\t4\t>12>14>15"),
         ],
+        vec![
+            String::from("H\tVN:Z:1.1\tRS:Z:_gbwt_ref"),
+            String::from("S\t22\tA"),
+            String::from("S\t23\tT"),
+            String::from("S\t24\tT"),
+            String::from("S\t25\tA"),
+            String::from("L\t22\t+\t24\t+\t0M"),
+            String::from("L\t23\t+\t24\t-\t0M"),
+            String::from("L\t24\t+\t25\t+\t0M"),
+            String::from("W\t_gbwt_ref\t0\tB\t1\t4\t>22>24>25\tWT:i:2"),
+            format!("W\tunknown\t1\tB\t0\t3\t>22>24<23\tWT:i:1{}", if cigar { "\tCG:Z:3M" } else { "" }),
+        ]
     ];
     (queries, gfas)
 }
