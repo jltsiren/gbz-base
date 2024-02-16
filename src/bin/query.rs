@@ -1,6 +1,6 @@
 use gbz_base::{GBZBase, GraphInterface, PathIndex, Subgraph, SubgraphQuery, HaplotypeOutput};
 
-use gbwt::{GBZ, FullPathName};
+use gbwt::{FullPathName, GBZ, REF_SAMPLE};
 
 use simple_sds::serialize;
 
@@ -69,7 +69,7 @@ impl Config {
 
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");
-        opts.optopt("s", "sample", "sample name (required)", "STR");
+        opts.optopt("s", "sample", "sample name (default: no sample name)", "STR");
         opts.optopt("c", "contig", "contig name (required)", "STR");
         opts.optopt("o", "offset", "sequence offset (-o or -i is required)", "INT");
         opts.optopt("i", "interval", "sequence interval (-o or -i is required)", "INT..INT");
@@ -95,8 +95,8 @@ impl Config {
             process::exit(0);
         }
 
-        let sample = matches.opt_str("s").ok_or("Sample name must be provided with --sample".to_string())?;
-        let contig = matches.opt_str("c").ok_or("Contig name must be provided with --contig".to_string())?;
+        let sample = matches.opt_str("s").unwrap_or(String::from(REF_SAMPLE));
+        let contig = matches.opt_str("c").ok_or(String::from("Contig name must be provided with --contig"))?;
         let path_name = FullPathName::reference(&sample, &contig);
         let (offset, context) = Self::parse_offset_and_context(&matches)?;
 
@@ -107,6 +107,7 @@ impl Config {
         if matches.opt_present("r") {
             output = HaplotypeOutput::ReferenceOnly;
         }
+        let query = SubgraphQuery::new(&path_name, offset, context, output);
         let cigar = matches.opt_present("C");
 
         let mut format: OutputFormat = OutputFormat::Gfa;
@@ -118,7 +119,6 @@ impl Config {
             }
         }
 
-        let query = SubgraphQuery::new(&path_name, offset, context, output);
         Ok(Config { filename, query, cigar, format, })
     }
 
