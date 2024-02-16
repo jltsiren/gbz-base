@@ -39,6 +39,16 @@ pub enum HaplotypeOutput {
     ReferenceOnly,
 }
 
+impl Display for HaplotypeOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            HaplotypeOutput::All => write!(f, "all"),
+            HaplotypeOutput::Distinct => write!(f, "distinct"),
+            HaplotypeOutput::ReferenceOnly => write!(f, "reference only"),
+        }
+    }
+}
+
 /// Arguments for extracting a subgraph.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
@@ -74,6 +84,12 @@ impl SubgraphQuery {
     /// Creates a new subgraph query that extracts only the reference path.
     pub fn reference_only(path_name: &FullPathName, offset: usize, context: usize) -> Self {
         SubgraphQuery { path_name: path_name.clone(), offset, context, output: HaplotypeOutput::ReferenceOnly }
+    }
+}
+
+impl Display for SubgraphQuery {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "({}, offset {}, context {}, {})", self.path_name, self.offset, self.context, self.output)
     }
 }
 
@@ -265,6 +281,7 @@ pub struct Subgraph {
     ref_interval: Range<usize>,
 }
 
+// TODO: This could implement an interface similar to the node/edge part of GBZ.
 impl Subgraph {
     /// Extracts a subgraph around the given query position.
     ///

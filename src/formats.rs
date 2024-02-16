@@ -51,6 +51,7 @@ pub struct WalkMetadata {
     cigar: Option<String>,
 }
 
+// FIXME constructors should not take weights
 impl WalkMetadata {
     /// Creates new metadata for an interval of a path.
     ///
