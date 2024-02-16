@@ -4,8 +4,6 @@
 //! The subgraph contains all nodes within a given context and all edges between them.
 //! All other paths within the subgraph can also be extracted, but they will not have any true metadata associated with them.
 
-// FIXME: tests for all public functionality
-
 use crate::{GBZRecord, GBZPath, GraphInterface};
 use crate::formats::{self, WalkMetadata, JSONValue};
 
@@ -22,6 +20,9 @@ use gbwt::support;
 
 use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
 use simple_sds::ops::PredSucc;
+
+#[cfg(test)]
+mod tests;
 
 //-----------------------------------------------------------------------------
 
