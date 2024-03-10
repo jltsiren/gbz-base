@@ -23,7 +23,7 @@ fn main() -> Result<(), String> {
     let subgraph = if use_gbz {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
-        Subgraph::from_gbz(&graph, &path_index, &config.query)?
+        Subgraph::from_gbz(&graph, Some(&path_index), &config.query)?
     } else {
         let database = GBZBase::open(&config.filename)?;
         let mut graph = GraphInterface::new(&database)?;
@@ -67,6 +67,7 @@ impl Config {
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
 
+        // FIXME node-based queries
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");
         opts.optopt("s", "sample", "sample name (default: no sample name)", "STR");
@@ -107,7 +108,8 @@ impl Config {
         if matches.opt_present("r") {
             output = HaplotypeOutput::ReferenceOnly;
         }
-        let query = SubgraphQuery::new(&path_name, offset, context, output);
+        // FIXME: Use path_offset(), path_interval(), or node() depending on arguments.
+        let query = SubgraphQuery::path_offset(&path_name, offset, context, output);
         let cigar = matches.opt_present("C");
 
         let mut format: OutputFormat = OutputFormat::Gfa;

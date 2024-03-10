@@ -25,13 +25,15 @@ fn queries_and_counts() -> (Vec<SubgraphQuery>, Vec<(usize, usize)>) {
     let path_a = FullPathName::generic("A");
     let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::all(&path_a, 2, 1),
-        SubgraphQuery::distinct(&path_a, 2, 1),
-        SubgraphQuery::reference_only(&path_a, 2, 1),
-        SubgraphQuery::distinct(&path_b, 2, 1),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::node(14, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_b, 2, 1, HaplotypeOutput::Distinct),
     ];
     let counts = vec![
         (5, 3),
+        (5, 2),
         (5, 2),
         (5, 1),
         (4, 2),
@@ -43,10 +45,11 @@ fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
     let path_a = FullPathName::generic("A");
     let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::all(&path_a, 2, 1),
-        SubgraphQuery::distinct(&path_a, 2, 1),
-        SubgraphQuery::reference_only(&path_a, 2, 1),
-        SubgraphQuery::distinct(&path_b, 2, 1),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::node(14, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_b, 2, 1, HaplotypeOutput::Distinct),
     ];
     let gfas = vec![
         vec![
@@ -77,6 +80,20 @@ fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
             String::from("L\t14\t+\t16\t+\t0M"),
             String::from("W\t_gbwt_ref\t0\tA\t1\t4\t>12>14>15\tWT:i:2"),
             format!("W\tunknown\t1\tA\t0\t3\t>13>14>16\tWT:i:1{}", if cigar { "\tCG:Z:3M" } else { "" }),
+        ],
+        vec![
+            String::from("H\tVN:Z:1.1"),
+            String::from("S\t12\tA"),
+            String::from("S\t13\tT"),
+            String::from("S\t14\tT"),
+            String::from("S\t15\tA"),
+            String::from("S\t16\tC"),
+            String::from("L\t12\t+\t14\t+\t0M"),
+            String::from("L\t13\t+\t14\t+\t0M"),
+            String::from("L\t14\t+\t15\t+\t0M"),
+            String::from("L\t14\t+\t16\t+\t0M"),
+            String::from("W\tunknown\t1\tunknown\t0\t3\t>12>14>15\tWT:i:2"),
+            String::from("W\tunknown\t2\tunknown\t0\t3\t>13>14>16\tWT:i:1"),
         ],
         vec![
             String::from("H\tVN:Z:1.1\tRS:Z:_gbwt_ref"),
@@ -112,9 +129,10 @@ fn queries_and_jsons(cigar: bool) -> (Vec<SubgraphQuery>, Vec<String>){
     let path_a = FullPathName::generic("A");
     //let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::all(&path_a, 2, 1),
-        SubgraphQuery::distinct(&path_a, 2, 1),
-        SubgraphQuery::reference_only(&path_a, 2, 1),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::node(14, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::ReferenceOnly),
     ];
 
     let mut nodes: Vec<JSONValue> = Vec::new();
@@ -146,14 +164,18 @@ fn queries_and_jsons(cigar: bool) -> (Vec<SubgraphQuery>, Vec<String>){
         (vec![24, 28, 30], WalkMetadata::anonymous(1, "A", 3), None, Some(String::from("3M"))),
         (vec![26, 28, 32], WalkMetadata::anonymous(2, "A", 3), None, Some(String::from("3M"))),
     ];
-    let distinct: Vec<(Vec<usize>, WalkMetadata, Option<usize>, Option<String>)> = vec![
+    let distinct_path: Vec<(Vec<usize>, WalkMetadata, Option<usize>, Option<String>)> = vec![
         (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone()), Some(2), None),
         (vec![26, 28, 32], WalkMetadata::anonymous(1, "A", 3), Some(1), Some(String::from("3M"))),
+    ];
+    let distinct_node: Vec<(Vec<usize>, WalkMetadata, Option<usize>, Option<String>)> = vec![
+        (vec![24, 28, 30], WalkMetadata::anonymous(1, "unknown", 3), Some(2), None),
+        (vec![26, 28, 32], WalkMetadata::anonymous(2, "unknown", 3), Some(1), None),
     ];
     let ref_only: Vec<(Vec<usize>, WalkMetadata, Option<usize>, Option<String>)> = vec![
         (vec![24, 28, 30], WalkMetadata::path_interval(&path_a, 1..4.clone()), None, None),
     ];
-    for paths in [all, distinct, ref_only] {
+    for paths in [all, distinct_path, distinct_node, ref_only] {
         let mut json_paths: Vec<JSONValue> = Vec::new();
         for (path, mut metadata, weight, cigar_string) in paths {
             metadata.add_weight(weight);
@@ -219,7 +241,7 @@ fn subgraph_from_gbz() {
     let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
     let (queries, nodes_and_paths) = queries_and_counts();
     for (query, (node_count, path_count)) in queries.iter().zip(nodes_and_paths.iter()) {
-        let subgraph = Subgraph::from_gbz(&graph, &path_index, query);
+        let subgraph = Subgraph::from_gbz(&graph, Some(&path_index), query);
         if let Err(err) = subgraph {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
@@ -262,7 +284,7 @@ fn gfa_output() {
     for cigar in [false, true] {
         let (queries, gfas) = queries_and_gfas(cigar);
         for (query, truth) in queries.iter().zip(gfas.iter()) {
-            let subgraph = Subgraph::from_gbz(&graph, &path_index, query).unwrap();
+            let subgraph = Subgraph::from_gbz(&graph, Some(&path_index), query).unwrap();
             let mut output = Vec::new();
             let result = subgraph.write_gfa(&mut output, cigar);
             assert!(result.is_ok(), "Failed to write GFA for query {}: {}", query, result.unwrap_err());
@@ -282,7 +304,7 @@ fn json_output() {
     for cigar in [false, true] {
         let (queries, jsons) = queries_and_jsons(cigar);
         for (query, truth) in queries.iter().zip(jsons.iter()) {
-            let subgraph = Subgraph::from_gbz(&graph, &path_index, query).unwrap();
+            let subgraph = Subgraph::from_gbz(&graph, Some(&path_index), query).unwrap();
             let mut output = Vec::new();
             let result = subgraph.write_json(&mut output, cigar);
             assert!(result.is_ok(), "Failed to write JSON for query {}: {}", query, result.unwrap_err());
