@@ -67,20 +67,26 @@ impl Config {
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
 
-        // FIXME node-based queries
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");
-        opts.optopt("s", "sample", "sample name (default: no sample name)", "STR");
-        opts.optopt("c", "contig", "contig name (required)", "STR");
-        opts.optopt("o", "offset", "sequence offset (-o or -i is required)", "INT");
-        opts.optopt("i", "interval", "sequence interval (-o or -i is required)", "INT..INT");
+        opts.optopt("", "sample", "sample name (default: no sample name)", "STR");
+        opts.optopt("", "contig", "contig name (required for -o and -i)", "STR");
+        opts.optopt("o", "offset", "sequence offset (-o, -i, or -n is required)", "INT");
+        opts.optopt("i", "interval", "sequence interval (-o, -i, or -n is required)", "INT..INT");
+        opts.optopt("n", "node", "node identifier (-o, -i, or -n is required)", "INT");
         let context_desc = format!("context length in bp (default: {})", Self::DEFAULT_CONTEXT);
-        opts.optopt("n", "context", &context_desc, "INT");
-        opts.optflag("d", "distinct", "output distinct haplotypes with weights");
-        opts.optflag("C", "cigar", "output CIGAR strings for the haplotypes");
-        opts.optflag("r", "reference-only", "output the reference but no other haplotypes");
-        opts.optopt("f", "format", "output format (gfa or json, default: gfa)", "STR");
+        opts.optopt("", "context", &context_desc, "INT");
+        opts.optflag("", "distinct", "output distinct haplotypes with weights");
+        opts.optflag("", "reference-only", "output the reference but no other haplotypes");
+        opts.optflag("", "cigar", "output CIGAR strings for the haplotypes");
+        opts.optopt("", "format", "output format (gfa or json, default: gfa)", "STR");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
+
+        if matches.opt_present("help") {
+            let header = format!("Usage: {} [options] graph.gbz[.db]", program);
+            eprint!("{}", opts.usage(&header));
+            process::exit(0);
+        }
 
         let filename = if let Some(s) = matches.free.first() {
             s.clone()
@@ -89,31 +95,10 @@ impl Config {
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
-
-        if matches.opt_present("h") {
-            let header = format!("Usage: {} [options] graph.gbz[.db]", program);
-            eprint!("{}", opts.usage(&header));
-            process::exit(0);
-        }
-
-        let sample = matches.opt_str("s").unwrap_or(String::from(REF_SAMPLE));
-        let contig = matches.opt_str("c").ok_or(String::from("Contig name must be provided with --contig"))?;
-        let path_name = FullPathName::reference(&sample, &contig);
-        let (offset, context) = Self::parse_offset_and_context(&matches)?;
-
-        let mut output = HaplotypeOutput::All;
-        if matches.opt_present("d") {
-            output = HaplotypeOutput::Distinct;
-        }
-        if matches.opt_present("r") {
-            output = HaplotypeOutput::ReferenceOnly;
-        }
-        // FIXME: Use path_offset(), path_interval(), or node() depending on arguments.
-        let query = SubgraphQuery::path_offset(&path_name, offset, context, output);
-        let cigar = matches.opt_present("C");
-
+        let query = Self::parse_query(&matches)?;
+        let cigar = matches.opt_present("cigar");
         let mut format: OutputFormat = OutputFormat::Gfa;
-        if let Some(s) = matches.opt_str("f") {
+        if let Some(s) = matches.opt_str("format") {
             match s.to_lowercase().as_str() {
                 "gfa" => format = OutputFormat::Gfa,
                 "json" => format = OutputFormat::Json,
@@ -136,38 +121,57 @@ impl Config {
         Ok(start..end)
     }
 
-    fn parse_offset_and_context(matches: &getopts::Matches) -> Result<(usize, usize), String> {
-        let mut context = if let Some(s) = matches.opt_str("n") {
-            s.parse::<usize>().map_err(|x| format!("--context: {}", x))?
+    fn parse_integer(s: &str, option: &str) -> Result<usize, String> {
+        s.parse::<usize>().map_err(|x| format!("--{}: {}", option, x))
+    }
+
+    fn parse_query(matches: &getopts::Matches) -> Result<SubgraphQuery, String> {
+        let mut count = 0;
+        if matches.opt_present("offset") { count += 1; }
+        if matches.opt_present("interval") { count += 1; }
+        if matches.opt_present("node") { count += 1; }
+        if count != 1 {
+            return Err("Exactly one of --offset, --interval, and --node must be provided".to_string());
+        }
+
+        let path_name = if matches.opt_present("node") {
+            None
+        } else {
+            let sample = matches.opt_str("sample").unwrap_or(String::from(REF_SAMPLE));
+            let contig = matches.opt_str("contig").ok_or(String::from("Contig name must be provided with --contig"))?;
+            Some(FullPathName::reference(&sample, &contig))
+        };
+        let context = if let Some(s) = matches.opt_str("context") {
+            Self::parse_integer(&s, "context")?
         } else {
             Self::DEFAULT_CONTEXT
         };
+        let mut output = HaplotypeOutput::All;
+        if matches.opt_present("distinct") {
+            output = HaplotypeOutput::Distinct;
+        }
+        if matches.opt_present("reference-only") {
+            output = HaplotypeOutput::ReferenceOnly;
+        }
 
-        let mut offset: Option<usize> = None;
-        let mut interval: Option<Range<usize>> = None;
-        if let Some(s) = matches.opt_str("o") {
-            offset = Some(s.parse::<usize>().map_err(|x| format!("--offset: {}", x))?);
+        if let Some(s) = matches.opt_str("offset") {
+            let offset = Self::parse_integer(&s, "offset")?;
+            let query = SubgraphQuery::path_offset(&path_name.unwrap(), offset, context, output);
+            Ok(query)
         }
-        if let Some(s) = matches.opt_str("i") {
-            let parsed = Self::parse_interval(&s)?;
-            if parsed.is_empty() {
-                return Err("--interval: Sequence interval cannot be empty".to_string());
-            }
-            interval = Some(parsed);
+        else if let Some(s) = matches.opt_str("interval") {
+            let interval = Self::parse_interval(&s)?;
+            let query = SubgraphQuery::path_interval(&path_name.unwrap(), interval, context, output);
+            Ok(query)
         }
-        if offset.is_none() && interval.is_none() {
-            return Err("Either --offset or --interval must be provided".to_string());
+        else if let Some(s) = matches.opt_str("node") {
+            let node = Self::parse_integer(&s, "node")?;
+            let query = SubgraphQuery::node(node, context, output);
+            Ok(query)
         }
-        if offset.is_some() && interval.is_some() {
-            return Err("Only one of --offset and --interval can be provided".to_string());
+        else {
+            unreachable!();
         }
-        if let Some(interval) = interval {
-            context += interval.len() / 2;
-            offset = Some(interval.start + interval.len() / 2);
-        }
-        let offset = offset.unwrap();
-
-        Ok((offset, context))
     }
 }
 

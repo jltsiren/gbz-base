@@ -49,6 +49,8 @@ impl Display for HaplotypeOutput {
     }
 }
 
+// TODO: There should be an enum (Offet<usize>, Interval<Range<usize>>, Node<usize>),
+// but we first need to implement context extraction based on an interval.
 /// Arguments for extracting a subgraph.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
@@ -96,7 +98,7 @@ impl SubgraphQuery {
     ///
     /// * `path_name`: Name of the reference path.
     /// * `interval`: Interval of the reference path (in bp).
-    /// * `context`: Context length around the reference position (in bp).
+    /// * `context`: Context length around the reference interval (in bp).
     /// * `output`: How to output the haplotypes.
     pub fn path_interval(path_name: &FullPathName, interval: Range<usize>, context: usize, output: HaplotypeOutput) -> Self {
         let radius = interval.len() / 2;
@@ -115,7 +117,7 @@ impl SubgraphQuery {
     /// # Arguments
     ///
     /// * `node_id`: Identifier of the reference node.
-    /// * `context`: Context length around the reference position (in bp).
+    /// * `context`: Context length around the reference node (in bp).
     /// * `output`: How to output the haplotypes.
     ///
     /// # Panics
@@ -431,7 +433,8 @@ impl Subgraph {
             let node_len = graph.sequence_len(node_id).ok_or(
                 format!("Cannot find node {}", node_id)
             )?;
-            // FIXME: If node length is odd, the right context is one bp too short.
+            // FIXME: If node length is even, the right context is one bp too long.
+            // What about odd length?
             let query_pos = GraphPosition {
                 node: node_id,
                 orientation: Orientation::Forward,
