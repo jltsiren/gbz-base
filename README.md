@@ -50,7 +50,7 @@ npm install --save gbz-base
 The `gbz2db.wasm` and `query.wasm` files are available for `import` as `gbz-db/gbz2db.wasm` and `gbz2db/query.wasm`. If you are targeting the browser using Webpack, you can `await import()` them and then get a fetchable URL in the `default` field of the result:
 
 ```
-let blobImport = import("gbz-base/query.wasm");
+let blobImport = await import("gbz-base/query.wasm");
 let blob = await fetch(blobImport.default);
 ```
 
