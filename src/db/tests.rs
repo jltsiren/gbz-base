@@ -1,6 +1,9 @@
 use super::*;
 
-use gbwt::{GBWT, Metadata};
+use gbwt::REF_SAMPLE;
+use gbwt::{Metadata, GBWT};
+
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 //-----------------------------------------------------------------------------
@@ -47,7 +50,7 @@ fn existing_path_by_handle(interface: &mut GraphInterface, path_handle: usize) -
     path.unwrap()
 }
 
-fn path_by_name(interface: &mut GraphInterface, name: &GBZPathName) -> Option<GBZPath> {
+fn path_by_name(interface: &mut GraphInterface, name: &FullPathName) -> Option<GBZPath> {
     let path = interface.find_path(name);
     assert!(path.is_ok(), "Failed to get path by name: {}", path.unwrap_err());
     path.unwrap()
@@ -157,6 +160,48 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
 //-----------------------------------------------------------------------------
 
 #[test]
+fn gbz_record_from_graph() {
+    // Load the graph.
+    let gbz_file = support::get_test_data("example.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let gbwt: &GBWT = graph.as_ref();
+    let bwt: &BWT = gbwt.as_ref();
+
+    // Check records for all handles, including ones that do not exist.
+    // Only check the raw data and rely on other tests for GBZRecord methods.
+    for handle in 0..=gbwt.alphabet_size() {
+        let record = GBZRecord::from_gbz(&graph, handle);
+        let node_id = support::node_id(handle);
+        if !graph.has_node(node_id) {
+            assert!(record.is_none(), "Found a record for nonexistent handle {}", handle);
+            continue;
+        } else {
+            assert!(record.is_some(), "Missing record for handle {}", handle);
+        }
+        let record = record.unwrap();
+
+        // Data from the GBWT record.
+        assert_eq!(record.handle, handle, "Wrong handle for handle {}", handle);
+        let record_id = gbwt.node_to_record(handle);
+        let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
+        let (edges, _) = Record::decompress_edges(edge_bytes).unwrap();
+        assert_eq!(record.edges, edges, "Wrong edges for handle {}", handle);
+        assert_eq!(record.bwt, bwt_bytes, "Wrong BWT for handle {}", handle);
+
+        // Sequence.
+        let sequence = graph.sequence(node_id).unwrap();
+        if support::node_orientation(handle) == Orientation::Forward {
+            assert_eq!(record.sequence, sequence, "Wrong sequence for handle {}", handle);
+        } else {
+            let rc = support::reverse_complement(sequence);
+            assert_eq!(record.sequence, rc, "Wrong sequence for handle {}", handle);
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+#[test]
 fn create_from_graph() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
@@ -236,6 +281,20 @@ fn get_path() {
         assert!(found_path.is_some(), "Could not find path {} by name", path_handle);
         let found_path = found_path.unwrap();
         assert_eq!(found_path, path, "Wrong path found by name for path {}", path_handle);
+
+        // Now we know that `path` is correct, so we can use it to check `GBZPath` creation from a GBZ graph.
+        let with_id = GBZPath::with_id(&graph, path_handle);
+        assert!(with_id.is_some(), "Could not create GBZPath {} from GBZ using id", path_handle);
+        let mut with_id = with_id.unwrap();
+        with_id.is_indexed = path.is_indexed;
+        assert_eq!(with_id, path, "Wrong GBZPath {} created from GBZ using id", path_handle);
+
+        // And again, but using the path name.
+        let with_name = GBZPath::with_name(&graph, &path.name);
+        assert!(with_name.is_some(), "Could not create GBZPath {} from GBZ using name", path.name);
+        let mut with_name = with_name.unwrap();
+        with_name.is_indexed = path.is_indexed;
+        assert_eq!(with_name, path, "Wrong GBZPath {} created from GBZ using name", path.name);
     }
 
     drop(interface);
@@ -287,7 +346,7 @@ fn nonexistent_paths() {
     assert!(by_handle.is_none(), "Found a nonexistent path by handle");
 
     // Paths by name.
-    let path_name = GBZPathName::reference("fake", "path");
+    let path_name = FullPathName::reference("fake", "path");
     let by_metadata = path_by_name(&mut interface, &path_name);
     assert!(by_metadata.is_none(), "Found a nonexistent path by name");
 
@@ -324,8 +383,7 @@ fn indexed_position() {
     let mut interface = create_interface(&database);
 
     // Check that paths corresponding to `gbwt::REF_SAMPLE` have been indexed.
-    // TODO: We should also check reference paths specified in the GFA file, but the example
-    // does not have any.
+    // TODO: We should have another test graph with reference paths instead of generic paths.
     const MAX_LEN: usize = 20; // This is enough for the example.
     let gbwt: &GBWT = graph.as_ref();
     for path_handle in 0..database.paths() {
