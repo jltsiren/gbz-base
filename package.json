@@ -1,0 +1,19 @@
+{
+  "name": "gbz-base",
+  "version": "0.1.0-alpha.1",
+  "description": "Prototype for an immutable pangenome graph in SQLite",
+  "homepage": "https://github.com/jltsiren/gbz-base",
+  "author": "Jouni Sirén",
+  "license": "MIT",
+  "files": [
+    "target/wasm32-wasi/release/*.wasm"
+  ],
+  "exports": {
+    "./gbz2db.wasm": "./target/wasm32-wasi/release/gbz2db.wasm",
+    "./gbz_base.wasm": "./target/wasm32-wasi/release/gbz_base.wasm",
+    "./query.wasm": "./target/wasm32-wasi/release/query.wasm"
+  },
+  "scripts": {
+    "build": "./build-wasm.sh"
+  }
+}
