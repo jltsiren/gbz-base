@@ -899,44 +899,43 @@ fn query_position_from_gbz(graph: &GBZ, path_index: &PathIndex, path: &GBZPath, 
 
 //-----------------------------------------------------------------------------
 
-fn distance_to_end(record: &GBZRecord, orientation: Orientation, offset: usize) -> usize {
-    if orientation == support::node_orientation(record.handle()) {
-        record.sequence_len() - offset
+fn distance_to_end(record: &GBZRecord, from: GraphPosition, orientation: Orientation) -> usize {
+    if orientation == from.orientation {
+        record.sequence_len() - from.offset
     } else {
-        offset + 1
+        from.offset + 1
     }
 }
 
-// Returns all node records within `context` bp around the given position.
-fn extract_context_from_db(
-    graph: &mut GraphInterface,
+fn extract_context(
     from: GraphPosition,
-    context: usize
+    context: usize,
+    mut get_record: impl FnMut(usize) -> Result<GBZRecord, String>
 ) -> Result<BTreeMap<usize, GBZRecord>, String> {
     // Start graph traversal from the initial node.
-    let mut active: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new(); // (distance, node id)
-    active.push(Reverse((0, from.node)));
+    let mut active: BinaryHeap<Reverse<(usize, GraphPosition)>> = BinaryHeap::new(); // (distance, node id)
+    active.push(Reverse((0, from)));
 
     // Traverse in both directions.
     let mut selected: BTreeMap<usize, GBZRecord> = BTreeMap::new();
     while !active.is_empty() {
-        let (distance, node_id) = active.pop().unwrap().0;
+        let (distance, position) = active.pop().unwrap().0;
         for orientation in [Orientation::Forward, Orientation::Reverse] {
-            let handle = support::encode_node(node_id, orientation);
+            let handle = support::encode_node(position.node, orientation);
             if selected.contains_key(&handle) {
                 continue;
             }
-            let record = graph.get_record(handle)?;
-            let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
-            let next_distance = if node_id == from.node {
-                distance_to_end(&record, from.orientation, from.offset)
-            } else {
-                distance + record.sequence_len()
-            };
+            let record = get_record(handle)?;
+            let next_distance = distance + distance_to_end(&record, position, orientation);
             if next_distance <= context {
                 for successor in record.successors() {
                     if !selected.contains_key(&successor) {
-                        active.push(Reverse((next_distance, support::node_id(successor))));
+                        let next = GraphPosition {
+                            node: support::node_id(successor),
+                            orientation: support::node_orientation(successor),
+                            offset: 0,
+                        };
+                        active.push(Reverse((next_distance, next)));
                     }
                 }
             }
@@ -953,39 +952,27 @@ fn extract_context_from_gbz(
     from: GraphPosition,
     context: usize
 ) -> Result<BTreeMap<usize, GBZRecord>, String> {
-    // Start graph traversal from the initial node.
-    let mut active: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new(); // (distance, node id)
-    active.push(Reverse((0, from.node)));
+    extract_context(
+        from, context,
+        |handle| GBZRecord::from_gbz(graph, handle).ok_or(
+            format!("The graph does not contain handle {}", handle)
+        )
+    )
+}
 
-    // Traverse in both directions.
-    let mut selected: BTreeMap<usize, GBZRecord> = BTreeMap::new();
-    while !active.is_empty() {
-        let (distance, node_id) = active.pop().unwrap().0;
-        for orientation in [Orientation::Forward, Orientation::Reverse] {
-            let handle = support::encode_node(node_id, orientation);
-            if selected.contains_key(&handle) {
-                continue;
-            }
-            let record = GBZRecord::from_gbz(graph, handle).ok_or(
-                format!("The graph does not contain handle {}", handle)
-            )?;
-            let next_distance = if node_id == from.node {
-                distance_to_end(&record, from.orientation, from.offset)
-            } else {
-                distance + record.sequence_len()
-            };
-            if next_distance <= context {
-                for successor in record.successors() {
-                    if !selected.contains_key(&successor) {
-                        active.push(Reverse((next_distance, support::node_id(successor))));
-                    }
-                }
-            }
-            selected.insert(handle, record);
+// Returns all node records within `context` bp around the given position.
+fn extract_context_from_db(
+    graph: &mut GraphInterface,
+    from: GraphPosition,
+    context: usize
+) -> Result<BTreeMap<usize, GBZRecord>, String> {
+    extract_context(
+        from, context,
+        |handle| {
+            let record = graph.get_record(handle)?;
+            record.ok_or(format!("The graph does not contain handle {}", handle))
         }
-    }
-
-    Ok(selected)
+    )
 }
 
 //-----------------------------------------------------------------------------
