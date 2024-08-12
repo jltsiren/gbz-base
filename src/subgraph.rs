@@ -49,7 +49,7 @@ impl Display for HaplotypeOutput {
     }
 }
 
-// TODO: There should be an enum (Offet<usize>, Interval<Range<usize>>, Node<usize>),
+// FIXME: There should be an enum (Offet<usize>, Interval<Range<usize>>, Node<usize>),
 // but we first need to implement context extraction based on an interval.
 /// Arguments for extracting a subgraph.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -418,6 +418,7 @@ impl Subgraph {
     /// assert_eq!(subgraph.path_count(), 3);
     /// ```
     pub fn from_gbz(graph: &GBZ, path_index: Option<&PathIndex>, query: &SubgraphQuery) -> Result<Self, String> {
+        // FIXME: Do interval-based and node-based properly.
         if query.is_path_based() {
             let path_index = path_index.ok_or(
                 String::from("Path index is required for path-based queries")
@@ -486,6 +487,7 @@ impl Subgraph {
     /// fs::remove_file(&db_file).unwrap();
     /// ```
     pub fn from_db(graph: &mut GraphInterface, query: &SubgraphQuery) -> Result<Self, String> {
+        // FIXME: Do interval-based and node-based properly.
         if query.is_path_based() {
             let ref_path = graph.find_path(query.path_name().unwrap())?;
             let ref_path = ref_path.ok_or(format!("Cannot find path {}", query.path_name().unwrap()))?;
