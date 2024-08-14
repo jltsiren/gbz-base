@@ -75,6 +75,10 @@ pub struct SubgraphQuery {
 impl SubgraphQuery {
     /// Creates a query that retrieves a subgraph around a path offset.
     ///
+    /// The reference path should be specified by using a sample name, a contig name, and optionally a haplotype number.
+    /// The fragment field should not be used.
+    /// If the reference haplotype is fragmented, the query will try to find the right fragment.
+    ///
     /// # Arguments
     ///
     /// * `path_name`: Name of the reference path.
@@ -93,6 +97,10 @@ impl SubgraphQuery {
 
     // FIXME: If interval length is odd, the right context is one bp too short.
     /// Cretes a query that retrieves a subgraph around a path interval.
+    ///
+    /// The reference path should be specified by using a sample name, a contig name, and optionally a haplotype number.
+    /// The fragment field should not be used.
+    /// If the reference haplotype is fragmented, the query will try to find the right fragment.
     ///
     /// # Arguments
     ///
@@ -169,6 +177,13 @@ impl SubgraphQuery {
     /// Returns the output format for the query.
     pub fn output(&self) -> HaplotypeOutput {
         self.output
+    }
+
+    // Returns a path name containing the query offset, assuming that this is a path-based query.
+    fn path_name_with_offset(&self) -> FullPathName {
+        let mut result = self.path_name().unwrap().clone();
+        result.fragment = self.offset().unwrap();
+        result
     }
 }
 
@@ -264,6 +279,8 @@ impl PathIndex {
             eprintln!("Building path index");
         }
 
+        // NOTE: For fragmented haplotypes, the reference positions are relative
+        // to the start of the fragment.
         let reference_paths = graph.reference_positions(interval, verbose);
         if reference_paths.is_empty() {
             return Err(String::from("No reference paths to index"));
@@ -423,12 +440,15 @@ impl Subgraph {
             let path_index = path_index.ok_or(
                 String::from("Path index is required for path-based queries")
             )?;
-            let ref_path = GBZPath::with_name(graph, query.path_name().unwrap()).ok_or(
-                format!("Cannot find path {}", query.path_name().unwrap())
+            let path_name = query.path_name_with_offset();
+            let ref_path = GBZPath::with_name(graph, &path_name).ok_or(
+                format!("Cannot find a path covering {}", path_name)
             )?;
-            let (query_pos, gbwt_pos) = query_position_from_gbz(graph, path_index, &ref_path, query.offset.unwrap())?;
+            // Transform the offset relative to the haplotype to the offset relative to the path.
+            let query_offset = path_name.fragment - ref_path.name.fragment;
+            let (query_pos, gbwt_pos) = query_position_from_gbz(graph, path_index, &ref_path, query_offset)?;
             let records = extract_context_from_gbz(graph, query_pos, query.context)?;
-            Self::path_based(records, ref_path, query.offset().unwrap(), query_pos, gbwt_pos, query.output())
+            Self::path_based(records, ref_path, query_offset, query_pos, gbwt_pos, query.output())
         } else if query.is_node_based() {
             let node_id = query.node_id().unwrap();
             let node_len = graph.sequence_len(node_id).ok_or(
@@ -489,14 +509,17 @@ impl Subgraph {
     pub fn from_db(graph: &mut GraphInterface, query: &SubgraphQuery) -> Result<Self, String> {
         // FIXME: Do interval-based and node-based properly.
         if query.is_path_based() {
-            let ref_path = graph.find_path(query.path_name().unwrap())?;
-            let ref_path = ref_path.ok_or(format!("Cannot find path {}", query.path_name().unwrap()))?;
+            let path_name = query.path_name_with_offset();
+            let ref_path = graph.find_path(&path_name)?;
+            let ref_path = ref_path.ok_or(format!("Cannot find a path covering {}", path_name))?;
             if !ref_path.is_indexed {
-                return Err(format!("Path {} has not been indexed for random access", query.path_name().unwrap()));
+                return Err(format!("Path {} has not been indexed for random access", ref_path.name));
             }
-            let (query_pos, gbwt_pos) = query_position_from_db(graph, &ref_path, query.offset.unwrap())?;
+            // Transform the offset relative to the haplotype to the offset relative to the path.
+            let query_offset = path_name.fragment - ref_path.name.fragment;
+            let (query_pos, gbwt_pos) = query_position_from_db(graph, &ref_path, query_offset)?;
             let records = extract_context_from_db(graph, query_pos, query.context)?;
-            Self::path_based(records, ref_path, query.offset().unwrap(), query_pos, gbwt_pos, query.output())
+            Self::path_based(records, ref_path, query_offset, query_pos, gbwt_pos, query.output())
         } else if query.is_node_based() {
             let node_id = query.node_id().unwrap();
             let record = graph.get_record(support::encode_node(node_id, Orientation::Forward))?;
@@ -1107,6 +1130,7 @@ fn extract_paths(
     Ok((result, ref_id_offset))
 }
 
+// Returns the distance (in bp) from the start of the path to the given position.
 fn distance_to(subgraph: &BTreeMap<usize, GBZRecord>, path: &[usize], path_offset: usize, node_offset: usize) -> usize {
     let mut result = node_offset;
     for handle in path.iter().take(path_offset) {

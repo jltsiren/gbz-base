@@ -10,6 +10,7 @@ use std::fs;
 //-----------------------------------------------------------------------------
 
 // TODO: We should also have a graph with reference paths for testing.
+// TODO: We should also have a graph with fragmented reference paths for testing.
 
 fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathIndex) {
     let gbz_file = support::get_test_data(filename);

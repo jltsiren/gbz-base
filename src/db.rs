@@ -401,6 +401,8 @@ impl GBZBase {
             (),
         )?;
 
+        // NOTE: If a reference haplotype is fragmented, the indexed positions will be relative
+        // to the start of each fragment.
         let reference_paths = graph.reference_positions(Self::INDEX_INTERVAL, true);
         if reference_paths.is_empty() {
             eprintln!("No reference paths to index");
@@ -584,16 +586,19 @@ impl GBZPath {
     }
 
     /// Creates a new path record from the given GBZ graph and path name.
+    ///
+    /// The fragment field is assumed to be an offset in the haplotype.
+    /// If the haplotype is fragmented, this returns the last fragment starting at or before the given offset.
     pub fn with_name(graph: &GBZ, name: &FullPathName) -> Option<Self> {
         let metadata = graph.metadata()?;
-        let path_id = metadata.find_path(name)?;
+        let path_id = metadata.find_fragment(name)?;
         let index: &GBWT = graph.as_ref();
         let fw_start = index.start(support::encode_path(path_id, Orientation::Forward))?;
         let rev_start = index.start(support::encode_path(path_id, Orientation::Reverse))?;
         Some(GBZPath {
             handle: path_id,
             fw_start, rev_start,
-            name: name.clone(),
+            name: FullPathName::from_metadata(metadata, path_id)?,
             is_indexed: false,
         })
     }
@@ -694,7 +699,10 @@ impl<'a> GraphInterface<'a> {
         ).map_err(|x| x.to_string())?;
 
         let find_path = database.connection.prepare(
-            "SELECT * FROM Paths WHERE sample = ?1 AND contig = ?2 AND haplotype = ?3 AND fragment = ?4"
+            "SELECT * FROM Paths
+            WHERE sample = ?1 AND contig = ?2 AND haplotype = ?3 AND fragment <= ?4
+            ORDER BY fragment DESC
+            LIMIT 1"
         ).map_err(|x| x.to_string())?;
 
         let paths_for_sample = database.connection.prepare(
@@ -774,6 +782,9 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns the path with the given name, or [`None`] if the path does not exist.
+    ///
+    /// The fragment field is assumed to be an offset in the haplotype.
+    /// If the haplotype is fragmented, this returns the last fragment starting at or before the given offset.
     pub fn find_path(&mut self, name: &FullPathName) -> Result<Option<GBZPath>, String> {
         self.find_path.query_row(
             (&name.sample, &name.contig, name.haplotype, name.fragment),
@@ -791,6 +802,8 @@ impl<'a> GraphInterface<'a> {
         }
         Ok(result)
     }
+
+    // TODO: List of all paths that are indexed. Handle fragmented haplotypes properly.
 
     /// Returns the last indexed position at or before offset `path_offset` on path `path_handle`.
     ///
