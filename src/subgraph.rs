@@ -16,7 +16,7 @@ use std::ops::Range;
 use gbwt::ENDMARKER;
 use gbwt::{GBZ, GBWT, Orientation, Pos, FullPathName};
 
-use gbwt::support;
+use gbwt::{algorithms, support};
 
 use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
 use simple_sds::ops::PredSucc;
@@ -624,6 +624,7 @@ impl Subgraph {
         edits.push((op, len));
     }
 
+    // TODO: Make the scoring parameters explicit and choose edits based on them.
     // Appends the relevant edits for two path intervals, which are assumed to be diverging.
     fn append_edits(&self, edits: &mut Vec<(EditOperation, usize)>, path: &[usize], path_interval: Range<usize>, ref_path: &[usize], ref_interval: Range<usize>) {
         let path_len = self.path_len(path, path_interval);
@@ -650,42 +651,18 @@ impl Subgraph {
             return None;
         }
 
-        // Fill in the LCS matrix.
-        // TODO: Something more efficient?
-        let ref_path = &self.paths[ref_id].path;
+        // Find the LCS of the paths weighted by node lengths.
+        let weight = &|handle: usize| -> usize {
+            self.records.get(&handle).unwrap().sequence_len()
+        };
         let path = &self.paths[path_id].path;
-        let mut dp_matrix = vec![vec![0; ref_path.len() + 1]; path.len() + 1];
-        for (path_offset, path_value) in path.iter().enumerate() {
-            for (ref_offset, ref_value) in ref_path.iter().enumerate() {
-                if path_value == ref_value {
-                    dp_matrix[path_offset + 1][ref_offset + 1] = dp_matrix[path_offset][ref_offset] + 1;
-                } else {
-                    dp_matrix[path_offset + 1][ref_offset + 1] = dp_matrix[path_offset][ref_offset + 1].max(dp_matrix[path_offset + 1][ref_offset]);
-                }
-            }
-        }
-
-        // Trace back the LCS.
-        let mut lcs: Vec<(usize, usize)> = Vec::new();
-        let mut path_offset = path.len();
-        let mut ref_offset = ref_path.len();
-        while path_offset > 0 && ref_offset > 0 {
-            if path[path_offset - 1] == ref_path[ref_offset - 1] {
-                lcs.push((path_offset - 1, ref_offset - 1));
-                path_offset -= 1;
-                ref_offset -= 1;
-            } else if dp_matrix[path_offset - 1][ref_offset] > dp_matrix[path_offset][ref_offset - 1] {
-                path_offset -= 1;
-            } else {
-                ref_offset -= 1;
-            }
-        }
-        lcs.reverse();
+        let ref_path = &self.paths[ref_id].path;
+        let (lcs, _) = algorithms::fast_weighted_lcs(path, ref_path, weight);
 
         // Convert the LCS to a sequence of edit operations
         let mut edits: Vec<(EditOperation, usize)> = Vec::new();
-        path_offset = 0;
-        ref_offset = 0;
+        let mut path_offset = 0;
+        let mut ref_offset = 0;
         for (next_path_offset, next_ref_offset) in lcs.iter() {
             self.append_edits(&mut edits, path, path_offset..*next_path_offset, ref_path, ref_offset..*next_ref_offset);
             let node_len = self.records.get(&path[*next_path_offset]).unwrap().sequence_len();
