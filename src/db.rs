@@ -474,6 +474,19 @@ impl GBZRecord {
         Some(GBZRecord { handle, edges, bwt, sequence })
     }
 
+    /// Creates a new GBZ record from the raw parts.
+    ///
+    /// This is primarily for testing.
+    ///
+    /// # Safety
+    ///
+    /// This is probably safe, even if the record breaks some invariants.
+    /// However, I do not have the time and the energy to determine the consequences.
+    #[doc(hidden)]
+    pub unsafe fn from_raw_parts(handle: usize, edges: Vec<Pos>, bwt: Vec<u8>, sequence: Vec<u8>) -> Self {
+        GBZRecord { handle, edges, bwt, sequence }
+    }
+
     /// Returns a GBWT record based on this record.
     ///
     /// The lifetime of the returned record is tied to this record.

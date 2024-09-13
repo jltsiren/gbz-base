@@ -9,8 +9,252 @@ use std::fs;
 
 //-----------------------------------------------------------------------------
 
+// Synthetic tests for Subgraph internals.
+
+fn subgraph_from_sequences(nodes: &[(usize, Vec<u8>)]) -> Subgraph {
+    let mut records: BTreeMap<usize, GBZRecord> = BTreeMap::new();
+    for (handle, sequence) in nodes.iter() {
+        let record = unsafe {
+            GBZRecord::from_raw_parts(*handle, Vec::new(), Vec::new(), sequence.clone())
+        };
+        records.insert(*handle, record);
+    }
+    Subgraph {
+        records,
+        paths: Vec::new(),
+        ref_id: None,
+        ref_path: None,
+        ref_interval: None,
+    }
+}
+
+fn create_subgraph() -> Subgraph {
+    let nodes = vec![
+        (1, b"A".to_vec()),
+        (2, b"B".to_vec()),
+        (3, b"AA".to_vec()),
+        (4, b"BB".to_vec()),
+        (5, b"ABA".to_vec()),
+        (6, b"BAB".to_vec()),
+    ];
+    subgraph_from_sequences(&nodes)
+}
+
+fn check_edits(subgraph: &Subgraph, path: &[usize], ref_path: &[usize], truth: &[(EditOperation, usize)], name: &str) {
+    let mut edits = Vec::new();
+    subgraph.align(path, ref_path, &mut edits);
+    assert_eq!(edits.len(), truth.len(), "Wrong number of edits for {}", name);
+    for (i, (edit, truth_edit)) in edits.iter().zip(truth.iter()).enumerate() {
+        assert_eq!(edit, truth_edit, "Wrong edit {} for {}", i, name);
+    }
+}
+
+#[test]
+fn align_special_cases() {
+    let subgraph = create_subgraph();
+    let empty = Vec::new();
+    let non_empty = vec![5, 6];
+
+    // (empty, empty)
+    {
+        let truth = Vec::new();
+        check_edits(&subgraph, &empty, &empty, &truth, "empty paths");
+    }
+
+    // (empty, non-empty)
+    {
+        let truth = vec![(EditOperation::Deletion, 6)];
+        check_edits(&subgraph, &empty, &non_empty, &truth, "empty vs. non-empty paths");
+    }
+
+    // (non-empty, empty)
+    {
+        let truth = vec![(EditOperation::Insertion, 6)];
+        check_edits(&subgraph, &non_empty, &empty, &truth, "non-empty vs. empty paths");
+    }
+
+    // (non-empty, non-empty)
+    {
+        let truth = vec![(EditOperation::Match, 6)];
+        check_edits(&subgraph, &non_empty, &non_empty, &truth, "identical paths");
+    }
+
+    // FIXME identical bases, different paths
+
+    // FIXME prefix + suffix length exceeds the length of the shorter path
+}
+
+#[test]
+fn align_no_prefix_no_suffix() {
+    let subgraph = create_subgraph();
+
+    // Insertion and deletion are in `align_special_cases`.
+
+    // Mismatch + insertion.
+    {
+        let path = vec![1, 2, 5]; // ABABA
+        let ref_path = vec![4]; // BB
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Insertion, 3),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
+    }
+
+    // Mismatch + deletion.
+    {
+        let path = vec![3]; // AA
+        let ref_path = vec![2, 1, 6]; // BABAB
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Deletion, 3),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
+    }
+
+    // Insertion + deletion.
+    {
+        let path = vec![1, 2, 5, 3]; // ABABAAA
+        let ref_path = vec![4, 2, 1, 6]; // BBBABAB
+        let truth = vec![
+            (EditOperation::Insertion, 7),
+            (EditOperation::Deletion, 7),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
+    }
+}
+
+#[test]
+fn align_no_prefix_with_suffix() {
+    let subgraph = create_subgraph();
+
+    // Insertion.
+    {
+        let path = vec![1, 2, 5]; // ABABA
+        let ref_path = vec![2, 1]; // BA
+        let truth = vec![
+            (EditOperation::Insertion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "insertion");
+    }
+
+    // Deletion.
+    {
+        let path = vec![1, 2]; // AB
+        let ref_path = vec![2, 1, 6]; // BABAB
+        let truth = vec![
+            (EditOperation::Deletion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "deletion");
+    }
+
+    // Mismatch + insertion.
+    {
+        let path = vec![5, 2, 5]; // ABABABA
+        let ref_path = vec![4, 2, 1]; // BBBA
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Insertion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
+    }
+
+    // Mismatch + deletion.
+    {
+        let path = vec![3, 1, 2]; // AAAB
+        let ref_path = vec![6, 1, 6]; // BABABAB
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Deletion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
+    }
+
+    // Insertion + deletion.
+    {
+        let path = vec![3, 2, 5, 5]; // AABABAABA
+        let ref_path = vec![4, 2, 1, 6, 1]; // BBBABABA
+        let truth = vec![
+            (EditOperation::Insertion, 6),
+            (EditOperation::Deletion, 5),
+            (EditOperation::Match, 3),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
+    }
+}
+
+#[test]
+fn align_with_prefix_no_suffix() {
+    let subgraph = create_subgraph();
+
+    // Insertion.
+    {
+        let path = vec![5, 2, 1]; // ABABA
+        let ref_path = vec![1, 2]; // AB
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Insertion, 3),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "insertion");
+    }
+
+    // Deletion.
+    {
+        let path = vec![2, 1]; // BA
+        let ref_path = vec![6, 1, 2]; // BABAB
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Deletion, 3),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "deletion");
+    }
+
+    // Mismatch + insertion.
+    {
+        let path = vec![5, 2, 5]; // ABABABA
+        let ref_path = vec![1, 2, 4]; // ABBB
+        let truth = vec![
+            (EditOperation::Match, 4),
+            (EditOperation::Insertion, 3),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
+    }
+
+    // Mismatch + deletion.
+    {
+        let path = vec![2, 1, 3]; // BAAA
+        let ref_path = vec![6, 1, 6]; // BABABAB
+        let truth = vec![
+            (EditOperation::Match, 4),
+            (EditOperation::Deletion, 3),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
+    }
+
+    // Insertion + deletion.
+    {
+        let path = vec![3, 2, 5, 5]; // AABABAABA
+        let ref_path = vec![1, 1, 4, 2, 1, 6, 2]; // AABBBABABB
+        let truth = vec![
+            (EditOperation::Match, 3),
+            (EditOperation::Insertion, 6),
+            (EditOperation::Deletion, 7),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
+    }
+}
+
+// FIXME prefix and suffix
+
+//-----------------------------------------------------------------------------
+
 // TODO: We should also have a graph with reference paths for testing.
 // TODO: We should also have a graph with fragmented reference paths for testing.
+// TODO: We should also have a graph with longer nodes for testing.
 
 fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathIndex) {
     let gbz_file = support::get_test_data(filename);
