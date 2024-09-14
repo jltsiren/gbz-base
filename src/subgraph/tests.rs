@@ -6,6 +6,7 @@ use crate::formats;
 use simple_sds::serialize;
 
 use std::fs;
+use std::vec;
 
 //-----------------------------------------------------------------------------
 
@@ -79,9 +80,33 @@ fn align_special_cases() {
         check_edits(&subgraph, &non_empty, &non_empty, &truth, "identical paths");
     }
 
-    // FIXME identical bases, different paths
+    // Identical bases, different paths.
+    {
+        let path = vec![1, 5, 3]; // AABAAA
+        let ref_path = vec![3, 2, 1, 3]; // AABAAA
+        let truth = vec![
+            (EditOperation::Match, 6),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "identical bases, different paths");
+    }
 
-    // FIXME prefix + suffix length exceeds the length of the shorter path
+    // Prefix + suffix length exceeds the length of the shorter path.
+    {
+        let short = vec![5, 5]; // ABAABA
+        let long = vec![1, 2, 3, 5, 3, 2, 1]; // ABAAABAAABA
+        let short_path = vec![
+            (EditOperation::Match, 4),
+            (EditOperation::Deletion, 5),
+            (EditOperation::Match, 2),
+        ];
+        let short_ref = vec![
+            (EditOperation::Match, 4),
+            (EditOperation::Insertion, 5),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &short, &long, &short_path, "Prefix + suffix length exceeds path length");
+        check_edits(&subgraph, &long, &short, &short_ref, "Prefix + suffix length exceeds reference length");
+    }
 }
 
 #[test]
@@ -248,7 +273,71 @@ fn align_with_prefix_no_suffix() {
     }
 }
 
-// FIXME prefix and suffix
+#[test]
+fn align_with_prefix_with_suffix() {
+    let subgraph = create_subgraph();
+
+    // Insertion.
+    {
+        let path = vec![5, 2, 5]; // ABABABA
+        let ref_path = vec![1, 4, 1]; // ABBA
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Insertion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "insertion");
+    }
+
+    // Deletion.
+    {
+        let path = vec![2, 3, 2]; // BAAB
+        let ref_path = vec![6, 1, 6]; // BABABAB
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Deletion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "deletion");
+    }
+
+    // Mismatch + insertion.
+    {
+        let path = vec![1, 2, 4, 6, 2, 1]; // ABBBBABBA
+        let ref_path = vec![5, 5]; // ABAABA
+        let truth = vec![
+            (EditOperation::Match, 4),
+            (EditOperation::Insertion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
+    }
+
+    // Mismatch + deletion.
+    {
+        let path = vec![2, 3, 3, 2]; // BAAAAB
+        let ref_path = vec![2, 5, 3, 6]; // BABAAABAB
+        let truth = vec![
+            (EditOperation::Match, 4),
+            (EditOperation::Deletion, 3),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
+    }
+
+    // Insertion + deletion.
+    {
+        let path = vec![1, 5, 4, 3, 4]; // AABABBAABB
+        let ref_path = vec![3, 1, 5, 1, 4, 2]; // AAAABAABBB
+        let truth = vec![
+            (EditOperation::Match, 2),
+            (EditOperation::Insertion, 6),
+            (EditOperation::Deletion, 6),
+            (EditOperation::Match, 2),
+        ];
+        check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
+    }
+}
 
 //-----------------------------------------------------------------------------
 
