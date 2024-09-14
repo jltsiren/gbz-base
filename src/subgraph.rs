@@ -12,6 +12,7 @@ use std::collections::{BinaryHeap, BTreeMap, HashMap};
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::ops::Range;
+use std::cmp;
 
 use gbwt::ENDMARKER;
 use gbwt::{GBZ, GBWT, Orientation, Pos, FullPathName};
@@ -603,18 +604,21 @@ impl Subgraph {
         self.paths.len()
     }
 
-    // Returns the total length of the nodes in the given path interval.
-    fn path_len(&self, path: &[usize], interval: Range<usize>) -> usize {
+    // Returns the total length of the nodes.
+    fn path_len(&self, path: &[usize]) -> usize {
         let mut result = 0;
-        for i in interval {
-            let record = self.records.get(&path[i]).unwrap();
+        for handle in path.iter() {
+            let record = self.records.get(handle).unwrap();
             result += record.sequence_len();
         }
         result
     }
 
-    // Appends a new edit or extends the previous one.
+    // Appends a new edit or extends the previous one. No effect if `len` is zero.
     fn append_edit(edits: &mut Vec<(EditOperation, usize)>, op: EditOperation, len: usize) {
+        if len == 0 {
+            return;
+        }
         if let Some((prev_op, prev_len)) = edits.last_mut() {
             if *prev_op == op {
                 *prev_len += len;
@@ -624,27 +628,131 @@ impl Subgraph {
         edits.push((op, len));
     }
 
-    // TODO: Make the scoring parameters explicit and choose edits based on them.
-    // Appends the relevant edits for two path intervals, which are assumed to be diverging.
-    fn append_edits(&self, edits: &mut Vec<(EditOperation, usize)>, path: &[usize], path_interval: Range<usize>, ref_path: &[usize], ref_interval: Range<usize>) {
-        let path_len = self.path_len(path, path_interval);
-        let ref_len = self.path_len(ref_path, ref_interval);
-        if path_len == ref_len && path_len > 0 && path_len < 5 {
-            Self::append_edit(edits, EditOperation::Match, path_len);
+    // Returns the number of matching bases at the start of the two paths.
+    fn prefix_matches(&self, path: &[usize], ref_path: &[usize]) -> usize {
+        let mut result = 0;
+        let mut path_offset = 0;
+        let mut ref_offset = 0;
+        let mut path_base = 0;
+        let mut ref_base = 0;
+        while path_offset < path.len() && ref_offset < ref_path.len() {
+            let a = self.records.get(&path[path_offset]).unwrap().sequence();
+            let b = self.records.get(&ref_path[ref_offset]).unwrap().sequence();
+            while path_base < a.len() && ref_base < b.len() {
+                if a[path_base] != b[ref_base] {
+                    return result;
+                }
+                path_base += 1;
+                ref_base += 1;
+                result += 1;
+            }
+            if path_base == a.len() {
+                path_offset += 1;
+                path_base = 0;
+            }
+            if ref_base == b.len() {
+                ref_offset += 1;
+                ref_base = 0;
+            }
+        }
+        result
+    }
+
+    // Returns the number of matching bases at the end of the two paths.
+    fn suffix_matches(&self, path: &[usize], ref_path: &[usize]) -> usize {
+        let mut result = 0;
+        let mut path_offset = 0;
+        let mut ref_offset = 0;
+        let mut path_base = 0;
+        let mut ref_base = 0;
+        while path_offset < path.len() && ref_offset < ref_path.len() {
+            let a = self.records.get(&path[path.len() - path_offset - 1]).unwrap().sequence();
+            let b = self.records.get(&ref_path[ref_path.len() - ref_offset - 1]).unwrap().sequence();
+            while path_base < a.len() && ref_base < b.len() {
+                if a[a.len() - path_base - 1] != b[b.len() - ref_base - 1] {
+                    return result;
+                }
+                path_base += 1;
+                ref_base += 1;
+                result += 1;
+            }
+            if path_base == a.len() {
+                path_offset += 1;
+                path_base = 0;
+            }
+            if ref_base == b.len() {
+                ref_offset += 1;
+                ref_base = 0;
+            }
+        }
+        result
+    }
+
+    // Returns the penalty for a mismatch of the given length.
+    fn mismatch_penalty(len: usize) -> usize {
+        4 * len
+    }
+
+    // Returns the penalty for a gap of the given length.
+    fn gap_penalty(len: usize) -> usize {
+        if len == 0 {
+            0
         } else {
-            if path_len > 0 {
-                Self::append_edit(edits, EditOperation::Insertion, path_len);
-            }
-            if ref_len > 0 {
-                Self::append_edit(edits, EditOperation::Deletion, ref_len);
-            }
+            6 + (len - 1)
         }
     }
 
+    // FIXME: tests
+    // Appends edits corresponding to the alignment of the given (sub)paths.
+    // The paths are assumed to be diverging, but there may be base-level matches at the start/end.
+    // The middle part is either mismatch + gap or insertion + deletion, with gap length possibly 0.
+    // Alignment scoring follows the parameters used in vg:
+    // +1 for a match, -4 for a mismatch, -6 for gap open, -1 for gap extend.
+    //
+    // NOTE: It is possible that some of the mismatches are actually matches.
+    // But we ignore this possibility, as the paths are assumed to be diverging.
+    fn align(&self, path: &[usize], ref_path: &[usize], edits: &mut Vec<(EditOperation, usize)>) {
+        let path_len = self.path_len(path);
+        let ref_len = self.path_len(ref_path);
+        let prefix = self.prefix_matches(path, ref_path);
+        let mut suffix = self.suffix_matches(path, ref_path);
+        if prefix + suffix > path_len {
+            suffix = path_len - prefix;
+        }
+        if prefix + suffix > ref_len {
+            suffix = ref_len - prefix;
+        }
+
+
+        Self::append_edit(edits, EditOperation::Match, prefix);
+        let path_middle = path_len - prefix - suffix;
+        let ref_middle = ref_len - prefix - suffix;
+        if path_middle == 0 {
+            Self::append_edit(edits, EditOperation::Deletion, ref_middle);
+        } else if ref_middle == 0 {
+            Self::append_edit(edits, EditOperation::Insertion, path_middle);
+        } else {
+            let mismatch = cmp::min(path_middle, ref_middle);
+            let mismatch_indel =
+                Self::mismatch_penalty(mismatch) +
+                Self::gap_penalty(path_middle - mismatch) +
+                Self::gap_penalty(ref_middle - mismatch);
+            let insertion_deletion = Self::gap_penalty(path_middle) + Self::gap_penalty(ref_middle);
+            if mismatch_indel <= insertion_deletion {
+                Self::append_edit(edits, EditOperation::Match, mismatch);
+                Self::append_edit(edits, EditOperation::Insertion, path_middle - mismatch);
+                Self::append_edit(edits, EditOperation::Deletion, ref_middle - mismatch);
+            } else {
+                Self::append_edit(edits, EditOperation::Insertion, path_middle);
+                Self::append_edit(edits, EditOperation::Deletion, ref_middle);
+            }
+        }
+        Self::append_edit(edits, EditOperation::Match, suffix);
+    }
+
     // Returns the CIGAR string for the given path, aligned to the reference path.
-    // Takes the alignment from the longest common subsequence of the node sequences.
-    // Diverging parts that are of equal length and at most 4 bp are represented as
-    // matches. Otherwise they are represented as an insertion and/or a deletion.
+    // Takes the alignment from the LCS of the paths weighted by node lengths.
+    // Diverging parts are aligned using `align()`.
     fn align_to_ref(&self, path_id: usize) -> Option<String> {
         let ref_id = self.ref_id?;
         if path_id == ref_id || path_id >= self.paths.len() {
@@ -664,13 +772,15 @@ impl Subgraph {
         let mut path_offset = 0;
         let mut ref_offset = 0;
         for (next_path_offset, next_ref_offset) in lcs.iter() {
-            self.append_edits(&mut edits, path, path_offset..*next_path_offset, ref_path, ref_offset..*next_ref_offset);
+            let path_interval = &path[path_offset..*next_path_offset];
+            let ref_interval = &ref_path[ref_offset..*next_ref_offset];
+            self.align(path_interval, ref_interval, &mut edits);
             let node_len = self.records.get(&path[*next_path_offset]).unwrap().sequence_len();
             Self::append_edit(&mut edits, EditOperation::Match, node_len);
             path_offset = next_path_offset + 1;
             ref_offset = next_ref_offset + 1;
         }
-        self.append_edits(&mut edits, path, path_offset..path.len(), ref_path, ref_offset..ref_path.len());
+        self.align(&path[path_offset..], &ref_path[ref_offset..], &mut edits);
 
         // Convert the edits to a CIGAR string.
         let mut result = String::new();
