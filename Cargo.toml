@@ -21,6 +21,12 @@ bench = false
 doc = false
 
 [[bin]]
+name = "gaf2db"
+test = false
+bench = false
+doc = false
+
+[[bin]]
 name = "query"
 test = false
 bench = false

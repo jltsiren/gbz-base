@@ -1,7 +1,7 @@
 use std::time::Instant;
 use std::{env, fs, process};
 
-use gbz_base::GBZBase;
+use gbz_base::GAFBase;
 use getopts::Options;
 
 //-----------------------------------------------------------------------------
@@ -13,7 +13,7 @@ fn main() -> Result<(), String> {
     let config = Config::new();
 
     // Check if the database already exists.
-    if GBZBase::exists(&config.db_file) {
+    if GAFBase::exists(&config.db_file) {
         if config.overwrite {
             eprintln!("Overwriting database {}", config.db_file);
             fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;
@@ -23,13 +23,13 @@ fn main() -> Result<(), String> {
     }
 
     // Create the database.
-    GBZBase::create_from_file(&config.gbz_file, &config.db_file)?;
+    GAFBase::create_from_file(&config.gbwt_file, &config.db_file)?;
 
     // Statistics.
-    let database = GBZBase::open(&config.db_file)?;
+    let database = GAFBase::open(&config.db_file)?;
     eprintln!(
-        "The graph contains {} nodes, {} samples, {} haplotypes, {} contigs, and {} paths",
-        database.nodes(), database.samples(), database.haplotypes(), database.contigs(), database.paths()
+        "The database contains {} nodes, {} alignments, and {} sequences",
+        database.nodes(), database.alignments(), database.sequences()
     );
     let size = database.file_size().unwrap_or(String::from("unknown"));
     eprintln!("Final database size: {}", size);
@@ -44,7 +44,7 @@ fn main() -> Result<(), String> {
 //-----------------------------------------------------------------------------
 
 struct Config {
-    pub gbz_file: String,
+    pub gbwt_file: String,
     pub db_file: String,
     pub overwrite: bool,
 }
@@ -68,7 +68,7 @@ impl Config {
 
         let mut db_file: Option<String> = None;
         if matches.opt_present("h") {
-            let header = format!("Usage: {} [options] graph.gbz", program);
+            let header = format!("Usage: {} [options] alignments.gbwt", program);
             eprint!("{}", opts.usage(&header));
             process::exit(0);
         }
@@ -76,21 +76,21 @@ impl Config {
             db_file = Some(s);
         }
 
-        let gbz_file = if let Some(s) = matches.free.first() {
+        let gbwt_file = if let Some(s) = matches.free.first() {
             s.clone()
         } else {
-            let header = format!("Usage: {} [options] graph.gbz", program);
+            let header = format!("Usage: {} [options] alignments.gbwt", program);
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
         if db_file.is_none() {
-            db_file = Some(format!("{}.db", gbz_file));
+            db_file = Some(format!("{}.db", gbwt_file));
         }
 
         let overwrite = matches.opt_present("overwrite");
 
         Config {
-            gbz_file,
+            gbwt_file,
             db_file: db_file.unwrap(),
             overwrite,
         }

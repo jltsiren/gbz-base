@@ -245,6 +245,7 @@ fn create_from_file() {
 
 //-----------------------------------------------------------------------------
 
+// FIXME handle empty paths
 #[test]
 fn get_path() {
     // Load the graph.

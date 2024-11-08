@@ -2,6 +2,7 @@
 // TODO: After the integration, move the module-level documentation here.
 
 use std::path::Path;
+use std::fs;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
@@ -16,7 +17,7 @@ mod tests;
 
 //-----------------------------------------------------------------------------
 
-/// A database connection.
+/// A database connection to a GBZ-base database.
 ///
 /// This structure stores a database connection and some header information.
 /// In multi-threaded applications, each thread should have its own connection.
@@ -131,6 +132,15 @@ impl GBZBase {
     /// Returns the filename of the database.
     pub fn filename(&self) -> Result<&str, String> {
         self.connection.path().ok_or("No filename for the database".to_string())
+    }
+
+    /// Returns the size of the database file in a human-readable format.
+    pub fn file_size(&self) -> Option<String> {
+        let filename = self.filename();
+        if filename.is_err() {
+            return None;
+        }
+        file_size(filename.unwrap())
     }
 
     /// Returns the version of the database.
@@ -368,8 +378,8 @@ impl GBZBase {
             let index: &GBWT = graph.as_ref();
             let metadata = graph.metadata().unwrap();
             for handle in 0..metadata.paths() {
-                let fw_start = index.start(support::encode_node(handle, Orientation::Forward)).unwrap();
-                let rev_start = index.start(support::encode_node(handle, Orientation::Reverse)).unwrap();
+                let fw_start = path_start(index, handle, Orientation::Forward);
+                let rev_start = path_start(index, handle, Orientation::Reverse);
                 let name = FullPathName::from_metadata(metadata, handle).unwrap();
                 insert.execute((
                     handle,
@@ -429,6 +439,395 @@ impl GBZBase {
         }
         transaction.commit()?;
 
+        Ok(())
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// FIXME document, test, query interface
+// FIXME remember to test with empty paths
+/// A database connection to a GAF-base database.
+#[derive(Debug)]
+pub struct GAFBase {
+    connection: Connection,
+    version: String,
+    nodes: usize,
+    alignments: usize,
+    sequences: usize,
+    prefix: String,
+}
+
+/// Using the database.
+impl GAFBase {
+    // Key for database version.
+    const KEY_VERSION: &'static str = "version";
+
+    /// Current database version.
+    pub const VERSION: &'static str = "0.1.0";
+
+    // Key for node count.
+    const KEY_NODES: &'static str = "nodes";
+
+    // Key for alignment count.
+    const KEY_ALIGNMENTS: &'static str = "alignments";
+
+    // Key for sequence count.
+    const KEY_SEQUENCES: &'static str = "sequences";
+
+    // Key for the common prefix of sequence names.
+    const KEY_PREFIX: &'static str = "prefix";
+
+    /// Opens a connection to the database in the given file.
+    ///
+    /// Reads the header information and passes through any database errors.
+    pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self, String> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let connection = Connection::open_with_flags(filename, flags).map_err(|x| x.to_string())?;
+
+        // Get some header information.
+        let mut get_tag = connection.prepare(
+            "SELECT value FROM Tags WHERE key = ?1"
+        ).map_err(|x| x.to_string())?;
+        let version = Self::get_string_value(&mut get_tag, Self::KEY_VERSION)?;
+        if version != Self::VERSION {
+            return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
+        }
+        let nodes = Self::get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
+        let alignments = Self::get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
+        let sequences = Self::get_numeric_value(&mut get_tag, Self::KEY_SEQUENCES)?;
+        let prefix = Self::get_string_value(&mut get_tag, Self::KEY_PREFIX)?;
+        drop(get_tag);
+
+        Ok(GAFBase {
+            connection,
+            version,
+            nodes, alignments, sequences,
+            prefix,
+        })
+    }
+
+    // FIXME We already have this in GBZBase
+    /// Returns `true` if the database `filename` exists.
+    pub fn exists<P: AsRef<Path>>(filename: P) -> bool {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let connection = Connection::open_with_flags(filename, flags);
+        connection.is_ok()
+    }
+
+    /// Returns the filename of the database.
+    pub fn filename(&self) -> Result<&str, String> {
+        self.connection.path().ok_or("No filename for the database".to_string())
+    }
+
+    /// Returns the size of the database file in a human-readable format.
+    pub fn file_size(&self) -> Option<String> {
+        let filename = self.filename();
+        if filename.is_err() {
+            return None;
+        }
+        file_size(filename.unwrap())
+    }
+
+    /// Returns the version of the database.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Returns the number of nodes in the graph.
+    pub fn nodes(&self) -> usize {
+        self.nodes
+    }
+
+    /// Returns the number of alignments in the database.
+    pub fn alignments(&self) -> usize {
+        self.alignments
+    }
+
+    /// Returns the number of sequences in the database.
+    ///
+    /// Each sequence corresponds to one or more alignments.
+    pub fn sequences(&self) -> usize {
+        self.sequences
+    }
+
+    /// Returns the longest common prefix of sequence names.
+    ///
+    /// This prefix is stored only once to save space.
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    // FIXME We already have this in GBZBase
+    fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, String> {
+        let result: rusqlite::Result<String> = statement.query_row(
+            (key,),
+            |row| row.get(0)
+        );
+        match result {
+            Ok(value) => Ok(value),
+            Err(x) => Err(format!("Key not found: {} ({})", key, x)),
+        }
+    }
+
+    // FIXME We already have this in GBZBase
+    fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
+        let value = Self::get_string_value(statement, key)?;
+        value.parse::<usize>().map_err(|x| x.to_string())
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+/// Creating the database.
+impl GAFBase {
+    // FIXME We need to include the rest of the data from the GAF file.
+    /// Creates a new database from the GBWT index in file `gbwt_file` and stores the database in file `db_file`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database already exists or if the GBWT index does not contain sufficient metadata.
+    /// Passes through any database errors.
+    pub fn create_from_file<P: AsRef<Path>, Q: AsRef<Path>>(gbwt_file: P, db_file: Q) -> Result<(), String> {
+        eprintln!("Loading GBWT index {}", gbwt_file.as_ref().display());
+        let index: GBWT = serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?;
+        Self::create(&index, db_file)
+    }
+
+    // Sanity checks for the GBWT index. We do not want to handle indexes without sufficient metadata.
+    fn sanity_checks(index: &GBWT) -> Result<(), String> {
+        let metadata = index.metadata().ok_or(
+            String::from("The GBWT index does not contain metadata")
+        )?;
+
+        if !metadata.has_path_names() {
+            return Err("The metadata does not contain path names".to_string());
+        }
+        if !metadata.has_sample_names() {
+            return Err("The metadata does not contain sample names".to_string());
+        }
+
+        Ok(())
+    }
+
+    /// Creates a new database in file `filename` from the given GBWT index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the database already exists or if the GBWT index does not contain sufficient metadata.
+    /// Passes through any database errors.
+    pub fn create<P: AsRef<Path>>(index: &GBWT, filename: P) -> Result<(), String> {
+        eprintln!("Creating database {}", filename.as_ref().display());
+        if Self::exists(&filename) {
+            return Err(format!("Database {} already exists", filename.as_ref().display()));
+        }
+        Self::sanity_checks(index)?;
+
+        let mut connection = Connection::open(&filename).map_err(|x| x.to_string())?;
+        let nodes = Self::insert_nodes(index, &mut connection).map_err(|x| x.to_string())?;
+        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
+        let prefix = Self::insert_sequences(index, &mut connection).map_err(|x| x.to_string())?;
+        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
+        Self::insert_tags(index, nodes, prefix, &mut connection).map_err(|x| x.to_string())?;
+        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
+        Self::insert_alignments(index, &mut connection).map_err(|x| x.to_string())?;
+        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
+        Ok(())
+    }
+
+    fn insert_tags(index: &GBWT, nodes: usize, prefix: String, connection: &mut Connection) -> rusqlite::Result<()> {
+        eprintln!("Inserting header and tags");
+
+        // Create the tags table.
+        connection.execute(
+            "CREATE TABLE Tags (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) STRICT",
+            (),
+        )?;
+
+        // Insert header and tags.
+        let mut inserted = 0;
+        let transaction = connection.transaction()?;
+        {
+            let mut insert = transaction.prepare(
+                "INSERT INTO Tags(key, value) VALUES (?1, ?2)"
+            )?;
+
+            // Header.
+            let metadata = index.metadata().unwrap();
+            insert.execute((Self::KEY_VERSION, Self::VERSION))?;
+            insert.execute((Self::KEY_NODES, nodes))?;
+            insert.execute((Self::KEY_ALIGNMENTS, metadata.paths()))?;
+            insert.execute((Self::KEY_SEQUENCES, metadata.samples()))?;
+            insert.execute((Self::KEY_PREFIX, prefix))?;
+            inserted += 5;
+        }
+        transaction.commit()?;
+
+        eprintln!("Inserted {} key-value pairs", inserted);
+        Ok(())
+    }
+
+    // Returns the number of nodes in the graph.
+    fn insert_nodes(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<usize> {
+        eprintln!("Inserting nodes");
+
+        // Create the nodes table.
+        connection.execute(
+            "CREATE TABLE Nodes (
+                handle INTEGER PRIMARY KEY,
+                edges BLOB NOT NULL,
+                bwt BLOB NOT NULL
+            ) STRICT",
+            (),
+        )?;
+
+        // Insert the nodes.
+        let mut inserted = 0;
+        let transaction = connection.transaction()?;
+        {
+            let mut insert = transaction.prepare(
+                "INSERT INTO Nodes(handle, edges, bwt) VALUES (?1, ?2, ?3)"
+            )?;
+            let bwt: &BWT = index.as_ref();
+            for record_id in bwt.id_iter() {
+                if record_id == gbwt::ENDMARKER {
+                    continue;
+                }
+                let handle = index.record_to_node(record_id);
+                let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
+                insert.execute((handle, edge_bytes, bwt_bytes))?;
+                inserted += 1;
+            }
+        }
+        transaction.commit()?;
+
+        eprintln!("Inserted {} node records", inserted);
+        Ok(inserted / 2)
+    }
+
+    // Returns the longest common prefix of sequence names.
+    fn insert_sequences(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<String> {
+        eprintln!("Inserting sequence names");
+
+        connection.execute(
+            "CREATE TABLE Sequences (
+                handle INTEGER PRIMARY KEY,
+                name TEXT NOT NULL
+            ) STRICT",
+            (),
+        )?;
+
+        // Determine the longest common prefix of sequence names.
+        // TODO: This is a hack. There could be multiple shared prefixes but no single common prefix.
+        // We should access the sample name dictionary and iterate over it in sorted order to figure out the common prefixes.
+        let metadata = index.metadata().unwrap();
+        let mut common_prefix: Option<Vec<u8>> = None;
+        for sample_name in metadata.sample_iter() {
+            if let Some(prefix) = common_prefix.as_mut() {
+                let mut len = 0;
+                for (a, b) in prefix.iter().zip(sample_name.iter()) {
+                    if a == b {
+                        len += 1;
+                    } else {
+                        break;
+                    }
+                }
+                prefix.truncate(len);
+            } else {
+                common_prefix = Some(sample_name.to_vec());
+            }
+        }
+        let common_prefix = common_prefix.unwrap_or(Vec::new());
+        let common_prefix = String::from_utf8(common_prefix).unwrap_or(String::new());
+
+        // Insert the sequences, excluding the common prefix.
+        let mut inserted = 0;
+        let transaction = connection.transaction()?;
+        {
+            let mut insert = transaction.prepare(
+                "INSERT INTO Sequences(handle, name) VALUES (?1, ?2)"
+            )?;
+            for handle in 0..metadata.samples() {
+                let name = metadata.sample_name(handle);
+                insert.execute((handle, &name[common_prefix.len()..]))?;
+                inserted += 1;
+            }
+        }
+        transaction.commit()?;
+
+        eprintln!("Inserted {} sequence names", inserted);
+        Ok(common_prefix)
+    }
+
+    fn insert_alignments(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<()> {
+        eprintln!("Inserting alignments");
+
+        // FIXME This needs to have metadata from the GAF file
+        // * query_coordinates(left tail, length, right tail)
+        // * target_coordinates(left tail, length, right tail)
+        // * alignment_statistics(matches, edits, mapq, score)
+        // * difference string
+        // * quality string
+        // * pair id + properly paired flag
+        // * optional tags
+        // Do we really need path starts in both orientations?
+        // Create the paths table.
+        /*connection.execute(
+            "CREATE TABLE Alignments (
+                handle INTEGER PRIMARY KEY,
+                sequence INTEGER NOT NULL,
+                fw_node INTEGER NOT NULL,
+                fw_offset INTEGER NOT NULL,
+                rev_node INTEGER NOT NULL,
+                rev_offset INTEGER NOT NULL,
+                FOREIGN KEY (sequence) REFERENCES Sequences(handle)
+            ) STRICT",
+            (),
+        )?;*/
+        connection.execute(
+            "CREATE TABLE Alignments (
+                handle INTEGER PRIMARY KEY,
+                sequence INTEGER NOT NULL,
+                fw_node INTEGER NOT NULL,
+                fw_offset INTEGER NOT NULL,
+                FOREIGN KEY (sequence) REFERENCES Sequences(handle)
+            ) STRICT",
+            (),
+        )?;
+
+        // Insert path starts and metadata.
+        let mut inserted = 0;
+        let transaction = connection.transaction()?;
+        {
+/*             let mut insert = transaction.prepare(
+                "INSERT INTO
+                    Alignments(handle, sequence, fw_node, fw_offset, rev_node, rev_offset)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+            )?;*/
+            let mut insert = transaction.prepare(
+                "INSERT INTO
+                    Alignments(handle, sequence, fw_node, fw_offset)
+                    VALUES (?1, ?2, ?3, ?4)"
+            )?;
+            let metadata = index.metadata().unwrap();
+            for handle in 0..metadata.paths() {
+                let sequence = metadata.path(handle).unwrap().sample();
+                let fw_start = path_start(index, handle, Orientation::Forward);
+//                let rev_start = path_start(index, handle, Orientation::Reverse);
+                insert.execute((
+                    handle, sequence,
+                    fw_start.node, fw_start.offset,
+//                    rev_start.node, rev_start.offset,
+                ))?;
+                inserted += 1;
+            }
+        }
+        transaction.commit()?;
+
+        eprintln!("Inserted information on {} alignments", inserted);
         Ok(())
     }
 }
@@ -583,12 +982,12 @@ impl GBZPath {
         self.name.to_string()
     }
 
-    /// Cretes a new path record from the given GBZ graph and a path identifier.
+    /// Creates a new path record from the given GBZ graph and a path identifier.
     pub fn with_id(graph: &GBZ, path_id: usize) -> Option<Self> {
         let metadata = graph.metadata()?;
         let index: &GBWT = graph.as_ref();
-        let fw_start = index.start(support::encode_path(path_id, Orientation::Forward))?;
-        let rev_start = index.start(support::encode_path(path_id, Orientation::Reverse))?;
+        let fw_start = path_start(index, path_id, Orientation::Forward);
+        let rev_start = path_start(index, path_id, Orientation::Reverse);
         let name = FullPathName::from_metadata(metadata, path_id)?;
         Some(GBZPath {
             handle: path_id,
@@ -606,8 +1005,8 @@ impl GBZPath {
         let metadata = graph.metadata()?;
         let path_id = metadata.find_fragment(name)?;
         let index: &GBWT = graph.as_ref();
-        let fw_start = index.start(support::encode_path(path_id, Orientation::Forward))?;
-        let rev_start = index.start(support::encode_path(path_id, Orientation::Reverse))?;
+        let fw_start = path_start(index, path_id, Orientation::Forward);
+        let rev_start = path_start(index, path_id, Orientation::Reverse);
         Some(GBZPath {
             handle: path_id,
             fw_start, rev_start,
@@ -836,10 +1235,41 @@ impl<'a> GraphInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
+// Helper functions.
+
+// A version of `gbwt::GBWT::start` that returns `(gbwt::ENDMARKER, 0)` if the path is empty or does not exist.
+fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos {
+    index.start(support::encode_path(path_id, orientation)).unwrap_or(Pos::new(gbwt::ENDMARKER, 0))
+}
+
+const SIZE_UNITS: [(f64, &'static str); 6] = [
+    (1.0, "B"),
+    (1024.0, "KiB"),
+    (1024.0 * 1024.0, "MiB"),
+    (1024.0 * 1024.0 * 1024.0, "GiB"),
+    (1024.0 * 1024.0 * 1024.0 * 1024.0, "TiB"),
+    (1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0, "PiB"),
+];
+
+// Returns a human-readable size of the file.
+fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
+    let metadata = fs::metadata(filename).map_err(|x| x.to_string());
+    if metadata.is_err() {
+        return None;
+    }
+    let bytes = metadata.unwrap().len() as f64;
+    let mut unit = 0;
+    while unit + 1 < SIZE_UNITS.len() && bytes >= SIZE_UNITS[unit + 1].0 {
+        unit += 1;
+    }
+    Some(format!("{:.3} {}", bytes / SIZE_UNITS[unit].0, SIZE_UNITS[unit].1))
+}
+
 const DECODE: [u8; 6] = [0, b'A', b'C', b'G', b'T', b'N'];
 
 fn decode_sequence(encoding: &[u8]) -> Vec<u8> {
-    let mut result = Vec::with_capacity(3 * encoding.len() - 1);
+    let capacity = if encoding.is_empty() { 0 } else { 3 * encoding.len() - 1 };
+    let mut result = Vec::with_capacity(capacity);
 
     for byte in encoding {
         let mut value = *byte as usize;
