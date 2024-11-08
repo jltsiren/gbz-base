@@ -702,7 +702,6 @@ impl Subgraph {
         }
     }
 
-    // FIXME: tests
     // Appends edits corresponding to the alignment of the given (sub)paths.
     // The paths are assumed to be diverging, but there may be base-level matches at the start/end.
     // The middle part is either mismatch + gap or insertion + deletion, with gap length possibly 0.

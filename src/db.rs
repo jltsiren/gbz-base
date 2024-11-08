@@ -244,7 +244,7 @@ impl GBZBase {
             "CREATE TABLE Tags (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
-            )",
+            ) STRICT",
             (),
         )?;
 
@@ -297,7 +297,7 @@ impl GBZBase {
                 edges BLOB NOT NULL,
                 bwt BLOB NOT NULL,
                 sequence BLOB NOT NULL
-            )",
+            ) STRICT",
             (),
         )?;
 
@@ -352,7 +352,7 @@ impl GBZBase {
                 haplotype INTEGER NOT NULL,
                 fragment INTEGER NOT NULL,
                 is_indexed INTEGER NOT NULL
-            )",
+            ) STRICT",
             (),
         )?;
 
@@ -397,7 +397,7 @@ impl GBZBase {
                 node_handle INTEGER NOT NULL,
                 node_offset INTEGER NOT NULL,
                 PRIMARY KEY (path_handle, path_offset)
-            )",
+            ) STRICT",
             (),
         )?;
 
