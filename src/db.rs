@@ -104,15 +104,15 @@ impl GBZBase {
         let mut get_tag = connection.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
         ).map_err(|x| x.to_string())?;
-        let version = Self::get_string_value(&mut get_tag, Self::KEY_VERSION)?;
+        let version = get_string_value(&mut get_tag, Self::KEY_VERSION)?;
         if version != Self::VERSION {
             return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
         }
-        let nodes = Self::get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
-        let samples = Self::get_numeric_value(&mut get_tag, Self::KEY_SAMPLES)?;
-        let haplotypes = Self::get_numeric_value(&mut get_tag, Self::KEY_HAPLOTYPES)?;
-        let contigs = Self::get_numeric_value(&mut get_tag, Self::KEY_CONTIGS)?;
-        let paths = Self::get_numeric_value(&mut get_tag, Self::KEY_PATHS)?;
+        let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
+        let samples = get_numeric_value(&mut get_tag, Self::KEY_SAMPLES)?;
+        let haplotypes = get_numeric_value(&mut get_tag, Self::KEY_HAPLOTYPES)?;
+        let contigs = get_numeric_value(&mut get_tag, Self::KEY_CONTIGS)?;
+        let paths = get_numeric_value(&mut get_tag, Self::KEY_PATHS)?;
         drop(get_tag);
 
         Ok(GBZBase {
@@ -124,9 +124,7 @@ impl GBZBase {
 
     /// Returns `true` if the database `filename` exists.
     pub fn exists<P: AsRef<Path>>(filename: P) -> bool {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let connection = Connection::open_with_flags(filename, flags);
-        connection.is_ok()
+        db_exists(filename)
     }
 
     /// Returns the filename of the database.
@@ -171,22 +169,6 @@ impl GBZBase {
     /// Returns the number of paths in the graph.
     pub fn paths(&self) -> usize {
         self.paths
-    }
-
-    fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, String> {
-        let result: rusqlite::Result<String> = statement.query_row(
-            (key,),
-            |row| row.get(0)
-        );
-        match result {
-            Ok(value) => Ok(value),
-            Err(x) => Err(format!("Key not found: {} ({})", key, x)),
-        }
-    }
-
-    fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
-        let value = Self::get_string_value(statement, key)?;
-        value.parse::<usize>().map_err(|x| x.to_string())
     }
 }
 
@@ -489,14 +471,14 @@ impl GAFBase {
         let mut get_tag = connection.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
         ).map_err(|x| x.to_string())?;
-        let version = Self::get_string_value(&mut get_tag, Self::KEY_VERSION)?;
+        let version = get_string_value(&mut get_tag, Self::KEY_VERSION)?;
         if version != Self::VERSION {
             return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
         }
-        let nodes = Self::get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
-        let alignments = Self::get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
-        let sequences = Self::get_numeric_value(&mut get_tag, Self::KEY_SEQUENCES)?;
-        let prefix = Self::get_string_value(&mut get_tag, Self::KEY_PREFIX)?;
+        let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
+        let alignments = get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
+        let sequences = get_numeric_value(&mut get_tag, Self::KEY_SEQUENCES)?;
+        let prefix = get_string_value(&mut get_tag, Self::KEY_PREFIX)?;
         drop(get_tag);
 
         Ok(GAFBase {
@@ -507,12 +489,9 @@ impl GAFBase {
         })
     }
 
-    // FIXME We already have this in GBZBase
     /// Returns `true` if the database `filename` exists.
     pub fn exists<P: AsRef<Path>>(filename: P) -> bool {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let connection = Connection::open_with_flags(filename, flags);
-        connection.is_ok()
+        db_exists(filename)
     }
 
     /// Returns the filename of the database.
@@ -556,24 +535,6 @@ impl GAFBase {
     /// This prefix is stored only once to save space.
     pub fn prefix(&self) -> &str {
         &self.prefix
-    }
-
-    // FIXME We already have this in GBZBase
-    fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, String> {
-        let result: rusqlite::Result<String> = statement.query_row(
-            (key,),
-            |row| row.get(0)
-        );
-        match result {
-            Ok(value) => Ok(value),
-            Err(x) => Err(format!("Key not found: {} ({})", key, x)),
-        }
-    }
-
-    // FIXME We already have this in GBZBase
-    fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
-        let value = Self::get_string_value(statement, key)?;
-        value.parse::<usize>().map_err(|x| x.to_string())
     }
 }
 
@@ -1235,7 +1196,9 @@ impl<'a> GraphInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
-// Helper functions.
+/*
+  Helper functions for using the databases.
+*/
 
 // A version of `gbwt::GBWT::start` that returns `(gbwt::ENDMARKER, 0)` if the path is empty or does not exist.
 fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos {
@@ -1264,6 +1227,53 @@ fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
     }
     Some(format!("{:.3} {}", bytes / SIZE_UNITS[unit].0, SIZE_UNITS[unit].1))
 }
+
+// TODO: Add an option to check from the tags that this is the right kind and right version of the database.
+// Returns `true` if the database `filename` exists.
+fn db_exists<P: AsRef<Path>>(filename: P) -> bool {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection = Connection::open_with_flags(filename, flags);
+    connection.is_ok()
+}
+
+// Executes the statement, which is expected to return a single string value.
+// Then returns the value.
+fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, String> {
+    let result: rusqlite::Result<String> = statement.query_row(
+        (key,),
+        |row| row.get(0)
+    );
+    match result {
+        Ok(value) => Ok(value),
+        Err(x) => Err(format!("Key not found: {} ({})", key, x)),
+    }
+}
+
+// Executes the statement, which is expected to return a single string value.
+// Then returns the value as an integer.
+fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
+    let value = get_string_value(statement, key)?;
+    value.parse::<usize>().map_err(|x| x.to_string())
+}
+
+// TODO: This can be useful for storing a list of common prefixes of read names.
+// Executes the statement, which is expected to return a single string value.
+// Then splits the value into a vector of strings using the given separator.
+fn _get_string_list(statement: &mut Statement, key: &str, separator: char) -> Result<Vec<String>, String> {
+    let value = get_string_value(statement, key)?;
+    Ok(value.split(separator).map(|x| x.to_string()).collect())
+}
+
+//-----------------------------------------------------------------------------
+
+/*
+    Encoding and decoding DNA sequences suitable for short to medium sequences.
+
+    The encoding stores three bases in a byte. The last encoded symbol is a
+    special 0 character in order to preserve the length.
+
+    TODO: If the length is divisible by 3, we do not need the null terminator.
+*/
 
 const DECODE: [u8; 6] = [0, b'A', b'C', b'G', b'T', b'N'];
 
