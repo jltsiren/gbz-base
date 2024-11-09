@@ -427,7 +427,7 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME document, test, query interface
+// FIXME document, examples, test, query interface
 // FIXME remember to test with empty paths
 /// A database connection to a GAF-base database.
 #[derive(Debug)]
