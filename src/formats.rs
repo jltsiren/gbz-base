@@ -345,7 +345,6 @@ pub enum SequenceName {
 
 //-----------------------------------------------------------------------------
 
-// FIXME test
 /// An operation in a difference string describing an alignment between a query sequence and a target sequence.
 ///
 /// This implementation supports the following operations:
@@ -356,7 +355,7 @@ pub enum SequenceName {
 /// * `+`: An insertion given as the inserted sequence.
 /// * `-`: A deletion given as the deleted sequence.
 ///
-/// Mismatches and deletions do not store the reference base(s), as the query sequence can be reconstructed without that information.
+/// The operations do not store target bases, as the query sequence can be reconstructed without that information.
 /// Operation `~` (intron length and splice signal) is not supported yet.
 /// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
 ///
@@ -392,6 +391,18 @@ impl Difference {
     // TODO: This does not support `~` (intron length and splice signal) yet.
     const OPS: &'static [u8] = b"=:*+-";
 
+    fn base_to_upper(c: u8) -> u8 {
+        if c >= b'a' && c <= b'z' {
+            c - b'a' + b'A'
+        } else {
+            c
+        }
+    }
+
+    fn seq_to_upper(seq: &[u8]) -> Vec<u8> {
+        seq.iter().map(|&c| Self::base_to_upper(c)).collect()
+    }
+
     fn matching_sequence(value: &[u8]) -> Option<Self> {
         Some(Self::Match(value.len()))
     }
@@ -406,11 +417,11 @@ impl Difference {
         if value.len() != 2 {
             return None;
         }
-        Some(Self::Mismatch(value[1]))
+        Some(Self::Mismatch(Self::base_to_upper(value[1])))
     }
 
     fn insertion(value: &[u8]) -> Option<Self> {
-        Some(Self::Insertion(value.to_vec()))
+        Some(Self::Insertion(Self::seq_to_upper(value)))
     }
 
     fn deletion(value: &[u8]) -> Option<Self> {
@@ -450,9 +461,80 @@ impl Difference {
 
         Some(result)
     }
+
+    /// Parses a difference string and returns it as a normalized vector of operations.
+    ///
+    /// The operations are merged and empty operations are removed.
+    /// Returns [`None`] if the difference string is invalid.
+    pub fn parse_normalized(difference_string: &[u8]) -> Option<Vec<Self>> {
+        let ops = Self::parse(difference_string)?;
+        Some(Self::normalize(ops))
+    }
+
+    /// Returns the length of the operation.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Match(len) => *len,
+            Self::Mismatch(_) => 1,
+            Self::Insertion(seq) => seq.len(),
+            Self::Deletion(len) => *len,
+        }
+    }
+
+    /// Returns `true` if the operation is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Merges the given operation into this operation if they can be merged.
+    ///
+    /// Returns `true` if the operations were merged.
+    pub fn try_merge(&mut self, op: &Self) -> bool {
+        match (self, op) {
+            (Self::Match(len1), Self::Match(len2)) => {
+                *len1 += len2;
+                true
+            },
+            (Self::Insertion(seq1), Self::Insertion(seq2)) => {
+                seq1.extend_from_slice(seq2);
+                true
+            },
+            (Self::Deletion(len1), Self::Deletion(len2)) => {
+                *len1 += len2;
+                true
+            },
+            _ => false,
+        }
+    }
+
+    /// Normalizes the sequence of operations.
+    ///
+    /// This merges adjacent matches and insertions and removes empty operations.
+    pub fn normalize(ops: Vec<Self>) -> Vec<Self> {
+        let mut result = ops;
+        let mut tail = 0;
+        for i in 0..result.len() {
+            if result[i].is_empty() {
+                continue;
+            }
+            if tail > 0 {
+                // We need to be careful around the borrow checker.
+                let (left, right) = result.split_at_mut(i);
+                if left[tail - 1].try_merge(&right[0]) {
+                    continue;
+                }
+            }
+            result.swap(tail, i);
+            tail += 1;
+        }
+
+        result.truncate(tail);
+        result
+    }
 }
 
-// FIXME test
+//-----------------------------------------------------------------------------
+
 /// A typed optional field used in formats such as SAM, GFA, and GAF.
 ///
 /// The field corresponds to a TAG:TYPE:VALUE string.
@@ -489,7 +571,7 @@ impl TypedField {
     ///
     /// Returns [`None`] if the field cannot be parsed or the type is unsupported.
     pub fn parse(field: &[u8]) -> Option<Self> {
-        if field.len() < 6 || field[2] != b':' || field[4] != b':' {
+        if field.len() < 5 || field[2] != b':' || field[4] != b':' {
             return None;
         }
         let tag = [field[0], field[1]];
@@ -522,6 +604,17 @@ impl TypedField {
                 }
             },
             _ => None,
+        }
+    }
+
+    /// Returns the tag of the field.
+    pub fn tag(&self) -> [u8; 2] {
+        match self {
+            TypedField::Char(tag, _) => *tag,
+            TypedField::String(tag, _) => *tag,
+            TypedField::Int(tag, _) => *tag,
+            TypedField::Float(tag, _) => *tag,
+            TypedField::Bool(tag, _) => *tag,
         }
     }
 }
