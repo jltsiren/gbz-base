@@ -555,8 +555,10 @@ impl GAFBase {
         Self::create(&index, db_file)
     }
 
-    // Sanity checks for the GBWT index. We do not want to handle indexes without sufficient metadata.
-    fn sanity_checks(index: &GBWT) -> Result<(), String> {
+    /// Checks if the GBWT index contains sufficient metadata.
+    ///
+    /// Returns an error if there is no metadata or the metadata does not contain path or sample names.
+    pub fn check_gbwt_metadata(index: &GBWT) -> Result<(), String> {
         let metadata = index.metadata().ok_or(
             String::from("The GBWT index does not contain metadata")
         )?;
@@ -582,7 +584,7 @@ impl GAFBase {
         if Self::exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
         }
-        Self::sanity_checks(index)?;
+        Self::check_gbwt_metadata(index)?;
 
         let mut connection = Connection::open(&filename).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(index, &mut connection).map_err(|x| x.to_string())?;
@@ -1200,8 +1202,10 @@ impl<'a> GraphInterface<'a> {
   Helper functions for using the databases.
 */
 
-// A version of `gbwt::GBWT::start` that returns `(gbwt::ENDMARKER, 0)` if the path is empty or does not exist.
-fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos {
+/// Returns the starting position of the given path in the given orientation.
+///
+/// Returns `(gbwt::ENDMARKER, 0)` if the path is empty or does not exist.
+pub fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos {
     index.start(support::encode_path(path_id, orientation)).unwrap_or(Pos::new(gbwt::ENDMARKER, 0))
 }
 

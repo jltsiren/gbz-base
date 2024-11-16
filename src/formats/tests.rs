@@ -4,9 +4,12 @@ use super::*;
 
 use gbwt::Metadata;
 
+use simple_sds::ops::BitVec;
 use simple_sds::serialize;
 
 //-----------------------------------------------------------------------------
+
+// Tests for `WalkMetadata`.
 
 #[test]
 fn walk_metadata_interval() {
@@ -82,6 +85,8 @@ fn walk_metadata_weight_cigar() {
 }
 
 //-----------------------------------------------------------------------------
+
+// Tests for GFA writing.
 
 #[test]
 fn gfa_header() {
@@ -217,7 +222,8 @@ fn gfa_walk() {
 
 //-----------------------------------------------------------------------------
 
-// TODO: More tests for JSON writing?
+// Tests for JSON writing.
+// TODO: More tests?
 
 #[test]
 fn write_json_path() {
@@ -273,9 +279,99 @@ fn write_json_path() {
 
 //-----------------------------------------------------------------------------
 
-// TODO: Alignment
+// Tests for `Alignment`.
+
+#[test]
+fn alignment_paths_by_sample() {
+    // FIXME: We should have a test GBWT with alignments.
+    let filename = support::get_test_data("example.gbwt");
+    let index: GBWT = serialize::load_from(&filename).unwrap();
+    let metadata = index.metadata().unwrap();
+
+    let true_paths: Vec<u32> = vec![0, 1, 2, 3, 4, 5];
+    let true_offsets: Vec<usize> = vec![0, 2, 6];
+
+    let result = Alignment::paths_by_sample(&metadata);
+    assert!(result.is_ok(), "Failed to get a list of paths by sample: {}", result.err().unwrap());
+    let (paths, offsets) = result.unwrap();
+
+    assert_eq!(paths, true_paths, "Wrong path identifiers");
+    assert_eq!(offsets.len(), paths.len() + 1, "Wrong universe size for the index");
+    let offsets: Vec<usize> = offsets.one_iter().map(|(_, x)| x).collect();
+    assert_eq!(offsets, true_offsets, "Wrong offsets for path id intervals by sample");
+}
+
+#[test]
+fn alignment_set_relative_information() {
+    let filename = support::get_test_data("example.gbwt");
+    let index: GBWT = serialize::load_from(&filename).unwrap();
+    let metadata = index.metadata().unwrap();
+
+    let paths_by_sample = Alignment::paths_by_sample(&metadata).unwrap();
+    let mut used_paths = RawVector::with_len(metadata.paths(), false);
+
+    // FIXME: This is a placeholder until we have a test GAF file with alignments.
+    // The path we are interested in is id 3: (sample, A, 2, 0) with sample id 1.
+    let name = SequenceName::Name(String::from("sample"));
+    let seq_len = 5;
+    let seq_interval = 0..5;
+    let path = TargetPath::Path(vec![
+        (11, Orientation::Forward),
+        (13, Orientation::Forward),
+        (14, Orientation::Forward),
+        (16, Orientation::Forward),
+        (17, Orientation::Forward)
+    ]);
+    let path_len = 5;
+    let path_interval = 0..5;
+    let matches = 5;
+    let edits = 0;
+    let mapq = None;
+    let score = None;
+    let base_quality = None;
+    let difference = None;
+    let optional = None;
+    let mut alignment = Alignment {
+        name, seq_len, seq_interval,
+        path, path_len, path_interval,
+        matches, edits,
+        mapq, score,
+        base_quality, difference, optional
+    };
+
+    let original = alignment.clone();
+    let result = alignment.set_relative_information(&index, &paths_by_sample, Some(&mut used_paths));
+    assert!(result.is_ok(), "Failed to set relative information: {}", result.err().unwrap());
+
+    // Only name and path fields should have changed.
+    assert_eq!(alignment.seq_len, original.seq_len, "Sequence length was changed");
+    assert_eq!(alignment.seq_interval, original.seq_interval, "Sequence interval was changed");
+    assert_eq!(alignment.path_len, original.path_len, "Path length was changed");
+    assert_eq!(alignment.path_interval, original.path_interval, "Path interval was changed");
+    assert_eq!(alignment.matches, original.matches, "Number of matches was changed");
+    assert_eq!(alignment.edits, original.edits, "Number of edits was changed");
+    assert_eq!(alignment.mapq, original.mapq, "Mapping quality was changed");
+    assert_eq!(alignment.score, original.score, "Alignment score was changed");
+    assert_eq!(alignment.base_quality, original.base_quality, "Base quality string was changed");
+    assert_eq!(alignment.difference, original.difference, "Difference string was changed");
+    assert_eq!(alignment.optional, original.optional, "Optional fields were changed");
+
+    // Check the relative fields.
+    // Sample / query sequence id should be 1.
+    // And this is the third path that visits (starts from) node 11 forward.
+    assert_eq!(alignment.name, SequenceName::Identifier(1), "Wrong sequence name");
+    let start_pos = Pos::new(support::encode_node(11, Orientation::Forward), 2);
+    let start_pos = TargetPath::StartPosition(start_pos);
+    assert_eq!(alignment.path, start_pos, "Wrong GBWT starting position for the target path");
+
+    // Check that the path is marked as used.
+    assert_eq!(used_paths.bit(3), true, "Path 3 was not marked as used");
+    assert_eq!(used_paths.count_ones(), 1, "Wrong number of used paths");
+}
 
 //-----------------------------------------------------------------------------
+
+// Tests for `Difference`.
 
 fn check_difference(seq: &[u8], truth: &[Difference], name: &str, normalize: bool) {
     let result = Difference::parse(seq);
@@ -457,7 +553,7 @@ fn difference_normalize() {
 
 //-----------------------------------------------------------------------------
 
-// TODO: TypedField
+// Tests for `TypedField`.
 
 #[test]
 fn typed_field_empty() {

@@ -28,13 +28,19 @@
 //!
 //! FIXME: details
 
+use crate::db;
+
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::str;
 
-use gbwt::{Metadata, Orientation, FullPathName};
+use gbwt::{GBWT, Metadata, Orientation, Pos, FullPathName};
 use gbwt::support;
+
+use simple_sds::ops::Select;
+use simple_sds::raw_vector::{RawVector, AccessRaw};
+use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
 
 #[cfg(test)]
 mod tests;
@@ -302,8 +308,14 @@ pub fn json_path(path: &[usize], metadata: &WalkMetadata) -> JSONValue {
 
 //-----------------------------------------------------------------------------
 
-// FIXME implement, document, examples, test
+// FIXME implement, examples, test
 // TODO: Parse pairing information from tags.
+/// An alignment between a query sequence and a target path in a graph.
+///
+/// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
+/// When the alignment is built from a GAF line, the name of the query sequence and the target path are stored explicitly.
+/// For alignments stored in a database, these are stored relative to other tables.
+/// See [`SequenceName`] and [`TargetPath`] for details and [`Self::set_relative_information`] for conversion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alignment {
     /// Name or identifier of the query sequence.
@@ -313,7 +325,7 @@ pub struct Alignment {
     /// Aligned interval of the query sequence.
     pub seq_interval: Range<usize>,
     /// Target path in the orientation of the query sequence.
-    pub path: Vec<(usize, Orientation)>,
+    pub path: TargetPath,
     /// Length of the target path.
     pub path_len: usize,
     /// Aligned interval of the target path.
@@ -334,13 +346,183 @@ pub struct Alignment {
     pub optional: Option<Vec<TypedField>>,
 }
 
-// FIXME implement, document, examples, test
+impl Alignment {
+    // FIXME parse from a GAF line
+
+    /// Returns the list of all path identifiers in GBWT metadata, sorted by sample identifier.
+    ///
+    /// Path identifiers are returned as [`u32`], because a GBWT index cannot have more than [`u32::MAX`] paths.
+    /// Also returns a multiset [`SparseVector`] that maps sample identifiers to intervals in the returned list.
+    /// The interval for sample identifier `i` is `select(i)..select(i + 1)`.
+    /// Note that there is a sentinel to make the general formula work for the last sample.
+    ///
+    /// Returns an error if something goes wrong.
+    /// [`crate::GAFBase::check_gbwt_metadata`] has more detailed error messages for insufficient metadata.
+    ///
+    /// # Panics
+    ///
+    /// May panic during [`SparseVector`] construction if the metadata is in an inconsistent state.
+    pub fn paths_by_sample(metadata: &Metadata) -> Result<(Vec<u32>, SparseVector), String> {
+        let mut sample_path: Vec<(u32, u32)> = metadata.path_iter().enumerate().map(|(id, name)| {
+            (name.sample() as u32, id as u32)
+        }).collect();
+        sample_path.sort_unstable();
+
+        let mut builder = SparseBuilder::multiset(metadata.paths() + 1, metadata.samples() + 1);
+        let mut sample_id = 0;
+        for (offset, (sample, _)) in sample_path.iter().enumerate() {
+            while sample_id <= *sample {
+                builder.set(offset);
+                sample_id += 1;
+            }
+        }
+        while (sample_id as usize) <= metadata.samples() {
+            builder.set(metadata.paths());
+            sample_id += 1;
+        }
+        let path_ids: Vec<u32> = sample_path.iter().map(|(_, path)| *path).collect();
+        let path_index = SparseVector::try_from(builder).map_err(|err| {
+            format!("Failed to build a sample-to-path index: {}", err)
+        })?;
+
+        Ok((path_ids, path_index))
+    }
+
+    // Replaces query sequence name with the corresponding sample identifier in the GBWT metadata.
+    fn set_sequence_id(&mut self, metadata: &Metadata) -> Result<(), String> {
+        let name = match &self.name {
+            SequenceName::Name(n) => n,
+            SequenceName::Identifier(_) => return Ok(()),
+        };
+        let id = metadata.sample_id(name).ok_or(
+            format!("Sequence name {} not found in the GBWT metadata", name)
+        )?;
+        self.name = SequenceName::Identifier(id);
+        Ok(())
+    }
+
+    // TODO: We could simplify this greatly by storing GAF line number as fragment id in the path name.
+    // Replaces target path with its starting position in the given GBWT index.
+    fn set_target_start(&mut self,
+        index: &GBWT,
+        paths_by_sample: &(Vec<u32>, SparseVector),
+        used_paths: Option<&mut RawVector>
+    ) -> Result<(), String> {
+        if let TargetPath::StartPosition(_) = self.path {
+            return Ok(());
+        }
+        let (path_ids, path_index) = paths_by_sample;
+
+        // Determine the interval of possible path identifiers.
+        let sample_id = match self.name {
+            SequenceName::Name(_) => return Err(String::from("Sequence name not replaced with an identifier")),
+            SequenceName::Identifier(id) => id,
+        };
+        let mut iter = path_index.select_iter(sample_id);
+        let start = iter.next().unwrap_or((0, path_ids.len())).1;
+        let end = iter.next().unwrap_or((0, path_ids.len())).1;
+
+        // Check the paths in the interval.
+        for offset in start..end {
+            // Is it still available?
+            let path_id = path_ids[offset] as usize;
+            if let Some(used) = used_paths.as_ref() {
+                if used.bit(path_id) {
+                    continue;
+                }
+            }
+
+            // Does it match the query sequence?
+            let iter = index.sequence(support::encode_path(path_id, Orientation::Forward));
+            if iter.is_none() {
+                continue;
+            }
+            let gbwt_path = iter.unwrap().map(|id| support::decode_node(id));
+            let query_path = match self.path {
+                TargetPath::Path(ref path) => path.iter().copied(),
+                _ => unreachable!(),
+            };
+            if !gbwt_path.eq(query_path) {
+                continue;
+            }
+
+            // Mark the path as used and set the start position.
+            if let Some(used) = used_paths {
+                used.set_bit(path_id, true);
+            }
+            let start_pos = db::path_start(index, path_id, Orientation::Forward);
+            self.path = TargetPath::StartPosition(start_pos);
+            return Ok(());
+        }
+
+        Err(format!("Could not match query sequence {} to an unused GBWT path", self.name))
+    }
+
+    /// Replaces the explicitly stored data with data relative to the given GBWT index.
+    ///
+    /// Replaces query sequence name with an identifier and the target path with a starting position.
+    /// No effect if the data is already relative to a GBWT index.
+    /// Returns an error if the replacement fails for any reason.
+    /// [`crate::GAFBase::check_gbwt_metadata`] has more detailed error messages for insufficient metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `index`: The GBWT index.
+    /// * `paths_by_sample`: Path identifiers indexed by sample identifier (from [`Self::paths_by_sample`]).
+    /// * `used_paths`: Optional vector to mark paths that have been used and should not be used again.
+    ///
+    /// The length of `used_paths` must be at least `index.metadata().paths()`.
+    ///
+    /// # Panics
+    ///
+    /// May panic if `paths_by_sample` or `used_paths` are inconsistent with the GBWT metadata.
+    pub fn set_relative_information(&mut self,
+        index: &GBWT,
+        paths_by_sample: &(Vec<u32>, SparseVector),
+        used_paths: Option<&mut RawVector>
+    ) -> Result<(), String> {
+        let metadata = index.metadata().ok_or(
+            String::from("The GBWT index does not contain metadata")
+        )?;
+        self.set_sequence_id(metadata)?;
+        self.set_target_start(index, paths_by_sample, used_paths)
+    }
+
+    // FIXME back to a GAF line
+}
+
+/// Name of a query sequence in [`Alignment`].
+///
+/// The name is stored either explicitly as a string or as an identifier relative to a list of sequence names.
+/// When the name is for an alignment stored in [`crate::GAFBase`], the identifier is the handle in table `Sequences`.
+/// During the construction of the database, this corresponds to a sample identifier in GBWT metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SequenceName {
     /// Sequence name.
     Name(String),
     /// Offset of the name in a list of sequence names.
     Identifier(usize),
+}
+
+impl Display for SequenceName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SequenceName::Name(name) => write!(f, "(name: {})", name),
+            SequenceName::Identifier(id) => write!(f, "(id: {})", id),
+        }
+    }
+}
+
+/// Target path in [`Alignment`].
+///
+/// The path is stored either explicitly as a sequence of oriented nodes or as its starting position in the GBWT index.
+/// This corresponds to table `Nodes` in [`crate::GAFBase`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TargetPath {
+    /// Path as a sequence of oriented nodes.
+    Path(Vec<(usize, Orientation)>),
+    /// Starting position in the GBWT.
+    StartPosition(Pos),
 }
 
 //-----------------------------------------------------------------------------
