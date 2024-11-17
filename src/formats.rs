@@ -343,11 +343,143 @@ pub struct Alignment {
     /// Difference string.
     pub difference: Option<Vec<Difference>>,
     /// Optional typed fields that have not been interpreted.
-    pub optional: Option<Vec<TypedField>>,
+    pub optional: Vec<TypedField>,
 }
 
 impl Alignment {
-    // FIXME parse from a GAF line
+    // Number of mandatory fields in a GAF line.
+    const MANDATORY_FIELDS: usize = 12;
+
+    // Placeholder value for a missing mapping quality.
+    const MISSING_MAPQ: usize = 255;
+
+    // Parses a string field from a GAF field.
+    fn parse_string(field: &[u8], field_name: &str) -> Result<String, String> {
+        String::from_utf8(field.to_vec()).map_err(|err| {
+            format!("Invalid {}: {}", field_name, err)
+        })
+    }
+
+    // Parses an unsigned integer from a GAF field.
+    fn parse_usize(field: &[u8], field_name: &str) -> Result<usize, String> {
+        let number = str::from_utf8(field).map_err(|err| {
+            format!("Invalid {}: {}", field_name, err)
+        })?;
+        number.parse().map_err(|err| {
+            format!("Invalid {}: {}", field_name, err)
+        })
+    }
+
+    // Parses an orientation from a GAF field.
+    fn parse_orientation(field: &[u8], field_name: &str) -> Result<Orientation, String> {
+        if field.len() != 1 {
+            return Err(format!("Invalid {}: {}", field_name, String::from_utf8_lossy(field)));
+        }
+        match field[0] {
+            b'+' => Ok(Orientation::Forward),
+            b'-' => Ok(Orientation::Reverse),
+            _ => Err(format!("Invalid {}: {}", field_name, String::from_utf8_lossy(field))),
+        }
+    }
+
+    // Parses an oriented path from a GAF field.
+    fn parse_path(field: &[u8]) -> Result<Vec<usize>, String> {
+        let mut result = Vec::new();
+        let mut start = 0;
+        while start < field.len() {
+            let orientation = match field[start] {
+                b'>' => Orientation::Forward,
+                b'<' => Orientation::Reverse,
+                _ => return Err(format!("Invalid segment orientation: {}", String::from_utf8_lossy(field))),
+            };
+            start += 1;
+            let end = field[start..].iter().position(|&c| c == b'>' || c == b'<').map_or(field.len(), |x| start + x);
+            let node = str::from_utf8(&field[start..end]).map_err(|err| {
+                format!("Invalid segment name: {}", err)
+            })?.parse().map_err(|_| {
+                format!("Only numerical segment names are supported")
+            })?;
+            result.push(support::encode_node(node, orientation));
+            start = end;
+        }
+        Ok(result)
+    }
+
+    // FIXME tests
+    /// Parses an alignment from a GAF line.
+    ///
+    /// Returns an error if the line cannot be parsed.
+    /// The returned alignment stores the query sequence name and the target path explicitly.
+    /// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
+    pub fn from_gaf(line: &[u8]) -> Result<Self, String> {
+        let fields = line.split(|&c| c == b'\t').collect::<Vec<_>>();
+        if fields.len() < Self::MANDATORY_FIELDS {
+            let line = String::from_utf8_lossy(line);
+            let message = format!("GAF line with fewer than {} fields: {}", Self::MANDATORY_FIELDS, line);
+            return Err(message);
+        }
+
+        // Query sequence.
+        let name = SequenceName::Name(Self::parse_string(fields[0], "query sequence name")?);
+        let seq_len = Self::parse_usize(fields[1], "query sequence length")?;
+        let seq_interval = Self::parse_usize(fields[2], "query start")?..Self::parse_usize(fields[3], "query end")?;
+
+        // Target path.
+        let orientation = Self::parse_orientation(fields[4], "target orientation")?;
+        let mut path = Self::parse_path(fields[5]).map_err(|err| {
+            format!("Invalid target path: {}", err)
+        })?;
+        if orientation == Orientation::Reverse {
+            support::reverse_path_in_place(&mut path);
+        }
+        let path = TargetPath::Path(path);
+        let path_len = Self::parse_usize(fields[6], "target path length")?;
+        let path_interval = Self::parse_usize(fields[7], "target start")?..Self::parse_usize(fields[8], "target end")?;
+
+        // Alignment statistics.
+        let matches = Self::parse_usize(fields[9], "matches")?;
+        let alignment_len = Self::parse_usize(fields[10], "alignment length")?;
+        let edits = if matches <= alignment_len { alignment_len - matches } else { 0 };
+        let mapq = Self::parse_usize(fields[11], "mapping quality")?;
+        let mapq = if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) };
+
+        // Optional fields.
+        let mut score = None;
+        let mut base_quality = None;
+        let mut difference = None;
+        let mut optional = Vec::new();
+        for field in fields[Self::MANDATORY_FIELDS..].iter() {
+            let parsed = TypedField::parse(field)?;
+            match parsed {
+                TypedField::Int([b'A', b'S'], value) => {
+                    if let Some(_) = score {
+                        return Err(String::from("Multiple alignment score fields"));
+                    }
+                    score = Some(value);
+                },
+                TypedField::String([b'b', b'q'], value) => {
+                    if let Some(_) = base_quality {
+                        return Err(String::from("Multiple base quality fields"));
+                    }
+                    base_quality = Some(value.to_vec());
+                },
+                TypedField::String([b'c', b's'], value) => {
+                    if let Some(_) = difference {
+                        return Err(String::from("Multiple difference fields"));
+                    }
+                    difference = Some(Difference::parse_normalized(&value)?);
+                },
+                _ => { optional.push(parsed); },
+            }
+        }
+
+        Ok(Alignment {
+            name, seq_len, seq_interval,
+            path, path_len, path_interval,
+            matches, edits, mapq, score,
+            base_quality, difference, optional,
+        })
+    }
 
     /// Returns the list of all path identifiers in GBWT metadata, sorted by sample identifier.
     ///
@@ -437,7 +569,7 @@ impl Alignment {
             if iter.is_none() {
                 continue;
             }
-            let gbwt_path = iter.unwrap().map(|id| support::decode_node(id));
+            let gbwt_path = iter.unwrap();
             let query_path = match self.path {
                 TargetPath::Path(ref path) => path.iter().copied(),
                 _ => unreachable!(),
@@ -519,8 +651,8 @@ impl Display for SequenceName {
 /// This corresponds to table `Nodes` in [`crate::GAFBase`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TargetPath {
-    /// Path as a sequence of oriented nodes.
-    Path(Vec<(usize, Orientation)>),
+    /// Path as a sequence of oriented nodes (GBWT node identifiers; GAF-base node handles).
+    Path(Vec<usize>),
     /// Starting position in the GBWT.
     StartPosition(Pos),
 }
@@ -548,7 +680,7 @@ pub enum TargetPath {
 ///
 /// let with_gaps = b":48-CAT:44+GATTACA:51";
 /// let ops = Difference::parse(with_gaps);
-/// assert!(ops.is_some());
+/// assert!(ops.is_ok());
 /// let ops = ops.unwrap();
 /// assert_eq!(ops.len(), 5);
 /// assert_eq!(ops[0], Difference::Match(48));
@@ -612,14 +744,14 @@ impl Difference {
 
     /// Parses a difference string and returns it as a vector of operations.
     ///
-    /// Returns [`None`] if the difference string is invalid.
-    pub fn parse(difference_string: &[u8]) -> Option<Vec<Self>> {
+    /// Returns an error if the difference string is invalid.
+    pub fn parse(difference_string: &[u8]) -> Result<Vec<Self>, String> {
         let mut result: Vec<Self> = Vec::new();
         if difference_string.is_empty() {
-            return Some(result);
+            return Ok(result);
         }
         if !Self::OPS.contains(&difference_string[0]) {
-            return None;
+            return Err(format!("Invalid difference string operation: {}", difference_string[0] as char));
         }
 
         let mut start = 0;
@@ -635,22 +767,22 @@ impl Difference {
                 b'*' => Self::mismatch(value),
                 b'+' => Self::insertion(value),
                 b'-' => Self::deletion(value),
-                _ => None,
-            }?;
+                _ => return Err(format!("Invalid difference string operation: {}", difference_string[start] as char)),
+            }.ok_or(format!("Invalid difference string field: {}", String::from_utf8_lossy(&difference_string[start..end])))?;
             result.push(op);
             start = end;
         }
 
-        Some(result)
+        Ok(result)
     }
 
     /// Parses a difference string and returns it as a normalized vector of operations.
     ///
     /// The operations are merged and empty operations are removed.
-    /// Returns [`None`] if the difference string is invalid.
-    pub fn parse_normalized(difference_string: &[u8]) -> Option<Vec<Self>> {
+    /// Returns an error if the difference string is invalid.
+    pub fn parse_normalized(difference_string: &[u8]) -> Result<Vec<Self>, String> {
         let ops = Self::parse(difference_string)?;
-        Some(Self::normalize(ops))
+        Ok(Self::normalize(ops))
     }
 
     /// Returns the length of the operation.
@@ -731,7 +863,7 @@ impl Difference {
 ///
 /// let alignment_score = "AS:i:160";
 /// let field = TypedField::parse(alignment_score.as_bytes());
-/// assert_eq!(field, Some(TypedField::Int([b'A', b'S'], 160)));
+/// assert_eq!(field, Ok(TypedField::Int([b'A', b'S'], 160)));
 /// assert_eq!(field.unwrap().to_string(), alignment_score);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
@@ -752,40 +884,44 @@ impl TypedField {
     /// Parses the field from a TAG:TYPE:VALUE string.
     ///
     /// Returns [`None`] if the field cannot be parsed or the type is unsupported.
-    pub fn parse(field: &[u8]) -> Option<Self> {
+    pub fn parse(field: &[u8]) -> Result<Self, String> {
         if field.len() < 5 || field[2] != b':' || field[4] != b':' {
-            return None;
+            return Err(format!("Invalid typed field: {}", String::from_utf8_lossy(field)));
         }
         let tag = [field[0], field[1]];
         match field[3] {
             b'A' => {
                 if field.len() != 6 {
-                    return None;
+                    return Err(format!("Invalid char field {}", String::from_utf8_lossy(field)));
                 }
-                Some(TypedField::Char(tag, field[5]))
+                Ok(TypedField::Char(tag, field[5]))
             },
-            b'Z' => Some(TypedField::String(tag, field[5..].to_vec())),
+            b'Z' => Ok(TypedField::String(tag, field[5..].to_vec())),
             b'i' => {
-                let value = str::from_utf8(&field[5..]).ok()?;
-                let value = value.parse::<isize>().ok()?;
-                Some(TypedField::Int(tag, value))
+                let value = String::from_utf8_lossy(&field[5..]);
+                let value = value.parse::<isize>().map_err(|err| {
+                    format!("Invalid int field {}: {}", value, err)
+                })?;
+                Ok(TypedField::Int(tag, value))
             },
             b'f' => {
-                let value = str::from_utf8(&field[5..]).ok()?;
-                let value = value.parse::<f64>().ok()?;
-                Some(TypedField::Float(tag, value))
+                let value = String::from_utf8_lossy(&field[5..]);
+                let value = value.parse::<f64>().map_err(|err| {
+                    format!("Invalid float field {}: {}", value, err)
+                })?;
+                Ok(TypedField::Float(tag, value))
             },
             b'b' => {
                 if field.len() != 6 {
-                    return None;
+                    return Err(format!("Invalid bool field {}", String::from_utf8_lossy(field)));
                 }
                 match field[5] {
-                    b'0' => Some(TypedField::Bool(tag, false)),
-                    b'1' => Some(TypedField::Bool(tag, true)),
-                    _ => None,
+                    b'0' => Ok(TypedField::Bool(tag, false)),
+                    b'1' => Ok(TypedField::Bool(tag, true)),
+                    _ => Err(format!("Invalid bool field {}", String::from_utf8_lossy(field))),
                 }
             },
-            _ => None,
+            _ => Err(format!("Unsupported field type: {}", field[3] as char)),
         }
     }
 

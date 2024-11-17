@@ -316,11 +316,11 @@ fn alignment_set_relative_information() {
     let seq_len = 5;
     let seq_interval = 0..5;
     let path = TargetPath::Path(vec![
-        (11, Orientation::Forward),
-        (13, Orientation::Forward),
-        (14, Orientation::Forward),
-        (16, Orientation::Forward),
-        (17, Orientation::Forward)
+        support::encode_node(11, Orientation::Forward),
+        support::encode_node(13, Orientation::Forward),
+        support::encode_node(14, Orientation::Forward),
+        support::encode_node(16, Orientation::Forward),
+        support::encode_node(17, Orientation::Forward)
     ]);
     let path_len = 5;
     let path_interval = 0..5;
@@ -330,7 +330,7 @@ fn alignment_set_relative_information() {
     let score = None;
     let base_quality = None;
     let difference = None;
-    let optional = None;
+    let optional = Vec::new();
     let mut alignment = Alignment {
         name, seq_len, seq_interval,
         path, path_len, path_interval,
@@ -367,6 +367,14 @@ fn alignment_set_relative_information() {
     // Check that the path is marked as used.
     assert_eq!(used_paths.bit(3), true, "Path 3 was not marked as used");
     assert_eq!(used_paths.count_ones(), 1, "Wrong number of used paths");
+
+    // Check that repeated calls do not change the alignment.
+    let original = alignment.clone();
+    let result = alignment.set_relative_information(&index, &paths_by_sample, Some(&mut used_paths));
+    assert!(result.is_ok(), "Failed to set relative information again: {}", result.err().unwrap());
+    assert_eq!(alignment, original, "Alignment was changed by a repeated call");
+    assert_eq!(used_paths.bit(3), true, "Used path was reset by a repeated call");
+    assert_eq!(used_paths.count_ones(), 1, "Used paths were changed by a repeated call");
 }
 
 //-----------------------------------------------------------------------------
@@ -375,7 +383,7 @@ fn alignment_set_relative_information() {
 
 fn check_difference(seq: &[u8], truth: &[Difference], name: &str, normalize: bool) {
     let result = Difference::parse(seq);
-    assert!(result.is_some(), "Failed to parse the difference string for {}", name);
+    assert!(result.is_ok(), "Failed to parse the difference string for {}: {}", name, result.err().unwrap());
     let mut result = result.unwrap();
     if normalize {
         result = Difference::normalize(result);
@@ -492,7 +500,7 @@ fn difference_case() {
 
 fn invalid_difference(seq: &[u8], name: &str) {
     let result = Difference::parse(seq);
-    assert!(result.is_none(), "Parsed an invalid difference string: {}", name);
+    assert!(result.is_err(), "Parsed an invalid difference string: {}", name);
 }
 
 #[test]
@@ -558,13 +566,13 @@ fn difference_normalize() {
 #[test]
 fn typed_field_empty() {
     let field = TypedField::parse(b"");
-    assert!(field.is_none(), "Empty string was parsed as a typed field");
+    assert!(field.is_err(), "Empty string was parsed as a typed field");
 }
 
 // This assumes that the sequence is a valid typed field.
 fn check_typed_field(seq: &[u8], name: &str) {
     let field = TypedField::parse(seq);
-    assert!(field.is_some(), "Failed to parse the typed field for {}", name);
+    assert!(field.is_ok(), "Failed to parse the typed field for {}", name);
     let field = field.unwrap();
     assert_eq!(field.tag(), seq[0..2], "Wrong tag for {}", name);
 
@@ -642,7 +650,7 @@ fn typed_field_bool() {
 
 fn invalid_typed_field(seq: &[u8], name: &str) {
     let field = TypedField::parse(seq);
-    assert!(field.is_none(), "Parsed an invalid typed field for {}", name);
+    assert!(field.is_err(), "Parsed an invalid typed field for {}", name);
 }
 
 #[test]
