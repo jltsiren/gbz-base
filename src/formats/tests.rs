@@ -1,11 +1,14 @@
-use core::str;
-
 use super::*;
+
+use crate::formats;
 
 use gbwt::Metadata;
 
 use simple_sds::ops::BitVec;
 use simple_sds::serialize;
+
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 //-----------------------------------------------------------------------------
 
@@ -279,7 +282,116 @@ fn write_json_path() {
 
 //-----------------------------------------------------------------------------
 
-// Tests for `Alignment`.
+// Tests for `Alignment`: parsing.
+
+fn parse_alignments(filename: &PathBuf) -> Vec<Alignment> {
+    let file = File::open(filename);
+    assert!(file.is_ok(), "Failed to open the test file: {}", file.err().unwrap());
+    let mut file = file.unwrap();
+    let mut reader = BufReader::new(&mut file);
+
+    let mut result = Vec::new();
+    loop {
+        let mut buf: Vec<u8> = Vec::new();
+        let len = reader.read_until(b'\n', &mut buf);
+        assert!(len.is_ok(), "Failed to read a line from the test file: {}", len.err().unwrap());
+        if len.unwrap() == 0 {
+            break;
+        }
+        let alignment = Alignment::from_gaf(&buf);
+        assert!(alignment.is_ok(), "Failed to parse an alignment from the test file: {}", alignment.err().unwrap());
+        result.push(alignment.unwrap());
+    }
+
+    result
+}
+
+// Check that the alignment matches the truth, optionally skipping fields that may store relative information.
+fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_relative: bool) {
+    if !skip_relative {
+        assert_eq!(alignment.name, truth.name, "Wrong sequence name on line {}", line);
+    }
+    assert_eq!(alignment.seq_len, truth.seq_len, "Wrong sequence length on line {}", line);
+    assert_eq!(alignment.seq_interval, truth.seq_interval, "Wrong sequence interval on line {}", line);
+
+    if !skip_relative {
+        assert_eq!(alignment.path, truth.path, "Wrong path on line {}", line);
+    }
+    assert_eq!(alignment.path_len, truth.path_len, "Wrong path length on line {}", line);
+    assert_eq!(alignment.path_interval, truth.path_interval, "Wrong path interval on line {}", line);
+
+    assert_eq!(alignment.matches, truth.matches, "Wrong number of matches on line {}", line);
+    assert_eq!(alignment.edits, truth.edits, "Wrong number of edits on line {}", line);
+    assert_eq!(alignment.mapq, truth.mapq, "Wrong mapping quality on line {}", line);
+    assert_eq!(alignment.score, truth.score, "Wrong alignment score on line {}", line);
+
+    assert_eq!(alignment.base_quality, truth.base_quality, "Wrong base quality string on line {}", line);
+    assert_eq!(alignment.difference, truth.difference, "Wrong difference string on line {}", line);
+    assert_eq!(alignment.optional, truth.optional, "Wrong optional fields on line {}", line);
+}
+
+#[test]
+fn alignment_known_good() {
+    // Construct the correct alignment object.
+    // TODO: More convenient way to do this?
+    let name = SequenceName::Name(String::from("forward"));
+    let seq_len = 100;
+    let seq_interval = 5..90;
+    let path = TargetPath::Path(vec![
+        support::encode_node(10, Orientation::Forward),
+        support::encode_node(12, Orientation::Forward),
+        support::encode_node(14, Orientation::Reverse),
+        support::encode_node(15, Orientation::Forward)
+    ]);
+    let path_len = 120;
+    let path_interval = 10..100;
+    let matches = 80;
+    let edits = 13;
+    let mapq = Some(60);
+    let score = Some(57);
+    let base_quality = Some(vec![b'?'; 100]);
+    let difference = Some(vec![
+        Difference::Match(20),
+        Difference::Mismatch(b'C'), Difference::Mismatch(b'T'),
+        Difference::Match(20),
+        Difference::Deletion(8),
+        Difference::Match(20),
+        Difference::Insertion(b"CAT".to_vec()),
+        Difference::Match(20)
+    ]);
+    let optional = vec![
+        TypedField::String([b'x', b'x'], b"unknown".to_vec()),
+    ];
+
+    // The file contains three variants of the same alignment.
+    let forward = Alignment {
+        name, seq_len, seq_interval,
+        path, path_len, path_interval,
+        matches, edits, mapq, score,
+        base_quality, difference, optional
+    };
+    let mut reverse = forward.clone();
+    reverse.name = SequenceName::Name(String::from("reverse"));
+    if let TargetPath::Path(path) = &mut reverse.path {
+        support::reverse_path_in_place(path);
+    }
+    let mut no_mapq = forward.clone();
+    no_mapq.name = SequenceName::Name(String::from("no_mapq"));
+    no_mapq.mapq = None;
+    let truth = vec![forward, reverse, no_mapq];
+
+    // And now the actual test.
+    let filename = formats::get_test_data("good.gaf");
+    let alignments = parse_alignments(&filename);
+    assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
+    for i in 0..truth.len() {
+        check_alignment(&alignments[i], &truth[i], i + 1, false);
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// Tests for `Alignment`: support functions.
 
 #[test]
 fn alignment_paths_by_sample() {
@@ -344,17 +456,7 @@ fn alignment_set_relative_information() {
     assert!(result.is_ok(), "Failed to set relative information: {}", result.err().unwrap());
 
     // Only name and path fields should have changed.
-    assert_eq!(alignment.seq_len, original.seq_len, "Sequence length was changed");
-    assert_eq!(alignment.seq_interval, original.seq_interval, "Sequence interval was changed");
-    assert_eq!(alignment.path_len, original.path_len, "Path length was changed");
-    assert_eq!(alignment.path_interval, original.path_interval, "Path interval was changed");
-    assert_eq!(alignment.matches, original.matches, "Number of matches was changed");
-    assert_eq!(alignment.edits, original.edits, "Number of edits was changed");
-    assert_eq!(alignment.mapq, original.mapq, "Mapping quality was changed");
-    assert_eq!(alignment.score, original.score, "Alignment score was changed");
-    assert_eq!(alignment.base_quality, original.base_quality, "Base quality string was changed");
-    assert_eq!(alignment.difference, original.difference, "Difference string was changed");
-    assert_eq!(alignment.optional, original.optional, "Optional fields were changed");
+    check_alignment(&alignment, &original, 0, true);
 
     // Check the relative fields.
     // Sample / query sequence id should be 1.

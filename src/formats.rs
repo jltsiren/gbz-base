@@ -33,6 +33,7 @@ use crate::db;
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::str;
 
 use gbwt::{GBWT, Metadata, Orientation, Pos, FullPathName};
@@ -44,6 +45,17 @@ use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
 
 #[cfg(test)]
 mod tests;
+
+//-----------------------------------------------------------------------------
+
+// TODO: Move somewhere else?
+/// Returns the full file name for a specific test file.
+pub fn get_test_data(filename: &'static str) -> PathBuf {
+    let mut buf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    buf.push("test-data");
+    buf.push(filename);
+    buf
+}
 
 //-----------------------------------------------------------------------------
 
@@ -370,6 +382,13 @@ impl Alignment {
         })
     }
 
+    // Parses an interval from two GAF fields.
+    fn parse_interval(start: &[u8], end: &[u8]) -> Result<Range<usize>, String> {
+        let start = Self::parse_usize(start, "interval start")?;
+        let end = Self::parse_usize(end, "interval end")?;
+        Ok(start..end)
+    }
+
     // Parses an orientation from a GAF field.
     fn parse_orientation(field: &[u8], field_name: &str) -> Result<Orientation, String> {
         if field.len() != 1 {
@@ -405,13 +424,23 @@ impl Alignment {
         Ok(result)
     }
 
-    // FIXME tests
+    // FIXME tests: too short, invalid fields, duplicate fields, real reads
+    // TODO: Permissive mode where we ignore errors in optional fields? Strict mode that returns an error?
     /// Parses an alignment from a GAF line.
     ///
     /// Returns an error if the line cannot be parsed.
+    /// The line may end with up to one endline character, which is ignored.
     /// The returned alignment stores the query sequence name and the target path explicitly.
     /// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
     pub fn from_gaf(line: &[u8]) -> Result<Self, String> {
+        // Check for an endline character which may be present.
+        let line = if line.last() == Some(&b'\n') {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
+
+        // Split the line into fields.
         let fields = line.split(|&c| c == b'\t').collect::<Vec<_>>();
         if fields.len() < Self::MANDATORY_FIELDS {
             let line = String::from_utf8_lossy(line);
@@ -422,7 +451,7 @@ impl Alignment {
         // Query sequence.
         let name = SequenceName::Name(Self::parse_string(fields[0], "query sequence name")?);
         let seq_len = Self::parse_usize(fields[1], "query sequence length")?;
-        let seq_interval = Self::parse_usize(fields[2], "query start")?..Self::parse_usize(fields[3], "query end")?;
+        let seq_interval = Self::parse_interval(fields[2], fields[3])?;
 
         // Target path.
         let orientation = Self::parse_orientation(fields[4], "target orientation")?;
@@ -434,12 +463,18 @@ impl Alignment {
         }
         let path = TargetPath::Path(path);
         let path_len = Self::parse_usize(fields[6], "target path length")?;
-        let path_interval = Self::parse_usize(fields[7], "target start")?..Self::parse_usize(fields[8], "target end")?;
+        let mut path_interval = Self::parse_interval(fields[7], fields[8])?;
+        // TODO: Error in strict mode, sanitize in permissive mode?
+        if orientation == Orientation::Reverse {
+            let start = if path_interval.end < path_len { path_len - path_interval.end } else { 0 };
+            let end = if path_interval.start < path_len { path_len - path_interval.start } else { 0 };
+            path_interval = start..end;
+        }
 
         // Alignment statistics.
         let matches = Self::parse_usize(fields[9], "matches")?;
         let alignment_len = Self::parse_usize(fields[10], "alignment length")?;
-        let edits = if matches <= alignment_len { alignment_len - matches } else { 0 };
+        let edits = if matches <= alignment_len { alignment_len - matches } else { 0 }; // TODO: Error in strict mode?
         let mapq = Self::parse_usize(fields[11], "mapping quality")?;
         let mapq = if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) };
 
