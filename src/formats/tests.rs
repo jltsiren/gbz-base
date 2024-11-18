@@ -363,7 +363,6 @@ fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_r
 #[test]
 fn alignment_known_good() {
     // Construct the correct alignment object.
-    // TODO: More convenient way to do this?
     let name = SequenceName::Name(String::from("forward"));
     let seq_len = 100;
     let seq_interval = 5..90;
@@ -393,7 +392,7 @@ fn alignment_known_good() {
         TypedField::String([b'x', b'x'], b"unknown".to_vec()),
     ];
 
-    // The file contains three variants of the same alignment.
+    // The file contains three variants of the same alignment and two variants of unaligned sequences.
     let forward = Alignment {
         name, seq_len, seq_interval,
         path, path_len, path_interval,
@@ -408,7 +407,9 @@ fn alignment_known_good() {
     let mut no_mapq = forward.clone();
     no_mapq.name = SequenceName::Name(String::from("no_mapq"));
     no_mapq.mapq = None;
-    let truth = vec![forward, reverse, no_mapq, empty_alignment("empty", seq_len)];
+    let empty = empty_alignment("empty", seq_len);
+    let missing_values = empty_alignment("missing_values", seq_len);
+    let truth = vec![forward, reverse, no_mapq, empty, missing_values];
 
     // And now the actual test.
     let filename = formats::get_test_data("good.gaf");
@@ -432,7 +433,7 @@ fn alignment_known_bad() {
 
 #[test]
 fn alignment_paths_by_sample() {
-    // FIXME: We should have a test GBWT with alignments.
+    // This is actually a GBWT of haplotypes.
     let filename = support::get_test_data("example.gbwt");
     let index: GBWT = serialize::load_from(&filename).unwrap();
     let metadata = index.metadata().unwrap();
@@ -456,10 +457,11 @@ fn alignment_set_relative_information() {
     let index: GBWT = serialize::load_from(&filename).unwrap();
     let metadata = index.metadata().unwrap();
 
-    let paths_by_sample = Alignment::paths_by_sample(&metadata).unwrap();
+    let result = Alignment::paths_by_sample(&metadata);
+    assert!(result.is_ok(), "Failed to get a list of paths by sample: {}", result.err().unwrap());
+    let paths_by_sample = result.unwrap();
     let mut used_paths = RawVector::with_len(metadata.paths(), false);
 
-    // FIXME: This is a placeholder until we have a test GAF file with alignments.
     // The path we are interested in is id 3: (sample, A, 2, 0) with sample id 1.
     let name = SequenceName::Name(String::from("sample"));
     let seq_len = 5;
@@ -514,6 +516,37 @@ fn alignment_set_relative_information() {
     assert_eq!(alignment, original, "Alignment was changed by a repeated call");
     assert_eq!(used_paths.bit(3), true, "Used path was reset by a repeated call");
     assert_eq!(used_paths.count_ones(), 1, "Used paths were changed by a repeated call");
+}
+
+//-----------------------------------------------------------------------------
+
+// Tests for `Alignment`: integration.
+// This is the haplotype sampling test case from vg.
+
+#[test]
+fn alignment_real() {
+    // Parse alignments.
+    let gaf_file = formats::get_test_data("micb-kir3dl1_HG003.gaf");
+    let mut alignments = parse_alignments(&gaf_file, false);
+    assert_eq!(alignments.len(), 12439, "Unexpected number of parsed alignments");
+
+    // Load the GBWT index and prepare the structures.
+    let gbwt_file = formats::get_test_data("micb-kir3dl1_HG003.gbwt");
+    let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
+    let metadata = index.metadata().unwrap();
+    let result = Alignment::paths_by_sample(&metadata);
+    assert!(result.is_ok(), "Failed to get a list of paths by sample: {}", result.err().unwrap());
+    let paths_by_sample = result.unwrap();
+    let mut used_paths = RawVector::with_len(metadata.paths(), false);
+
+    // Set relative information for all alignments.
+    for (i, alignment) in alignments.iter_mut().enumerate() {
+        let result = alignment.set_relative_information(&index, &paths_by_sample, Some(&mut used_paths));
+        assert!(result.is_ok(), "Failed to set relative information for alignment {}: {}", i, result.err().unwrap());
+    }
+
+    // Check that we managed to match each alignment to a different path.
+    assert_eq!(used_paths.count_ones(), used_paths.len(), "Not all paths were used");
 }
 
 //-----------------------------------------------------------------------------

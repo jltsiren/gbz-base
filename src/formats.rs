@@ -320,8 +320,8 @@ pub fn json_path(path: &[usize], metadata: &WalkMetadata) -> JSONValue {
 
 //-----------------------------------------------------------------------------
 
-// FIXME implement, examples, test
 // TODO: Parse pairing information from tags.
+// FIXME examples
 /// An alignment between a query sequence and a target path in a graph.
 ///
 /// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
@@ -365,6 +365,9 @@ impl Alignment {
     // Placeholder value for a missing mapping quality.
     const MISSING_MAPQ: usize = 255;
 
+    // The field is empty and the value is missing; typically used with unaligned sequences.
+    const MISSING_VALUE: [u8; 1] = [b'*'];
+
     // Parses a string field from a GAF field.
     fn parse_string(field: &[u8], field_name: &str) -> Result<String, String> {
         String::from_utf8(field.to_vec()).map_err(|err| {
@@ -373,7 +376,11 @@ impl Alignment {
     }
 
     // Parses an unsigned integer from a GAF field.
+    // Returns `0` if the value is missing.
     fn parse_usize(field: &[u8], field_name: &str) -> Result<usize, String> {
+        if field == &Self::MISSING_VALUE {
+            return Ok(0);
+        }
         let number = str::from_utf8(field).map_err(|err| {
             format!("Invalid {}: {}", field_name, err)
         })?;
@@ -390,7 +397,11 @@ impl Alignment {
     }
 
     // Parses an orientation from a GAF field.
+    // Returns [`Orientation::Forward`] if the value is missing.
     fn parse_orientation(field: &[u8], field_name: &str) -> Result<Orientation, String> {
+        if field == &Self::MISSING_VALUE {
+            return Ok(Orientation::Forward);
+        }
         if field.len() != 1 {
             return Err(format!("Invalid {}: {}", field_name, String::from_utf8_lossy(field)));
         }
@@ -402,8 +413,13 @@ impl Alignment {
     }
 
     // Parses an oriented path from a GAF field.
+    // Returns an empty path if the value is missing.
     fn parse_path(field: &[u8]) -> Result<Vec<usize>, String> {
         let mut result = Vec::new();
+        if field == &Self::MISSING_VALUE {
+            return Ok(result);
+        }
+
         let mut start = 0;
         while start < field.len() {
             let orientation = match field[start] {
