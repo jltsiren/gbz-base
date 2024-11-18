@@ -424,7 +424,6 @@ impl Alignment {
         Ok(result)
     }
 
-    // FIXME tests: too short, invalid fields, duplicate fields, real reads
     // TODO: Permissive mode where we ignore errors in optional fields? Strict mode that returns an error?
     /// Parses an alignment from a GAF line.
     ///
@@ -476,7 +475,7 @@ impl Alignment {
         let alignment_len = Self::parse_usize(fields[10], "alignment length")?;
         let edits = if matches <= alignment_len { alignment_len - matches } else { 0 }; // TODO: Error in strict mode?
         let mapq = Self::parse_usize(fields[11], "mapping quality")?;
-        let mapq = if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) };
+        let mapq = if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) }; // TODO: Too large values?
 
         // Optional fields.
         let mut score = None;
@@ -655,7 +654,7 @@ impl Alignment {
         self.set_target_start(index, paths_by_sample, used_paths)
     }
 
-    // FIXME back to a GAF line
+    // TODO: back to a GAF line
 }
 
 /// Name of a query sequence in [`Alignment`].

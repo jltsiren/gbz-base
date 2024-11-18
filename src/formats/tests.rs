@@ -284,23 +284,53 @@ fn write_json_path() {
 
 // Tests for `Alignment`: parsing.
 
-fn parse_alignments(filename: &PathBuf) -> Vec<Alignment> {
+// Creates an alignment object for an unaligned sequence with no optional fields.
+fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
+    let name = SequenceName::Name(String::from(name));
+    let seq_interval = 0..0;
+    let path = TargetPath::Path(Vec::new());
+    let path_len = 0;
+    let path_interval = 0..0;
+    let matches = 0;
+    let edits = 0;
+    let mapq = None;
+    let score = None;
+    let base_quality = None;
+    let difference = None;
+    let optional = Vec::new();
+    Alignment {
+        name, seq_len, seq_interval,
+        path, path_len, path_interval,
+        matches, edits, mapq, score,
+        base_quality, difference, optional
+    }
+}
+
+// Parses the alignments from the test file.
+// Returns them as a vector, unless told to expect a parse error.
+fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
     let file = File::open(filename);
     assert!(file.is_ok(), "Failed to open the test file: {}", file.err().unwrap());
     let mut file = file.unwrap();
     let mut reader = BufReader::new(&mut file);
 
     let mut result = Vec::new();
+    let mut line_num = 1;
     loop {
         let mut buf: Vec<u8> = Vec::new();
         let len = reader.read_until(b'\n', &mut buf);
-        assert!(len.is_ok(), "Failed to read a line from the test file: {}", len.err().unwrap());
+        assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
         if len.unwrap() == 0 {
             break;
         }
         let alignment = Alignment::from_gaf(&buf);
-        assert!(alignment.is_ok(), "Failed to parse an alignment from the test file: {}", alignment.err().unwrap());
-        result.push(alignment.unwrap());
+        if expect_error {
+            assert!(alignment.is_err(), "Expected a parse error on line {}", line_num);
+        } else {
+            assert!(alignment.is_ok(), "Failed to parse line {}: {}", line_num, alignment.err().unwrap());
+            result.push(alignment.unwrap());
+        }
+        line_num += 1;
     }
 
     result
@@ -378,15 +408,22 @@ fn alignment_known_good() {
     let mut no_mapq = forward.clone();
     no_mapq.name = SequenceName::Name(String::from("no_mapq"));
     no_mapq.mapq = None;
-    let truth = vec![forward, reverse, no_mapq];
+    let truth = vec![forward, reverse, no_mapq, empty_alignment("empty", seq_len)];
 
     // And now the actual test.
     let filename = formats::get_test_data("good.gaf");
-    let alignments = parse_alignments(&filename);
+    let alignments = parse_alignments(&filename, false);
     assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
     for i in 0..truth.len() {
         check_alignment(&alignments[i], &truth[i], i + 1, false);
     }
+}
+
+#[test]
+fn alignment_known_bad() {
+    let filename = formats::get_test_data("bad.gaf");
+    let alignments = parse_alignments(&filename, true);
+    assert_eq!(alignments.len(), 0, "There should be no valid alignments in the test file");
 }
 
 //-----------------------------------------------------------------------------
