@@ -479,13 +479,9 @@ impl Alignment {
         }
         let path = TargetPath::Path(path);
         let path_len = Self::parse_usize(fields[6], "target path length")?;
-        let mut path_interval = Self::parse_interval(fields[7], fields[8])?;
-        // TODO: Error in strict mode, sanitize in permissive mode?
-        if orientation == Orientation::Reverse {
-            let start = if path_interval.end < path_len { path_len - path_interval.end } else { 0 };
-            let end = if path_interval.start < path_len { path_len - path_interval.start } else { 0 };
-            path_interval = start..end;
-        }
+        // TODO: This is a hack. VG sometimes gets the target interval end wrong.
+        // If we can't parse the interval, we will later try to parse the start and infer the length from the difference string.
+        let path_interval = Self::parse_interval(fields[7], fields[8]);
 
         // Alignment statistics.
         let matches = Self::parse_usize(fields[9], "matches")?;
@@ -498,6 +494,7 @@ impl Alignment {
         let mut score = None;
         let mut base_quality = None;
         let mut difference = None;
+        let mut target_len: Option<usize> = None; // TODO: Part of the interval end hack.
         let mut optional = Vec::new();
         for field in fields[Self::MANDATORY_FIELDS..].iter() {
             let parsed = TypedField::parse(field)?;
@@ -518,10 +515,33 @@ impl Alignment {
                     if let Some(_) = difference {
                         return Err(String::from("Multiple difference fields"));
                     }
-                    difference = Some(Difference::parse_normalized(&value)?);
+                    let ops = Difference::parse_normalized(&value)?;
+                    target_len = Some(ops.iter().map(|op| op.target_len()).sum()); // TODO: Part of the interval end hack.
+                    difference = Some(ops);
                 },
                 _ => { optional.push(parsed); },
             }
+        }
+
+        // TODO: Part of the interval end hack.
+        let mut path_interval = match path_interval {
+            Ok(interval) => interval,
+            Err(_) => {
+                if let Some(target_len) = target_len {
+                    let target_start = Self::parse_usize(fields[7], "target interval start")?;
+                    target_start..target_start + target_len
+                } else {
+                    return Err(String::from("Target interval end cannot be parsed or inferred from the difference string"));
+                }
+            },
+        };
+
+        // TODO: Move to the target path section once the interval end hack becomes unnecessary.
+        // TODO: Error in strict mode, sanitize in permissive mode?
+        if orientation == Orientation::Reverse {
+            let start = if path_interval.end < path_len { path_len - path_interval.end } else { 0 };
+            let end = if path_interval.start < path_len { path_len - path_interval.start } else { 0 };
+            path_interval = start..end;
         }
 
         Ok(Alignment {
@@ -638,7 +658,7 @@ impl Alignment {
             return Ok(());
         }
 
-        Err(format!("Could not match query sequence {} to an unused GBWT path", self.name))
+        Err(format!("Could not match query sequence {} to an unused GBWT path (interval: {}..{})", self.name, start, end))
     }
 
     /// Replaces the explicitly stored data with data relative to the given GBWT index.
@@ -702,7 +722,7 @@ impl Alignment {
     /// * Alignment statistics: `matches`, `edits`, `mapq`, `score`.
     ///
     /// The coordinates are normalized so that `start <= end <= len`.
-    pub fn encode_coordinates_stats(&self) -> Vec<u8> {
+    pub fn encode_numbers(&self) -> Vec<u8> {
         let mut encoder = ByteCode::new();
 
         // Coordinates.
@@ -1079,6 +1099,26 @@ impl Difference {
     /// Returns `true` if the operation is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns the length of the operation in the target sequence.
+    pub fn target_len(&self) -> usize {
+        match self {
+            Self::Match(len) => *len,
+            Self::Mismatch(_) => 1,
+            Self::Insertion(_) => 0,
+            Self::Deletion(len) => *len,
+        }
+    }
+
+    /// Returns the length of the operation in the query sequence.
+    pub fn query_len(&self) -> usize {
+        match self {
+            Self::Match(len) => *len,
+            Self::Mismatch(_) => 1,
+            Self::Insertion(seq) => seq.len(),
+            Self::Deletion(_) => 0,
+        }
     }
 
     /// Merges the given operation into this operation if they can be merged.

@@ -1,8 +1,12 @@
 //! GBZ-base: A SQLite database storing a GBZ graph.
 // TODO: After the integration, move the module-level documentation here.
 
+use crate::Alignment;
+use crate::formats::{SequenceName, TargetPath};
+
 use std::path::Path;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
@@ -10,6 +14,7 @@ use gbwt::{GBWT, GBZ, Orientation, Pos, FullPathName};
 use gbwt::bwt::{BWT, Record};
 use gbwt::support;
 
+use simple_sds::raw_vector::RawVector;
 use simple_sds::serialize;
 
 #[cfg(test)]
@@ -542,17 +547,23 @@ impl GAFBase {
 
 /// Creating the database.
 impl GAFBase {
-    // FIXME We need to include the rest of the data from the GAF file.
     /// Creates a new database from the GBWT index in file `gbwt_file` and stores the database in file `db_file`.
+    ///
+    /// # Arguments
+    ///
+    /// * `gaf_file`: GAF file storing the alignments.
+    /// * `gbwt_file`: GBWT file storing the target paths.
+    /// * `db_file`: Output database file.
     ///
     /// # Errors
     ///
-    /// Returns an error if the database already exists or if the GBWT index does not contain sufficient metadata.
+    /// Returns an error if the input files do not exist or the database already exists.
+    /// Also returns an error if the GBWT index does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create_from_file<P: AsRef<Path>, Q: AsRef<Path>>(gbwt_file: P, db_file: Q) -> Result<(), String> {
+    pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(gaf_file: P, gbwt_file: Q, db_file: R) -> Result<(), String> {
         eprintln!("Loading GBWT index {}", gbwt_file.as_ref().display());
         let index: GBWT = serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?;
-        Self::create(&index, db_file)
+        Self::create(gaf_file, &index, db_file)
     }
 
     /// Checks if the GBWT index contains sufficient metadata.
@@ -575,26 +586,34 @@ impl GAFBase {
 
     /// Creates a new database in file `filename` from the given GBWT index.
     ///
+    /// # Arguments
+    ///
+    /// * `gaf_file`: GAF file storing the alignments.
+    /// * `index`: GBWT index storing the target paths.
+    /// * `db_file`: Output database file.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the database already exists or if the GBWT index does not contain sufficient metadata.
+    /// Returns an error if the GAF file does not exist or if the database already exists.
+    /// Also returns an error if the GBWT index does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create<P: AsRef<Path>>(index: &GBWT, filename: P) -> Result<(), String> {
-        eprintln!("Creating database {}", filename.as_ref().display());
-        if Self::exists(&filename) {
-            return Err(format!("Database {} already exists", filename.as_ref().display()));
+    pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: &GBWT, db_file: Q) -> Result<(), String> {
+        eprintln!("Creating database {}", db_file.as_ref().display());
+        if Self::exists(&db_file) {
+            return Err(format!("Database {} already exists", db_file.as_ref().display()));
         }
         Self::check_gbwt_metadata(index)?;
 
-        let mut connection = Connection::open(&filename).map_err(|x| x.to_string())?;
+        let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(index, &mut connection).map_err(|x| x.to_string())?;
-        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
         let prefix = Self::insert_sequences(index, &mut connection).map_err(|x| x.to_string())?;
-        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
         Self::insert_tags(index, nodes, prefix, &mut connection).map_err(|x| x.to_string())?;
-        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
-        Self::insert_alignments(index, &mut connection).map_err(|x| x.to_string())?;
-        eprintln!("Database size: {}", file_size(&filename).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
+        Self::insert_alignments(gaf_file, index, &mut connection)?;
+        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
+
         Ok(())
     }
 
@@ -725,73 +744,84 @@ impl GAFBase {
         Ok(common_prefix)
     }
 
-    fn insert_alignments(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<()> {
+    fn insert_alignments<P: AsRef<Path>>(gaf_file: P, index: &GBWT, connection: &mut Connection) -> Result<(), String> {
         eprintln!("Inserting alignments");
 
+        let mut file = File::open(gaf_file).map_err(|x| x.to_string())?;
+        let mut reader = BufReader::new(&mut file);
+
+        // Structures used for transforming explicit information to relative information.
+        let metadata = index.metadata().unwrap();
+        let paths_by_sample = Alignment::paths_by_sample(metadata)?;
+        let mut used_paths = RawVector::with_len(metadata.paths(), false);
+
         // TODO: Do we need an index by fw_node?
-        // FIXME This needs to have metadata from the GAF file
-        // * query_coordinates(left tail, length, right tail)
-        // * target_coordinates(left tail, length, right tail)
-        // * alignment_statistics(matches, edits, mapq, score)
-        // * difference string
-        // * quality string
-        // * pair id + properly paired flag
-        // * optional tags
-        // Do we really need path starts in both orientations?
-        // Create the paths table.
-        /*connection.execute(
-            "CREATE TABLE Alignments (
-                handle INTEGER PRIMARY KEY,
-                sequence INTEGER NOT NULL,
-                fw_node INTEGER NOT NULL,
-                fw_offset INTEGER NOT NULL,
-                rev_node INTEGER NOT NULL,
-                rev_offset INTEGER NOT NULL,
-                FOREIGN KEY (sequence) REFERENCES Sequences(handle)
-            ) STRICT",
-            (),
-        )?;*/
+        // TODO: some of the information is redundant; but do we want to have it readily available?
+        // TODO: pair id + properly paired flag; optional tags
         connection.execute(
             "CREATE TABLE Alignments (
                 handle INTEGER PRIMARY KEY,
                 sequence INTEGER NOT NULL,
                 fw_node INTEGER NOT NULL,
                 fw_offset INTEGER NOT NULL,
+                numbers BLOB NOT NULL,
+                quality BLOB,
+                difference BLOB,
                 FOREIGN KEY (sequence) REFERENCES Sequences(handle)
             ) STRICT",
             (),
-        )?;
+        ).map_err(|x| x.to_string())?;
 
         // Insert path starts and metadata.
-        let mut inserted = 0;
-        let transaction = connection.transaction()?;
+        let mut handle: usize = 0;
+        let transaction = connection.transaction().map_err(|x| x.to_string())?;
         {
-/*             let mut insert = transaction.prepare(
-                "INSERT INTO
-                    Alignments(handle, sequence, fw_node, fw_offset, rev_node, rev_offset)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-            )?;*/
             let mut insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(handle, sequence, fw_node, fw_offset)
-                    VALUES (?1, ?2, ?3, ?4)"
-            )?;
-            let metadata = index.metadata().unwrap();
-            for handle in 0..metadata.paths() {
-                let sequence = metadata.path(handle).unwrap().sample();
-                let fw_start = path_start(index, handle, Orientation::Forward);
-//                let rev_start = path_start(index, handle, Orientation::Reverse);
+                    Alignments(handle, sequence, fw_node, fw_offset, numbers, quality, difference)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+            ).map_err(|x| x.to_string())?;
+
+            // TODO: Multithreading with message passing.
+            // 1: Read lines and parse alignments. 2. Set relative information. 4. Insert alignments.
+            loop {
+                // Read the GAF line and switch to relative information.
+                let mut buf: Vec<u8> = Vec::new();
+                let len = reader.read_until(b'\n', &mut buf).map_err(|x| x.to_string())?;
+                if len == 0 {
+                    break;
+                }
+                let mut aln = Alignment::from_gaf(&buf).map_err(
+                    |x| format!("Failed to parse the alignment on line {}: {}", handle + 1, x)
+                )?;
+                aln.set_relative_information(index, &paths_by_sample, Some(&mut used_paths)).map_err(
+                    |x| format!("Failed to match alignment {} with a GBWT path: {}", handle + 1, x)
+                )?;
+
+                // Insert the alignment.
+                let sequence = if let SequenceName::Identifier(id) = aln.name { id } else { unreachable!() };
+                let (fw_start, fw_offset) = if let TargetPath::StartPosition(start) = aln.path {
+                    (start.node, start.offset)
+                } else { unreachable!() };
+                let numbers = aln.encode_numbers();
+                let quality = aln.encode_base_quality();
+                let difference = aln.encode_difference();
                 insert.execute((
                     handle, sequence,
-                    fw_start.node, fw_start.offset,
-//                    rev_start.node, rev_start.offset,
-                ))?;
-                inserted += 1;
+                    fw_start, fw_offset,
+                    numbers, quality, difference
+                )).map_err(|x| x.to_string())?;
+
+                handle += 1;
             }
         }
-        transaction.commit()?;
+        transaction.commit().map_err(|x| x.to_string())?;
 
-        eprintln!("Inserted information on {} alignments", inserted);
+        eprintln!("Inserted information on {} alignments", handle);
+        if handle != metadata.paths() {
+            eprintln!("Warning: Expected {} alignments but encountered {}", metadata.paths(), handle);
+        }
+
         Ok(())
     }
 }

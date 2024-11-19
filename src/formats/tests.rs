@@ -530,7 +530,7 @@ fn alignment_set_relative_information() {
 fn check_encode_decode(alignment: &Alignment, line: usize) {
     let query = if let SequenceName::Identifier(id) = alignment.name { id } else { unreachable!() };
     let target = if let TargetPath::StartPosition(pos) = alignment.path { pos } else { unreachable!() };
-    let numbers = alignment.encode_coordinates_stats();
+    let numbers = alignment.encode_numbers();
     let quality = alignment.encode_base_quality();
     let difference = alignment.encode_difference();
     let decoded = Alignment::decode(
