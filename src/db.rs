@@ -728,6 +728,7 @@ impl GAFBase {
     fn insert_alignments(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Inserting alignments");
 
+        // TODO: Do we need an index by fw_node?
         // FIXME This needs to have metadata from the GAF file
         // * query_coordinates(left tail, length, right tail)
         // * target_coordinates(left tail, length, right tail)

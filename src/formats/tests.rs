@@ -336,8 +336,9 @@ fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
     result
 }
 
-// Check that the alignment matches the truth, optionally skipping fields that may store relative information.
-fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_relative: bool) {
+// Check that the alignment matches the truth.
+// May be instructed to skip fields storing relative information and/or unknown optional fields.
+fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_relative: bool, skip_optional: bool) {
     if !skip_relative {
         assert_eq!(alignment.name, truth.name, "Wrong sequence name on line {}", line);
     }
@@ -357,7 +358,10 @@ fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_r
 
     assert_eq!(alignment.base_quality, truth.base_quality, "Wrong base quality string on line {}", line);
     assert_eq!(alignment.difference, truth.difference, "Wrong difference string on line {}", line);
-    assert_eq!(alignment.optional, truth.optional, "Wrong optional fields on line {}", line);
+
+    if !skip_optional {
+        assert_eq!(alignment.optional, truth.optional, "Wrong optional fields on line {}", line);
+    }
 }
 
 #[test]
@@ -416,7 +420,7 @@ fn alignment_known_good() {
     let alignments = parse_alignments(&filename, false);
     assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
     for i in 0..truth.len() {
-        check_alignment(&alignments[i], &truth[i], i + 1, false);
+        check_alignment(&alignments[i], &truth[i], i + 1, false, false);
     }
 }
 
@@ -495,7 +499,7 @@ fn alignment_set_relative_information() {
     assert!(result.is_ok(), "Failed to set relative information: {}", result.err().unwrap());
 
     // Only name and path fields should have changed.
-    check_alignment(&alignment, &original, 0, true);
+    check_alignment(&alignment, &original, 0, true, false);
 
     // Check the relative fields.
     // Sample / query sequence id should be 1.
@@ -520,12 +524,55 @@ fn alignment_set_relative_information() {
 
 //-----------------------------------------------------------------------------
 
+// Tests for `Alignment`: encoding and decoding.
+
+// This assumes that the alignment is relative to a GBWT index.
+fn check_encode_decode(alignment: &Alignment, line: usize) {
+    let query = if let SequenceName::Identifier(id) = alignment.name { id } else { unreachable!() };
+    let target = if let TargetPath::StartPosition(pos) = alignment.path { pos } else { unreachable!() };
+    let numbers = alignment.encode_coordinates_stats();
+    let quality = alignment.encode_base_quality();
+    let difference = alignment.encode_difference();
+    let decoded = Alignment::decode(
+        query, target, &numbers, quality.as_ref().map(Vec::as_slice), difference.as_ref().map(Vec::as_slice)
+    );
+    assert!(decoded.is_ok(), "Failed to decode alignment {}: {}", line, decoded.err().unwrap());
+    let decoded = decoded.unwrap();
+    // TODO: Check the optional fields.
+    check_alignment(&decoded, alignment, line, false, true);
+}
+
+#[test]
+fn alignment_encode_decode() {
+    // Parse the alignments.
+    let filename = formats::get_test_data("good.gaf");
+    let mut alignments = parse_alignments(&filename, false);
+    assert_eq!(alignments.len(), 5, "Unexpected number of parsed alignments");
+
+    // Set the relative information manually, as we do not have a GBWT index.
+    for (i, aln) in alignments.iter_mut().enumerate() {
+        aln.name = SequenceName::Identifier(i);
+    }
+    alignments[0].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Forward), 0));
+    alignments[1].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Reverse), 0));
+    alignments[2].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Forward), 0));
+    alignments[3].path = TargetPath::StartPosition(Pos::new(gbwt::ENDMARKER, 0));
+    alignments[4].path = TargetPath::StartPosition(Pos::new(gbwt::ENDMARKER, 0));
+
+    // Encode and decode the alignments.
+    for (i, aln) in alignments.iter().enumerate() {
+        check_encode_decode(aln, i + 1);
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 // Tests for `Alignment`: integration.
 // This is the haplotype sampling test case from vg.
 
 #[test]
 fn alignment_real() {
-    // Parse alignments.
+    // Parse the alignments.
     let gaf_file = formats::get_test_data("micb-kir3dl1_HG003.gaf");
     let mut alignments = parse_alignments(&gaf_file, false);
     assert_eq!(alignments.len(), 12439, "Unexpected number of parsed alignments");
@@ -542,11 +589,16 @@ fn alignment_real() {
     // Set relative information for all alignments.
     for (i, alignment) in alignments.iter_mut().enumerate() {
         let result = alignment.set_relative_information(&index, &paths_by_sample, Some(&mut used_paths));
-        assert!(result.is_ok(), "Failed to set relative information for alignment {}: {}", i, result.err().unwrap());
+        assert!(result.is_ok(), "Failed to set relative information for alignment {}: {}", i + 1, result.err().unwrap());
     }
 
     // Check that we managed to match each alignment to a different path.
     assert_eq!(used_paths.count_ones(), used_paths.len(), "Not all paths were used");
+
+    // Encode and decode the alignments.
+    for (i, aln) in alignments.iter().enumerate() {
+        check_encode_decode(aln, i + 1);
+    }
 }
 
 //-----------------------------------------------------------------------------

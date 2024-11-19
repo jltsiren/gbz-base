@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use std::str;
 
 use gbwt::{GBWT, Metadata, Orientation, Pos, FullPathName};
-use gbwt::support;
+use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 use simple_sds::ops::Select;
 use simple_sds::raw_vector::{RawVector, AccessRaw};
@@ -358,6 +358,7 @@ pub struct Alignment {
     pub optional: Vec<TypedField>,
 }
 
+/// Construction from a GAF line and matching the alignment with a GBWT path.
 impl Alignment {
     // Number of mandatory fields in a GAF line.
     const MANDATORY_FIELDS: usize = 12;
@@ -673,6 +674,233 @@ impl Alignment {
     // TODO: back to a GAF line
 }
 
+//-----------------------------------------------------------------------------
+
+/// Encoding / decoding the alignment in the format used in GAF-base.
+impl Alignment {
+    // Normalizes the interval and encodes it as (left flank, length, right flank).
+    fn encode_coordinates(interval: Range<usize>, len: usize, encoder: &mut ByteCode) {
+        let start = if interval.start <= interval.end { interval.start } else { interval.end };
+        let end = if interval.end <= len { interval.end } else { len };
+        encoder.write(start);
+        encoder.write(end - start);
+        encoder.write(len - end);
+    }
+
+    // Encodes a signed integer. Small absolute values are represented as small numbers.
+    fn encode_signed(value: isize, encoder: &mut ByteCode) {
+        let value = if value < 0 { (-2 * value - 1) as usize } else { 2 * value as usize };
+        encoder.write(value);
+    }
+
+    /// Encodes numerical fields as a blob.
+    ///
+    /// This includes the following fields:
+    ///
+    /// * Query sequence: `seq_len`, `seq_interval.start`, `seq_interval.end`.
+    /// * Target path: `path_len`, `path_interval.start`, `path_interval.end`.
+    /// * Alignment statistics: `matches`, `edits`, `mapq`, `score`.
+    ///
+    /// The coordinates are normalized so that `start <= end <= len`.
+    pub fn encode_coordinates_stats(&self) -> Vec<u8> {
+        let mut encoder = ByteCode::new();
+
+        // Coordinates.
+        Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, &mut encoder);
+        Self::encode_coordinates(self.path_interval.clone(), self.path_len, &mut encoder);
+
+        // Alignment statistics.
+        encoder.write(self.matches);
+        encoder.write(self.edits);
+        encoder.write(self.mapq.unwrap_or(Self::MISSING_MAPQ));
+        if let Some(score) = self.score {
+            Self::encode_signed(score, &mut encoder);
+        };
+
+        Vec::from(encoder)
+    }
+
+    /// Encodes the base quality sequence as a run-length encoded blob.
+    ///
+    /// Returns [`None`] if the base quality sequence is missing.
+    pub fn encode_base_quality(&self) -> Option<Vec<u8>> {
+        if self.base_quality.is_none() {
+            return None;
+        }
+
+        // Determine the alphabet and encode it as (alphabet size, alphabet).
+        let mut alphabet: Vec<u8> = Vec::new();
+        for value in self.base_quality.as_ref().unwrap().iter() {
+            if !alphabet.contains(value) {
+                alphabet.push(*value);
+            }
+        }
+        let mut encoder = RLE::with_sigma(alphabet.len());
+        encoder.write_int(alphabet.len());
+        for &value in alphabet.iter() {
+            encoder.write_byte(value);
+        }
+
+        // Run-length encode the base quality sequence.
+        let mut run = Run::new(0, 0);
+        for &value in self.base_quality.as_ref().unwrap().iter() {
+            if value as usize == run.value {
+                run.len += 1;
+            } else {
+                if run.len > 0 {
+                    run.value = alphabet.iter().position(|&x| x as usize == run.value).unwrap();
+                    encoder.write(run);
+                }
+                run.value = value as usize;
+                run.len = 1;
+            }
+        }
+        if run.len > 0 {
+            run.value = alphabet.iter().position(|&x| x as usize == run.value).unwrap();
+            encoder.write(run);
+        }
+
+        Some(Vec::from(encoder))
+    }
+
+    // TODO: Use a more efficient encoding for mismatches and insertions.
+    /// Encodes the difference string as a blob.
+    ///
+    /// Returns [`None`] if the difference string is missing.
+    pub fn encode_difference(&self) -> Option<Vec<u8>> {
+        if self.difference.is_none() {
+            return None;
+        }
+
+        let mut encoder = RLE::with_sigma(Difference::NUM_TYPES);
+        for diff in self.difference.as_ref().unwrap().iter() {
+            match diff {
+                Difference::Match(len) => encoder.write(Run::new(0, *len)),
+                Difference::Mismatch(base) => encoder.write(Run::new(1, *base as usize)),
+                Difference::Insertion(seq) => {
+                    encoder.write(Run::new(2, seq.len()));
+                    for byte in seq.iter() {
+                        encoder.write_byte(*byte);
+                    }
+                },
+                Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
+            }
+        }
+
+        Some(Vec::from(encoder))
+    }
+
+    // TODO: encode optional fields
+
+    // Decodes an interval and a length from the iterator.
+    fn decode_coordinates(iter: &mut ByteCodeIter) -> Option<(Range<usize>, usize)> {
+        let left_flank = iter.next()?;
+        let interval_len = iter.next()?;
+        let right_flank = iter.next()?;
+        Some((left_flank..left_flank + interval_len, left_flank + interval_len + right_flank))
+    }
+
+    // Decodes a signed integer from the iterator.
+    fn decode_signed(iter: &mut ByteCodeIter) -> Option<isize> {
+        let value = iter.next()?;
+        if value % 2 == 0 {
+            Some((value / 2) as isize)
+        } else {
+            Some(-(value as isize + 1) / 2)
+        }
+    }
+
+    /// Decodes the alignment from the given fields.
+    ///
+    /// Returns an error if the fields cannot be decoded.
+    ///
+    /// # Arguments
+    ///
+    /// * `query`: Query sequence identifier.
+    /// * `target`: Target path starting position.
+    /// * `numbers`: Encoded numerical fields.
+    /// * `quality`: Encoded base quality sequence.
+    /// * `difference`: Encoded difference string.
+    pub fn decode(query: usize, target: Pos, numbers: &[u8], quality: Option<&[u8]>, difference: Option<&[u8]>) -> Result<Self, String> {
+        let name = SequenceName::Identifier(query);
+        let path = TargetPath::StartPosition(target);
+
+        // Decode the numerical fields.
+        let mut number_decoder = ByteCodeIter::new(numbers);
+        let (seq_interval, seq_len) = Self::decode_coordinates(&mut number_decoder).ok_or(
+            String::from("Missing query sequence coordinates")
+        )?;
+        let (path_interval, path_len) = Self::decode_coordinates(&mut number_decoder).ok_or(
+            String::from("Missing target path coordinates")
+        )?;
+        let matches = number_decoder.next().ok_or(String::from("Missing number of matches"))?;
+        let edits = number_decoder.next().ok_or(String::from("Missing number of edits"))?;
+        let mapq = match number_decoder.next() {
+            Some(mapq) => if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) },
+            None => return Err(String::from("Missing mapping quality")),
+        };
+        let score = Self::decode_signed(&mut number_decoder);
+
+        // Decode the base quality sequence.
+        let base_quality = if let Some(quality) = quality {
+            let mut quality_decoder = RLEIter::new(quality);
+            let sigma = quality_decoder.int().ok_or(String::from("Missing base quality alphabet size"))?;
+            quality_decoder.set_sigma(sigma);
+            let mut alphabet: Vec<u8> = Vec::with_capacity(sigma);
+            for i in 0..sigma {
+                let value = quality_decoder.byte().ok_or(format!("Missing base quality symbol {}", i))?;
+                alphabet.push(value);
+            }
+            let mut result: Vec<u8> = Vec::with_capacity(seq_len);
+            while let Some(run) = quality_decoder.next() {
+                let value = alphabet[run.value];
+                for _ in 0..run.len {
+                    result.push(value);
+                }
+            }
+            Some(result)
+        } else {
+            None
+        };
+
+        // Decode the difference string.
+        let difference = if let Some(difference) = difference {
+            let mut difference_decoder = RLEIter::with_sigma(difference, Difference::NUM_TYPES);
+            let mut result: Vec<Difference> = Vec::new();
+            while let Some(run) = difference_decoder.next() {
+                match run.value {
+                    0 => result.push(Difference::Match(run.len)),
+                    1 => result.push(Difference::Mismatch(run.len as u8)),
+                    2 => {
+                        let mut seq: Vec<u8> = Vec::with_capacity(run.len);
+                        for _ in 0..run.len {
+                            seq.push(difference_decoder.byte().ok_or(String::from("Missing insertion base"))?);
+                        }
+                        result.push(Difference::Insertion(seq));
+                    },
+                    3 => result.push(Difference::Deletion(run.len)),
+                    _ => return Err(format!("Invalid difference string operation: {}", run.value)),
+                }
+            }
+            Some(result)
+        } else {
+            None
+        };
+
+        // TODO: Decode optional fields
+        let optional = Vec::new();
+
+        Ok(Alignment {
+            name, seq_len, seq_interval,
+            path, path_len, path_interval,
+            matches, edits, mapq, score,
+            base_quality, difference, optional,
+        })
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 /// Name of a query sequence in [`Alignment`].
 ///
 /// The name is stored either explicitly as a string or as an identifier relative to a list of sequence names.
@@ -752,6 +980,9 @@ pub enum Difference {
 }
 
 impl Difference {
+    /// Number of supported operation types.
+    pub const NUM_TYPES: usize = 4;
+
     // TODO: This does not support `~` (intron length and splice signal) yet.
     const OPS: &'static [u8] = b"=:*+-";
 
