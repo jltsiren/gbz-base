@@ -713,21 +713,29 @@ impl Alignment {
         encoder.write(value);
     }
 
-    // TODO: Include fw_offset?
     /// Encodes numerical fields as a blob.
     ///
     /// This includes the following fields:
     ///
     /// * Query sequence: `seq_len`, `seq_interval.start`, `seq_interval.end`.
-    /// * Target path: `path_len`, `path_interval.start`, `path_interval.end`.
+    /// * Target path: offset in the start node, `path_len`, `path_interval.start`, `path_interval.end`.
     /// * Alignment statistics: `matches`, `edits`, `mapq`, `score`.
     ///
     /// The coordinates are normalized so that `start <= end <= len`.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the target path is not stored relative to a GBWT index.
     pub fn encode_numbers(&self) -> Vec<u8> {
         let mut encoder = ByteCode::new();
 
         // Coordinates.
         Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, &mut encoder);
+        if let TargetPath::StartPosition(pos) = self.path {
+            encoder.write(pos.offset);
+        } else {
+            panic!("Target path is not stored relative to a GBWT index");
+        }
         Self::encode_coordinates(self.path_interval.clone(), self.path_len, &mut encoder);
 
         // Alignment statistics.
@@ -842,15 +850,16 @@ impl Alignment {
     /// * `numbers`: Encoded numerical fields.
     /// * `quality`: Encoded base quality sequence.
     /// * `difference`: Encoded difference string.
-    pub fn decode(query: usize, target: Pos, numbers: &[u8], quality: Option<&[u8]>, difference: Option<&[u8]>) -> Result<Self, String> {
+    pub fn decode(query: usize, target_node: usize, numbers: &[u8], quality: Option<&[u8]>, difference: Option<&[u8]>) -> Result<Self, String> {
         let name = SequenceName::Identifier(query);
-        let path = TargetPath::StartPosition(target);
 
         // Decode the numerical fields.
         let mut number_decoder = ByteCodeIter::new(numbers);
         let (seq_interval, seq_len) = Self::decode_coordinates(&mut number_decoder).ok_or(
             String::from("Missing query sequence coordinates")
         )?;
+        let target_offset = number_decoder.next().ok_or(String::from("Missing target path offset"))?;
+        let path = TargetPath::StartPosition(Pos::new(target_node, target_offset));
         let (path_interval, path_len) = Self::decode_coordinates(&mut number_decoder).ok_or(
             String::from("Missing target path coordinates")
         )?;

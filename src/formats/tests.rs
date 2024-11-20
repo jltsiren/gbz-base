@@ -534,7 +534,7 @@ fn check_encode_decode(alignment: &Alignment, line: usize) {
     let quality = alignment.encode_base_quality();
     let difference = alignment.encode_difference();
     let decoded = Alignment::decode(
-        query, target, &numbers, quality.as_ref().map(Vec::as_slice), difference.as_ref().map(Vec::as_slice)
+        query, target.node, &numbers, quality.as_ref().map(Vec::as_slice), difference.as_ref().map(Vec::as_slice)
     );
     assert!(decoded.is_ok(), "Failed to decode alignment {}: {}", line, decoded.err().unwrap());
     let decoded = decoded.unwrap();

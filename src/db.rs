@@ -759,18 +759,16 @@ impl GAFBase {
         let mut file = File::open(gaf_file).map_err(|x| x.to_string())?;
         let mut reader = BufReader::new(&mut file);
 
-        // TODO: Do we need an index by fw_node?
         // TODO: some of the information is redundant; but do we want to have it readily available?
         // TODO: pair id + properly paired flag; optional tags
-        // `sequence` and `fw_node` are foreign keys to `Sequences` and `Nodes`, but we do not enforce that
+        // `sequence` and `start_node` are foreign keys to `Sequences` and `Nodes`, but we do not enforce that
         // for performance reasons.
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         connection.execute(
             "CREATE TABLE Alignments (
                 handle INTEGER PRIMARY KEY,
                 sequence INTEGER NOT NULL,
-                fw_node INTEGER NOT NULL,
-                fw_offset INTEGER NOT NULL,
+                start_node INTEGER NOT NULL,
                 numbers BLOB NOT NULL,
                 quality BLOB,
                 difference BLOB
@@ -829,8 +827,8 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(handle, sequence, fw_node, fw_offset, numbers, quality, difference)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                    Alignments(handle, sequence, start_node, numbers, quality, difference)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
                 let _ = to_report.send(Err(message));
@@ -850,15 +848,14 @@ impl GAFBase {
                         }
                         for aln in block.iter() {
                             let sequence = if let SequenceName::Identifier(id) = aln.name { id } else { unreachable!() };
-                            let (fw_start, fw_offset) = if let TargetPath::StartPosition(start) = aln.path {
-                                (start.node, start.offset)
+                            let start_node = if let TargetPath::StartPosition(start) = aln.path {
+                                start.node
                             } else { unreachable!() };
                             let numbers = aln.encode_numbers();
                             let quality = aln.encode_base_quality();
                             let difference = aln.encode_difference();
                             let result = insert.execute((
-                                handle, sequence,
-                                fw_start, fw_offset,
+                                handle, sequence, start_node,
                                 numbers, quality, difference
                             )).map_err(|x| x.to_string());
                             if let Err(message) = result {
