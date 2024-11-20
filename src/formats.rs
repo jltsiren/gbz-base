@@ -749,6 +749,7 @@ impl Alignment {
         Vec::from(encoder)
     }
 
+    // TODO: Use a fixed encoding. We need to build it during GBWT construction and save it in the tags.
     /// Encodes the base quality sequence as a run-length encoded blob.
     ///
     /// Returns [`None`] if the base quality sequence is missing.

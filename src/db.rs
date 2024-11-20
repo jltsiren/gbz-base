@@ -547,6 +547,15 @@ impl GAFBase {
 
 //-----------------------------------------------------------------------------
 
+// Statistics for the encoded alignments in the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlignmentStats {
+    pub alignments: usize,
+    pub number_bytes: usize,
+    pub quality_bytes: usize,
+    pub difference_bytes: usize,
+}
+
 /// Creating the database.
 impl GAFBase {
     /// Creates a new database from the GBWT index in file `gbwt_file` and stores the database in file `db_file`.
@@ -761,6 +770,7 @@ impl GAFBase {
 
         // TODO: some of the information is redundant; but do we want to have it readily available?
         // TODO: pair id + properly paired flag; optional tags
+        // The primary key is the 0-based line number in the GAF file.
         // `sequence` and `start_node` are foreign keys to `Sequences` and `Nodes`, but we do not enforce that
         // for performance reasons.
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
@@ -837,6 +847,12 @@ impl GAFBase {
             let mut insert = insert.unwrap();
 
             let mut handle: usize = 0;
+            let mut statistics = AlignmentStats {
+                alignments: 0,
+                number_bytes: 0,
+                quality_bytes: 0,
+                difference_bytes: 0,
+            };
             loop {
                 // This can only fail if the sender is disconnected.
                 let block: Result<Vec<Alignment>, String> = from_relative.recv().unwrap();
@@ -854,6 +870,14 @@ impl GAFBase {
                             let numbers = aln.encode_numbers();
                             let quality = aln.encode_base_quality();
                             let difference = aln.encode_difference();
+                            statistics.alignments += 1;
+                            statistics.number_bytes += numbers.len();
+                            if let Some(quality) = &quality {
+                                statistics.quality_bytes += quality.len();
+                            }
+                            if let Some(difference) = &difference {
+                                statistics.difference_bytes += difference.len();
+                            }
                             let result = insert.execute((
                                 handle, sequence, start_node,
                                 numbers, quality, difference
@@ -878,7 +902,7 @@ impl GAFBase {
                 let _ = to_report.send(Err(message));
                 return;
             }
-            let _ = to_report.send(Ok(handle));
+            let _ = to_report.send(Ok(statistics));
         });
 
         // Main thread that parses the alignments.
@@ -932,12 +956,18 @@ impl GAFBase {
         }
         let _ = relative_thread.join();
         let _ = insert_thread.join();
-        let inserted = from_insert.recv().unwrap()?;
+        let statistics = from_insert.recv().unwrap()?;
 
-        eprintln!("Inserted information on {} alignments", inserted);
-        if inserted != metadata.paths() {
-            eprintln!("Warning: Expected {} alignments but encountered {}", metadata.paths(), inserted);
+        eprintln!("Inserted information on {} alignments", statistics.alignments);
+        if statistics.alignments != metadata.paths() {
+            eprintln!("Warning: Expected {} alignments", metadata.paths());
         }
+        eprintln!(
+            "Field sizes: numbers {}, quality strings {}, difference strings {}",
+            human_readable_size(statistics.number_bytes),
+            human_readable_size(statistics.quality_bytes),
+            human_readable_size(statistics.difference_bytes)
+        );
 
         Ok(())
     }
@@ -1366,18 +1396,23 @@ const SIZE_UNITS: [(f64, &'static str); 6] = [
     (1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0, "PiB"),
 ];
 
+// Returns a human-readable representation of the given number of bytes.
+fn human_readable_size(bytes: usize) -> String {
+    let mut unit = 0;
+    let value = bytes as f64;
+    while unit + 1 < SIZE_UNITS.len() && value >= SIZE_UNITS[unit + 1].0 {
+        unit += 1;
+    }
+    format!("{:.3} {}", value / SIZE_UNITS[unit].0, SIZE_UNITS[unit].1)
+}
+
 // Returns a human-readable size of the file.
 fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
     let metadata = fs::metadata(filename).map_err(|x| x.to_string());
     if metadata.is_err() {
         return None;
     }
-    let bytes = metadata.unwrap().len() as f64;
-    let mut unit = 0;
-    while unit + 1 < SIZE_UNITS.len() && bytes >= SIZE_UNITS[unit + 1].0 {
-        unit += 1;
-    }
-    Some(format!("{:.3} {}", bytes / SIZE_UNITS[unit].0, SIZE_UNITS[unit].1))
+    Some(human_readable_size(metadata.unwrap().len() as usize))
 }
 
 // TODO: Add an option to check from the tags that this is the right kind and right version of the database.
