@@ -713,6 +713,7 @@ impl Alignment {
         encoder.write(value);
     }
 
+    // TODO: Include fw_offset?
     /// Encodes numerical fields as a blob.
     ///
     /// This includes the following fields:

@@ -7,6 +7,8 @@ use crate::formats::{SequenceName, TargetPath};
 use std::path::Path;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
+use std::thread;
+use std::sync::{mpsc, Arc};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
@@ -562,8 +564,8 @@ impl GAFBase {
     /// Passes through any database errors.
     pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(gaf_file: P, gbwt_file: Q, db_file: R) -> Result<(), String> {
         eprintln!("Loading GBWT index {}", gbwt_file.as_ref().display());
-        let index: GBWT = serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?;
-        Self::create(gaf_file, &index, db_file)
+        let index: Arc<GBWT> = Arc::new(serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?);
+        Self::create(gaf_file, index, db_file)
     }
 
     /// Checks if the GBWT index contains sufficient metadata.
@@ -597,21 +599,24 @@ impl GAFBase {
     /// Returns an error if the GAF file does not exist or if the database already exists.
     /// Also returns an error if the GBWT index does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: &GBWT, db_file: Q) -> Result<(), String> {
+    pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q) -> Result<(), String> {
         eprintln!("Creating database {}", db_file.as_ref().display());
         if Self::exists(&db_file) {
             return Err(format!("Database {} already exists", db_file.as_ref().display()));
         }
-        Self::check_gbwt_metadata(index)?;
+        Self::check_gbwt_metadata(&index)?;
 
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
-        let nodes = Self::insert_nodes(index, &mut connection).map_err(|x| x.to_string())?;
+        let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        let prefix = Self::insert_sequences(index, &mut connection).map_err(|x| x.to_string())?;
+        let prefix = Self::insert_sequences(&index, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        Self::insert_tags(index, nodes, prefix, &mut connection).map_err(|x| x.to_string())?;
+        Self::insert_tags(&index, nodes, prefix, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        Self::insert_alignments(gaf_file, index, &mut connection)?;
+        drop(connection);
+
+        // Because `insert_alignments` is multithreaded, we do not pass the connection to it.
+        Self::insert_alignments(gaf_file, index, &db_file)?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
@@ -744,20 +749,22 @@ impl GAFBase {
         Ok(common_prefix)
     }
 
-    fn insert_alignments<P: AsRef<Path>>(gaf_file: P, index: &GBWT, connection: &mut Connection) -> Result<(), String> {
-        eprintln!("Inserting alignments");
-
-        let mut file = File::open(gaf_file).map_err(|x| x.to_string())?;
-        let mut reader = BufReader::new(&mut file);
-
-        // Structures used for transforming explicit information to relative information.
+    fn insert_alignments<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q) -> Result<(), String> {
+        eprintln!("Building structures for mapping alignments to GBWT paths");
         let metadata = index.metadata().unwrap();
         let paths_by_sample = Alignment::paths_by_sample(metadata)?;
         let mut used_paths = RawVector::with_len(metadata.paths(), false);
 
+        eprintln!("Inserting alignments");
+        let mut file = File::open(gaf_file).map_err(|x| x.to_string())?;
+        let mut reader = BufReader::new(&mut file);
+
         // TODO: Do we need an index by fw_node?
         // TODO: some of the information is redundant; but do we want to have it readily available?
         // TODO: pair id + properly paired flag; optional tags
+        // `sequence` and `fw_node` are foreign keys to `Sequences` and `Nodes`, but we do not enforce that
+        // for performance reasons.
+        let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         connection.execute(
             "CREATE TABLE Alignments (
                 handle INTEGER PRIMARY KEY,
@@ -766,60 +773,173 @@ impl GAFBase {
                 fw_offset INTEGER NOT NULL,
                 numbers BLOB NOT NULL,
                 quality BLOB,
-                difference BLOB,
-                FOREIGN KEY (sequence) REFERENCES Sequences(handle)
+                difference BLOB
             ) STRICT",
             (),
         ).map_err(|x| x.to_string())?;
 
-        // Insert path starts and metadata.
-        let mut handle: usize = 0;
-        let transaction = connection.transaction().map_err(|x| x.to_string())?;
-        {
-            let mut insert = transaction.prepare(
+        // The main thread parses the GAF file and sends the alignments to another thread that sets the relative information.
+        // That thread sends the alignments to a third thread that inserts them into the database.
+        // If something fails within a thread, it sends an error message to the next thread and stops.
+        // If a thread receives an error message, it passes it through and stops.
+        let (to_relative, from_parser) = mpsc::sync_channel(4);
+        let (to_insert, from_relative) = mpsc::sync_channel(4);
+        let (to_report, from_insert) = mpsc::sync_channel(1);
+
+        // Relative information thread.
+        let gbwt_index = index.clone();
+        let relative_thread = thread::spawn(move || {
+            let mut line_num: usize = 1;
+            loop {
+                // This can only fail if the sender is disconnected.
+                let block: Result<Vec<Alignment>, String> = from_parser.recv().unwrap();
+                match block {
+                    Ok(mut block) => {
+                        if block.is_empty() {
+                            // An empty block indicates that we are done.
+                            let _ = to_insert.send(Ok(block));
+                            return;
+                        }
+                        for aln in block.iter_mut() {
+                            let result = aln.set_relative_information(&gbwt_index, &paths_by_sample, Some(&mut used_paths));
+                            if let Err(message) = result {
+                                let _ = to_insert.send(Err(format!("Failed to match alignment {} with a GBWT path: {}", line_num, message)));
+                                return;
+                            };
+                            line_num += 1;
+                        }
+                        let _ = to_insert.send(Ok(block));
+                    },
+                    Err(message) => {
+                        let _ = to_insert.send(Err(message));
+                        return;
+                    },
+                }
+            }
+        });
+
+        // Insertion thread.
+        let insert_thread = thread::spawn(move || {
+            let transaction = connection.transaction().map_err(|x| x.to_string());
+            if let Err(message) = transaction {
+                let _ = to_report.send(Err(message));
+                return;
+            }
+            let transaction = transaction.unwrap();
+
+            let insert = transaction.prepare(
                 "INSERT INTO
                     Alignments(handle, sequence, fw_node, fw_offset, numbers, quality, difference)
                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-            ).map_err(|x| x.to_string())?;
-
-            // TODO: Multithreading with message passing.
-            // 1: Read lines and parse alignments. 2. Set relative information. 4. Insert alignments.
-            loop {
-                // Read the GAF line and switch to relative information.
-                let mut buf: Vec<u8> = Vec::new();
-                let len = reader.read_until(b'\n', &mut buf).map_err(|x| x.to_string())?;
-                if len == 0 {
-                    break;
-                }
-                let mut aln = Alignment::from_gaf(&buf).map_err(
-                    |x| format!("Failed to parse the alignment on line {}: {}", handle + 1, x)
-                )?;
-                aln.set_relative_information(index, &paths_by_sample, Some(&mut used_paths)).map_err(
-                    |x| format!("Failed to match alignment {} with a GBWT path: {}", handle + 1, x)
-                )?;
-
-                // Insert the alignment.
-                let sequence = if let SequenceName::Identifier(id) = aln.name { id } else { unreachable!() };
-                let (fw_start, fw_offset) = if let TargetPath::StartPosition(start) = aln.path {
-                    (start.node, start.offset)
-                } else { unreachable!() };
-                let numbers = aln.encode_numbers();
-                let quality = aln.encode_base_quality();
-                let difference = aln.encode_difference();
-                insert.execute((
-                    handle, sequence,
-                    fw_start, fw_offset,
-                    numbers, quality, difference
-                )).map_err(|x| x.to_string())?;
-
-                handle += 1;
+            ).map_err(|x| x.to_string());
+            if let Err(message) = insert {
+                let _ = to_report.send(Err(message));
+                return;
             }
-        }
-        transaction.commit().map_err(|x| x.to_string())?;
+            let mut insert = insert.unwrap();
 
-        eprintln!("Inserted information on {} alignments", handle);
-        if handle != metadata.paths() {
-            eprintln!("Warning: Expected {} alignments but encountered {}", metadata.paths(), handle);
+            let mut handle: usize = 0;
+            loop {
+                // This can only fail if the sender is disconnected.
+                let block: Result<Vec<Alignment>, String> = from_relative.recv().unwrap();
+                match block {
+                    Ok(block) => {
+                        if block.is_empty() {
+                            // An empty block indicates that we are done.
+                            break;
+                        }
+                        for aln in block.iter() {
+                            let sequence = if let SequenceName::Identifier(id) = aln.name { id } else { unreachable!() };
+                            let (fw_start, fw_offset) = if let TargetPath::StartPosition(start) = aln.path {
+                                (start.node, start.offset)
+                            } else { unreachable!() };
+                            let numbers = aln.encode_numbers();
+                            let quality = aln.encode_base_quality();
+                            let difference = aln.encode_difference();
+                            let result = insert.execute((
+                                handle, sequence,
+                                fw_start, fw_offset,
+                                numbers, quality, difference
+                            )).map_err(|x| x.to_string());
+                            if let Err(message) = result {
+                                let _ = to_report.send(Err(message));
+                                return;
+                            }
+                            handle += 1;
+                        }
+                    },
+                    Err(message) => {
+                        let _ = to_report.send(Err(message));
+                        return;
+                    },
+                }
+            }
+
+            drop(insert);
+            let result = transaction.commit().map_err(|x| x.to_string());
+            if let Err(message) = result {
+                let _ = to_report.send(Err(message));
+                return;
+            }
+            let _ = to_report.send(Ok(handle));
+        });
+
+        // Main thread that parses the alignments.
+        const BLOCK_SIZE: usize = 1000;
+        let mut line_num: usize = 1;
+        let mut block: Vec<Alignment> = Vec::new();
+        let mut failed = false;
+        loop {
+            let mut buf: Vec<u8> = Vec::new();
+            let len = reader.read_until(b'\n', &mut buf).map_err(|x| x.to_string());
+            match len {
+                Ok(len) => {
+                    if len == 0 {
+                        // End of file.
+                        break;
+                    }
+                },
+                Err(message) => {
+                    let _ = to_relative.send(Err(message));
+                    failed = true;
+                    break;
+                },
+            };
+            let aln = Alignment::from_gaf(&buf).map_err(
+                |x| format!("Failed to parse the alignment on line {}: {}", line_num, x)
+            );
+            match aln {
+                Ok(aln) => {
+                    block.push(aln);
+                    if block.len() >= BLOCK_SIZE {
+                        let _ = to_relative.send(Ok(block));
+                        block = Vec::new();
+                    }
+                },
+                Err(message) => {
+                    let _ = to_relative.send(Err(message));
+                    failed = true;
+                    break;
+                },
+            }
+            line_num += 1;
+        }
+
+        // Send the last block and a termination signal.
+        // Then wait for the threads to finish and get the number of inserted alignments.
+        if !failed {
+            if !block.is_empty() {
+                let _ = to_relative.send(Ok(block));
+            }
+            let _ = to_relative.send(Ok(Vec::new()));
+        }
+        let _ = relative_thread.join();
+        let _ = insert_thread.join();
+        let inserted = from_insert.recv().unwrap()?;
+
+        eprintln!("Inserted information on {} alignments", inserted);
+        if inserted != metadata.paths() {
+            eprintln!("Warning: Expected {} alignments but encountered {}", metadata.paths(), inserted);
         }
 
         Ok(())
