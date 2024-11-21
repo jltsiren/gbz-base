@@ -434,7 +434,7 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME document, examples, test, query interface
+// FIXME document (requirements for GBWT, GAF), examples, test, query interface
 // FIXME remember to test with empty paths
 /// A database connection to a GAF-base database.
 #[derive(Debug)]
@@ -445,6 +445,7 @@ pub struct GAFBase {
     alignments: usize,
     sequences: usize,
     prefix: String,
+    quality: String,
 }
 
 /// Using the database.
@@ -465,7 +466,18 @@ impl GAFBase {
     const KEY_SEQUENCES: &'static str = "sequences";
 
     // Key for the common prefix of sequence names.
-    const KEY_PREFIX: &'static str = "prefix";
+    const KEY_PREFIX: &'static str = "name_prefix";
+
+    // Key for the alphabet of base quality values.
+    const KEY_QUALITY: &'static str = "quality_values";
+
+    // Key for the common prefix of sample names in GBWT tags.
+    // Will be stored in the database using `KEY_PREFIX`.
+    const KEY_GBWT_PREFIX: &'static str = "sample_prefix";
+
+    // Key for the alphabet of base quality values in GBWT tags.
+    // Will be stored in the database using `KEY_QUALITY`.
+    const KEY_GBWT_QUALITY: &'static str = "quality_values";
 
     /// Opens a connection to the database in the given file.
     ///
@@ -486,13 +498,14 @@ impl GAFBase {
         let alignments = get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
         let sequences = get_numeric_value(&mut get_tag, Self::KEY_SEQUENCES)?;
         let prefix = get_string_value(&mut get_tag, Self::KEY_PREFIX)?;
+        let quality = get_string_value(&mut get_tag, Self::KEY_QUALITY)?;
         drop(get_tag);
 
         Ok(GAFBase {
             connection,
             version,
             nodes, alignments, sequences,
-            prefix,
+            prefix, quality,
         })
     }
 
@@ -543,6 +556,11 @@ impl GAFBase {
     pub fn prefix(&self) -> &str {
         &self.prefix
     }
+
+    /// Returns the alphabet of base quality values.
+    pub fn quality_values(&self) -> &str {
+        &self.quality
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -580,17 +598,30 @@ impl GAFBase {
 
     /// Checks if the GBWT index contains sufficient metadata.
     ///
-    /// Returns an error if there is no metadata or the metadata does not contain path or sample names.
+    /// Returns an error if there is no metadata.
+    /// Also returns an error if any of the following is missing:
+    ///
+    /// * Path names.
+    /// * Sample names.
+    /// * Tag storing the longest common prefix of sample names.
+    /// * Tag storing the alphabet of base quality values.
     pub fn check_gbwt_metadata(index: &GBWT) -> Result<(), String> {
         let metadata = index.metadata().ok_or(
             String::from("The GBWT index does not contain metadata")
         )?;
-
         if !metadata.has_path_names() {
             return Err("The metadata does not contain path names".to_string());
         }
         if !metadata.has_sample_names() {
             return Err("The metadata does not contain sample names".to_string());
+        }
+
+        let tags = index.tags();
+        if !tags.contains_key(Self::KEY_GBWT_PREFIX) {
+            return Err("The GBWT index does not contain a sample name prefix".to_string());
+        }
+        if !tags.contains_key(Self::KEY_GBWT_QUALITY) {
+            return Err("The GBWT index does not contain base quality values".to_string());
         }
 
         Ok(())
@@ -619,19 +650,19 @@ impl GAFBase {
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        let prefix = Self::lcp(&index);
-        Self::insert_tags(&index, nodes, &prefix, &mut connection).map_err(|x| x.to_string())?;
+        let (prefix, alphabet) = Self::insert_tags(&index, nodes, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
         drop(connection);
 
         // Because `insert_alignments` is multithreaded, we do not pass the connection to it.
-        Self::insert_alignments(gaf_file, index, &db_file, prefix.len())?;
+        Self::insert_alignments(gaf_file, index, &db_file, prefix.len(), alphabet)?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
     }
 
-    fn insert_tags(index: &GBWT, nodes: usize, prefix: &str, connection: &mut Connection) -> rusqlite::Result<()> {
+    // Returns (prefix, quality alphabet).
+    fn insert_tags(index: &GBWT, nodes: usize, connection: &mut Connection) -> rusqlite::Result<(String, String)> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -643,7 +674,11 @@ impl GAFBase {
             (),
         )?;
 
-        // Insert header and tags.
+        let tags = index.tags();
+        let prefix = tags.get(Self::KEY_GBWT_PREFIX).unwrap();
+        let quality = tags.get(Self::KEY_GBWT_QUALITY).unwrap();
+
+        // Insert header and selected tags.
         let mut inserted = 0;
         let transaction = connection.transaction()?;
         {
@@ -651,19 +686,21 @@ impl GAFBase {
                 "INSERT INTO Tags(key, value) VALUES (?1, ?2)"
             )?;
 
-            // Header.
             let metadata = index.metadata().unwrap();
             insert.execute((Self::KEY_VERSION, Self::VERSION))?;
             insert.execute((Self::KEY_NODES, nodes))?;
             insert.execute((Self::KEY_ALIGNMENTS, metadata.paths()))?;
             insert.execute((Self::KEY_SEQUENCES, metadata.samples()))?;
+            inserted += 4;
+
             insert.execute((Self::KEY_PREFIX, prefix))?;
-            inserted += 5;
+            insert.execute((Self::KEY_QUALITY, quality))?;
+            inserted += 2;
         }
         transaction.commit()?;
 
         eprintln!("Inserted {} key-value pairs", inserted);
-        Ok(())
+        Ok((prefix.clone(), quality.clone()))
     }
 
     // Returns the number of nodes in the graph.
@@ -704,33 +741,10 @@ impl GAFBase {
         Ok(inserted / 2)
     }
 
-    // FIXME: This could be a GBWT tag.
-    // Returns the longest common prefix of sequence names.
-    fn lcp(index: &GBWT) -> String {
-        eprintln!("Determining the longest common prefix of sequence names");
-
-        let metadata = index.metadata().unwrap();
-        let mut common_prefix: Option<Vec<u8>> = None;
-        for sample_name in metadata.sample_iter() {
-            if let Some(prefix) = common_prefix.as_mut() {
-                let mut len = 0;
-                for (a, b) in prefix.iter().zip(sample_name.iter()) {
-                    if a == b {
-                        len += 1;
-                    } else {
-                        break;
-                    }
-                }
-                prefix.truncate(len);
-            } else {
-                common_prefix = Some(sample_name.to_vec());
-            }
-        }
-        let common_prefix = common_prefix.unwrap_or(Vec::new());
-        String::from_utf8(common_prefix).unwrap_or(String::new())
-    }
-
-    fn insert_alignments<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q, lcp: usize) -> Result<(), String> {
+    fn insert_alignments<P: AsRef<Path>, Q: AsRef<Path>>(
+        gaf_file: P, index: Arc<GBWT>, db_file: Q,
+        lcp: usize, alphabet: String
+    ) -> Result<(), String> {
         eprintln!("Building structures for mapping alignments to GBWT paths");
         let metadata = index.metadata().unwrap();
         let paths_by_sample = Alignment::paths_by_sample(metadata)?;
@@ -781,7 +795,9 @@ impl GAFBase {
                             return;
                         }
                         for aln in block.iter_mut() {
-                            let result = aln.set_relative_information(&gbwt_index, &paths_by_sample, Some(&mut used_paths));
+                            let result = aln.set_relative_information(
+                                &gbwt_index, lcp, &paths_by_sample, Some(&mut used_paths)
+                            );
                             if let Err(message) = result {
                                 let _ = to_insert.send(Err(format!("Failed to match alignment {} with a GBWT path: {}", line_num, message)));
                                 return;
@@ -841,7 +857,7 @@ impl GAFBase {
                                 start.node
                             } else { unreachable!() };
                             let numbers = aln.encode_numbers();
-                            let quality = aln.encode_base_quality();
+                            let quality = aln.encode_base_quality(alphabet.as_bytes());
                             let difference = aln.encode_difference();
                             statistics.alignments += 1;
                             statistics.name_bytes += name.len();

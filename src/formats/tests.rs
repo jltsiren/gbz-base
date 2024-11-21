@@ -495,7 +495,9 @@ fn alignment_set_relative_information() {
     };
 
     let original = alignment.clone();
-    let result = alignment.set_relative_information(&index, &paths_by_sample, Some(&mut used_paths));
+    let result = alignment.set_relative_information(
+        &index, 0, &paths_by_sample, Some(&mut used_paths)
+    );
     assert!(result.is_ok(), "Failed to set relative information: {}", result.err().unwrap());
 
     // Only name and path fields should have changed.
@@ -513,7 +515,9 @@ fn alignment_set_relative_information() {
 
     // Check that repeated calls do not change the alignment.
     let original = alignment.clone();
-    let result = alignment.set_relative_information(&index, &paths_by_sample, Some(&mut used_paths));
+    let result = alignment.set_relative_information(
+        &index, 0, &paths_by_sample, Some(&mut used_paths)
+    );
     assert!(result.is_ok(), "Failed to set relative information again: {}", result.err().unwrap());
     assert_eq!(alignment, original, "Alignment was changed by a repeated call");
     assert_eq!(used_paths.bit(3), true, "Used path was reset by a repeated call");
@@ -525,15 +529,15 @@ fn alignment_set_relative_information() {
 // Tests for `Alignment`: encoding and decoding.
 
 // This assumes that the alignment is relative to a GBWT index.
-fn check_encode_decode(alignment: &Alignment, prefix: &str, line: usize) {
+fn check_encode_decode(alignment: &Alignment, prefix: &str, alphabet: &[u8], line: usize) {
     let query = &alignment.name[prefix.len()..];
     let target = if let TargetPath::StartPosition(pos) = alignment.path { pos } else { unreachable!() };
     let numbers = alignment.encode_numbers();
-    let quality = alignment.encode_base_quality();
+    let quality = alignment.encode_base_quality(alphabet);
     let difference = alignment.encode_difference();
     let decoded = Alignment::decode(
         prefix, query, target.node,
-        &numbers, quality.as_ref().map(Vec::as_slice), difference.as_ref().map(Vec::as_slice)
+        &numbers, quality.as_ref().map(Vec::as_slice), alphabet, difference.as_ref().map(Vec::as_slice)
     );
     assert!(decoded.is_ok(), "Failed to decode alignment {}: {}", line, decoded.err().unwrap());
     let decoded = decoded.unwrap();
@@ -557,8 +561,9 @@ fn alignment_encode_decode() {
 
     // Encode and decode the alignments.
     let prefix = "";
+    let alphabet = b"?";
     for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, prefix, i + 1);
+        check_encode_decode(aln, prefix, alphabet, i + 1);
     }
 }
 
@@ -584,8 +589,11 @@ fn alignment_real() {
     let mut used_paths = RawVector::with_len(metadata.paths(), false);
 
     // Set relative information for all alignments.
+    let prefix = "A00744:46:HV3C3DSXX:2:";
     for (i, alignment) in alignments.iter_mut().enumerate() {
-        let result = alignment.set_relative_information(&index, &paths_by_sample, Some(&mut used_paths));
+        let result = alignment.set_relative_information(
+            &index, prefix.len(), &paths_by_sample, Some(&mut used_paths)
+        );
         assert!(result.is_ok(), "Failed to set relative information for alignment {}: {}", i + 1, result.err().unwrap());
     }
 
@@ -593,9 +601,9 @@ fn alignment_real() {
     assert_eq!(used_paths.count_ones(), used_paths.len(), "Not all paths were used");
 
     // Encode and decode the alignments.
-    let prefix = "A00744:46:HV3C3DSXX:2:";
+    let alphabet = b"#,:F";
     for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, prefix, i + 1);
+        check_encode_decode(aln, prefix, alphabet, i + 1);
     }
 }
 

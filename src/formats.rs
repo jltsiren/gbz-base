@@ -662,6 +662,7 @@ impl Alignment {
     /// # Arguments
     ///
     /// * `index`: The GBWT index.
+    /// * `prefix_len`: Length of the common prefix of query sequence names.
     /// * `paths_by_sample`: Path identifiers indexed by sample identifier (from [`Self::paths_by_sample`]).
     /// * `used_paths`: Optional vector to mark paths that have been used and should not be used again.
     ///
@@ -671,14 +672,14 @@ impl Alignment {
     ///
     /// May panic if `paths_by_sample` or `used_paths` are inconsistent with the GBWT metadata.
     pub fn set_relative_information(&mut self,
-        index: &GBWT,
+        index: &GBWT, prefix_len: usize,
         paths_by_sample: &(Vec<u32>, SparseVector),
         used_paths: Option<&mut RawVector>
     ) -> Result<(), String> {
         let metadata = index.metadata().ok_or(
             String::from("The GBWT index does not contain metadata")
         )?;
-        let sample_id = metadata.sample_id(&self.name).ok_or(
+        let sample_id = metadata.sample_id(&self.name[prefix_len..]).ok_or(
             format!("Sequence name {} not found in the GBWT metadata", self.name)
         )?;
         self.set_target_start(index, sample_id, paths_by_sample, used_paths)
@@ -748,29 +749,20 @@ impl Alignment {
         Vec::from(encoder)
     }
 
-    // TODO: Use a fixed encoding. We need to build it during GBWT construction and save it in the tags.
     /// Encodes the base quality sequence as a run-length encoded blob.
     ///
+    /// The base quality sequence is assumed to use the given alphabet.
     /// Returns [`None`] if the base quality sequence is missing.
-    pub fn encode_base_quality(&self) -> Option<Vec<u8>> {
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the base quality sequence uses values outside the alphabet.
+    pub fn encode_base_quality(&self, alphabet: &[u8]) -> Option<Vec<u8>> {
         if self.base_quality.is_none() {
             return None;
         }
 
-        // Determine the alphabet and encode it as (alphabet size, alphabet).
-        let mut alphabet: Vec<u8> = Vec::new();
-        for value in self.base_quality.as_ref().unwrap().iter() {
-            if !alphabet.contains(value) {
-                alphabet.push(*value);
-            }
-        }
         let mut encoder = RLE::with_sigma(alphabet.len());
-        encoder.write_int(alphabet.len());
-        for &value in alphabet.iter() {
-            encoder.write_byte(value);
-        }
-
-        // Run-length encode the base quality sequence.
         let mut run = Run::new(0, 0);
         for &value in self.base_quality.as_ref().unwrap().iter() {
             if value as usize == run.value {
@@ -850,10 +842,11 @@ impl Alignment {
     /// * `target`: Target path starting position.
     /// * `numbers`: Encoded numerical fields.
     /// * `quality`: Encoded base quality sequence.
+    /// * `alphabet`: Alphabet for the base quality sequence.
     /// * `difference`: Encoded difference string.
     pub fn decode(
         prefix: &str, query: &str, target_node: usize,
-        numbers: &[u8], quality: Option<&[u8]>, difference: Option<&[u8]>
+        numbers: &[u8], quality: Option<&[u8]>, alphabet: &[u8], difference: Option<&[u8]>
     ) -> Result<Self, String> {
         let name = format!("{}{}", prefix, query);
         let include_redundant = difference.is_none();
@@ -882,14 +875,7 @@ impl Alignment {
 
         // Decode the base quality sequence.
         let base_quality = if let Some(quality) = quality {
-            let mut quality_decoder = RLEIter::new(quality);
-            let sigma = quality_decoder.int().ok_or(String::from("Missing base quality alphabet size"))?;
-            quality_decoder.set_sigma(sigma);
-            let mut alphabet: Vec<u8> = Vec::with_capacity(sigma);
-            for i in 0..sigma {
-                let value = quality_decoder.byte().ok_or(format!("Missing base quality symbol {}", i))?;
-                alphabet.push(value);
-            }
+            let mut quality_decoder = RLEIter::with_sigma(quality, alphabet.len());
             let mut result: Vec<u8> = Vec::with_capacity(seq_len);
             while let Some(run) = quality_decoder.next() {
                 let value = alphabet[run.value];
