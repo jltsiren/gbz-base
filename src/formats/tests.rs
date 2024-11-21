@@ -286,7 +286,7 @@ fn write_json_path() {
 
 // Creates an alignment object for an unaligned sequence with no optional fields.
 fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
-    let name = SequenceName::Name(String::from(name));
+    let name = String::from(name);
     let seq_interval = 0..0;
     let path = TargetPath::Path(Vec::new());
     let path_len = 0;
@@ -367,7 +367,7 @@ fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_r
 #[test]
 fn alignment_known_good() {
     // Construct the correct alignment object.
-    let name = SequenceName::Name(String::from("forward"));
+    let name = String::from("forward");
     let seq_len = 100;
     let seq_interval = 5..90;
     let path = TargetPath::Path(vec![
@@ -404,12 +404,12 @@ fn alignment_known_good() {
         base_quality, difference, optional
     };
     let mut reverse = forward.clone();
-    reverse.name = SequenceName::Name(String::from("reverse"));
+    reverse.name = String::from("reverse");
     if let TargetPath::Path(path) = &mut reverse.path {
         support::reverse_path_in_place(path);
     }
     let mut no_mapq = forward.clone();
-    no_mapq.name = SequenceName::Name(String::from("no_mapq"));
+    no_mapq.name = String::from("no_mapq");
     no_mapq.mapq = None;
     let empty = empty_alignment("empty", seq_len);
     let missing_values = empty_alignment("missing_values", seq_len);
@@ -467,7 +467,7 @@ fn alignment_set_relative_information() {
     let mut used_paths = RawVector::with_len(metadata.paths(), false);
 
     // The path we are interested in is id 3: (sample, A, 2, 0) with sample id 1.
-    let name = SequenceName::Name(String::from("sample"));
+    let name = String::from("sample");
     let seq_len = 5;
     let seq_interval = 0..5;
     let path = TargetPath::Path(vec![
@@ -502,9 +502,7 @@ fn alignment_set_relative_information() {
     check_alignment(&alignment, &original, 0, true, false);
 
     // Check the relative fields.
-    // Sample / query sequence id should be 1.
-    // And this is the third path that visits (starts from) node 11 forward.
-    assert_eq!(alignment.name, SequenceName::Identifier(1), "Wrong sequence name");
+    // This is the third path that visits (starts from) node 11 forward.
     let start_pos = Pos::new(support::encode_node(11, Orientation::Forward), 2);
     let start_pos = TargetPath::StartPosition(start_pos);
     assert_eq!(alignment.path, start_pos, "Wrong GBWT starting position for the target path");
@@ -527,14 +525,15 @@ fn alignment_set_relative_information() {
 // Tests for `Alignment`: encoding and decoding.
 
 // This assumes that the alignment is relative to a GBWT index.
-fn check_encode_decode(alignment: &Alignment, line: usize) {
-    let query = if let SequenceName::Identifier(id) = alignment.name { id } else { unreachable!() };
+fn check_encode_decode(alignment: &Alignment, prefix: &str, line: usize) {
+    let query = &alignment.name[prefix.len()..];
     let target = if let TargetPath::StartPosition(pos) = alignment.path { pos } else { unreachable!() };
     let numbers = alignment.encode_numbers();
     let quality = alignment.encode_base_quality();
     let difference = alignment.encode_difference();
     let decoded = Alignment::decode(
-        query, target.node, &numbers, quality.as_ref().map(Vec::as_slice), difference.as_ref().map(Vec::as_slice)
+        prefix, query, target.node,
+        &numbers, quality.as_ref().map(Vec::as_slice), difference.as_ref().map(Vec::as_slice)
     );
     assert!(decoded.is_ok(), "Failed to decode alignment {}: {}", line, decoded.err().unwrap());
     let decoded = decoded.unwrap();
@@ -550,9 +549,6 @@ fn alignment_encode_decode() {
     assert_eq!(alignments.len(), 5, "Unexpected number of parsed alignments");
 
     // Set the relative information manually, as we do not have a GBWT index.
-    for (i, aln) in alignments.iter_mut().enumerate() {
-        aln.name = SequenceName::Identifier(i);
-    }
     alignments[0].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Forward), 0));
     alignments[1].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Reverse), 0));
     alignments[2].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Forward), 0));
@@ -560,8 +556,9 @@ fn alignment_encode_decode() {
     alignments[4].path = TargetPath::StartPosition(Pos::new(gbwt::ENDMARKER, 0));
 
     // Encode and decode the alignments.
+    let prefix = "";
     for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, i + 1);
+        check_encode_decode(aln, prefix, i + 1);
     }
 }
 
@@ -596,8 +593,9 @@ fn alignment_real() {
     assert_eq!(used_paths.count_ones(), used_paths.len(), "Not all paths were used");
 
     // Encode and decode the alignments.
+    let prefix = "A00744:46:HV3C3DSXX:2:";
     for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, i + 1);
+        check_encode_decode(aln, prefix, i + 1);
     }
 }
 

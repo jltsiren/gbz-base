@@ -2,7 +2,7 @@
 // TODO: After the integration, move the module-level documentation here.
 
 use crate::Alignment;
-use crate::formats::{SequenceName, TargetPath};
+use crate::formats::TargetPath;
 
 use std::path::Path;
 use std::fs::{self, File};
@@ -551,6 +551,7 @@ impl GAFBase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlignmentStats {
     pub alignments: usize,
+    pub name_bytes: usize,
     pub number_bytes: usize,
     pub quality_bytes: usize,
     pub difference_bytes: usize,
@@ -618,20 +619,19 @@ impl GAFBase {
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        let prefix = Self::insert_sequences(&index, &mut connection).map_err(|x| x.to_string())?;
-        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        Self::insert_tags(&index, nodes, prefix, &mut connection).map_err(|x| x.to_string())?;
+        let prefix = Self::lcp(&index);
+        Self::insert_tags(&index, nodes, &prefix, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
         drop(connection);
 
         // Because `insert_alignments` is multithreaded, we do not pass the connection to it.
-        Self::insert_alignments(gaf_file, index, &db_file)?;
+        Self::insert_alignments(gaf_file, index, &db_file, prefix.len())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
     }
 
-    fn insert_tags(index: &GBWT, nodes: usize, prefix: String, connection: &mut Connection) -> rusqlite::Result<()> {
+    fn insert_tags(index: &GBWT, nodes: usize, prefix: &str, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -704,22 +704,11 @@ impl GAFBase {
         Ok(inserted / 2)
     }
 
-    // FIXME: Determine the longest common prefix but store the rest of the name in the alignment table?
+    // FIXME: This could be a GBWT tag.
     // Returns the longest common prefix of sequence names.
-    fn insert_sequences(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<String> {
-        eprintln!("Inserting sequence names");
+    fn lcp(index: &GBWT) -> String {
+        eprintln!("Determining the longest common prefix of sequence names");
 
-        connection.execute(
-            "CREATE TABLE Sequences (
-                handle INTEGER PRIMARY KEY,
-                name TEXT NOT NULL
-            ) STRICT",
-            (),
-        )?;
-
-        // Determine the longest common prefix of sequence names.
-        // TODO: This is a hack. There could be multiple shared prefixes but no single common prefix.
-        // We should access the sample name dictionary and iterate over it in sorted order to figure out the common prefixes.
         let metadata = index.metadata().unwrap();
         let mut common_prefix: Option<Vec<u8>> = None;
         for sample_name in metadata.sample_iter() {
@@ -738,28 +727,10 @@ impl GAFBase {
             }
         }
         let common_prefix = common_prefix.unwrap_or(Vec::new());
-        let common_prefix = String::from_utf8(common_prefix).unwrap_or(String::new());
-
-        // Insert the sequences, excluding the common prefix.
-        let mut inserted = 0;
-        let transaction = connection.transaction()?;
-        {
-            let mut insert = transaction.prepare(
-                "INSERT INTO Sequences(handle, name) VALUES (?1, ?2)"
-            )?;
-            for handle in 0..metadata.samples() {
-                let name = metadata.sample_name(handle);
-                insert.execute((handle, &name[common_prefix.len()..]))?;
-                inserted += 1;
-            }
-        }
-        transaction.commit()?;
-
-        eprintln!("Inserted {} sequence names", inserted);
-        Ok(common_prefix)
+        String::from_utf8(common_prefix).unwrap_or(String::new())
     }
 
-    fn insert_alignments<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q) -> Result<(), String> {
+    fn insert_alignments<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q, lcp: usize) -> Result<(), String> {
         eprintln!("Building structures for mapping alignments to GBWT paths");
         let metadata = index.metadata().unwrap();
         let paths_by_sample = Alignment::paths_by_sample(metadata)?;
@@ -778,7 +749,7 @@ impl GAFBase {
         connection.execute(
             "CREATE TABLE Alignments (
                 handle INTEGER PRIMARY KEY,
-                sequence INTEGER NOT NULL,
+                name TEXT NOT NULL,
                 start_node INTEGER NOT NULL,
                 numbers BLOB NOT NULL,
                 quality BLOB,
@@ -838,7 +809,7 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(handle, sequence, start_node, numbers, quality, difference)
+                    Alignments(handle, name, start_node, numbers, quality, difference)
                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
@@ -850,6 +821,7 @@ impl GAFBase {
             let mut handle: usize = 0;
             let mut statistics = AlignmentStats {
                 alignments: 0,
+                name_bytes: 0,
                 number_bytes: 0,
                 quality_bytes: 0,
                 difference_bytes: 0,
@@ -864,7 +836,7 @@ impl GAFBase {
                             break;
                         }
                         for aln in block.iter() {
-                            let sequence = if let SequenceName::Identifier(id) = aln.name { id } else { unreachable!() };
+                            let name = &aln.name[lcp..];
                             let start_node = if let TargetPath::StartPosition(start) = aln.path {
                                 start.node
                             } else { unreachable!() };
@@ -872,6 +844,7 @@ impl GAFBase {
                             let quality = aln.encode_base_quality();
                             let difference = aln.encode_difference();
                             statistics.alignments += 1;
+                            statistics.name_bytes += name.len();
                             statistics.number_bytes += numbers.len();
                             if let Some(quality) = &quality {
                                 statistics.quality_bytes += quality.len();
@@ -880,7 +853,7 @@ impl GAFBase {
                                 statistics.difference_bytes += difference.len();
                             }
                             let result = insert.execute((
-                                handle, sequence, start_node,
+                                handle, name, start_node,
                                 numbers, quality, difference
                             )).map_err(|x| x.to_string());
                             if let Err(message) = result {
@@ -964,7 +937,8 @@ impl GAFBase {
             eprintln!("Warning: Expected {} alignments", metadata.paths());
         }
         eprintln!(
-            "Field sizes: numbers {}, quality strings {}, difference strings {}",
+            "Field sizes: name {}, numbers {}, quality {}, difference {}",
+            human_readable_size(statistics.name_bytes),
             human_readable_size(statistics.number_bytes),
             human_readable_size(statistics.quality_bytes),
             human_readable_size(statistics.difference_bytes)

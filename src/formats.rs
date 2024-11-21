@@ -325,13 +325,13 @@ pub fn json_path(path: &[usize], metadata: &WalkMetadata) -> JSONValue {
 /// An alignment between a query sequence and a target path in a graph.
 ///
 /// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
-/// When the alignment is built from a GAF line, the name of the query sequence and the target path are stored explicitly.
-/// For alignments stored in a database, these are stored relative to other tables.
-/// See [`SequenceName`] and [`TargetPath`] for details and [`Self::set_relative_information`] for conversion.
+/// When the alignment is built from a GAF line, the target path is stored explicitly.
+/// For alignments stored in a database, only the GBWT starting position is stored..
+/// See [`TargetPath`] for details and [`Self::set_relative_information`] for conversion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alignment {
-    /// Name or identifier of the query sequence.
-    pub name: SequenceName,
+    /// Name of the query sequence.
+    pub name: String,
     /// Length of the query sequence.
     pub seq_len: usize,
     /// Aligned interval of the query sequence.
@@ -445,7 +445,7 @@ impl Alignment {
     ///
     /// Returns an error if the line cannot be parsed.
     /// The line may end with up to one endline character, which is ignored.
-    /// The returned alignment stores the query sequence name and the target path explicitly.
+    /// The returned alignment stores the target path explicitly.
     /// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
     ///
     /// If a difference string is present, some numerical fields will be recalculated from it.
@@ -468,7 +468,7 @@ impl Alignment {
         }
 
         // Query sequence.
-        let name = SequenceName::Name(Self::parse_string(fields[0], "query sequence name")?);
+        let name = Self::parse_string(fields[0], "query sequence name")?;
         let seq_len = Self::parse_usize(fields[1], "query sequence length")?;
         let mut seq_interval = Self::parse_interval(fields[2], fields[3])?;
 
@@ -600,23 +600,10 @@ impl Alignment {
         Ok((path_ids, path_index))
     }
 
-    // Replaces query sequence name with the corresponding sample identifier in the GBWT metadata.
-    fn set_sequence_id(&mut self, metadata: &Metadata) -> Result<(), String> {
-        let name = match &self.name {
-            SequenceName::Name(n) => n,
-            SequenceName::Identifier(_) => return Ok(()),
-        };
-        let id = metadata.sample_id(name).ok_or(
-            format!("Sequence name {} not found in the GBWT metadata", name)
-        )?;
-        self.name = SequenceName::Identifier(id);
-        Ok(())
-    }
-
     // TODO: We could simplify this greatly by storing GAF line number as fragment id in the path name.
     // Replaces target path with its starting position in the given GBWT index.
     fn set_target_start(&mut self,
-        index: &GBWT,
+        index: &GBWT, sample_id: usize,
         paths_by_sample: &(Vec<u32>, SparseVector),
         used_paths: Option<&mut RawVector>
     ) -> Result<(), String> {
@@ -625,11 +612,6 @@ impl Alignment {
         }
         let (path_ids, path_index) = paths_by_sample;
 
-        // Determine the interval of possible path identifiers.
-        let sample_id = match self.name {
-            SequenceName::Name(_) => return Err(String::from("Sequence name not replaced with an identifier")),
-            SequenceName::Identifier(id) => id,
-        };
         let mut iter = path_index.select_iter(sample_id);
         let start = iter.next().unwrap_or((0, path_ids.len())).1;
         let end = iter.next().unwrap_or((0, path_ids.len())).1;
@@ -672,7 +654,7 @@ impl Alignment {
 
     /// Replaces the explicitly stored data with data relative to the given GBWT index.
     ///
-    /// Replaces query sequence name with an identifier and the target path with a starting position.
+    /// Replaces the target path with a starting position.
     /// No effect if the data is already relative to a GBWT index.
     /// Returns an error if the replacement fails for any reason.
     /// [`crate::GAFBase::check_gbwt_metadata`] has more detailed error messages for insufficient metadata.
@@ -696,8 +678,10 @@ impl Alignment {
         let metadata = index.metadata().ok_or(
             String::from("The GBWT index does not contain metadata")
         )?;
-        self.set_sequence_id(metadata)?;
-        self.set_target_start(index, paths_by_sample, used_paths)
+        let sample_id = metadata.sample_id(&self.name).ok_or(
+            format!("Sequence name {} not found in the GBWT metadata", self.name)
+        )?;
+        self.set_target_start(index, sample_id, paths_by_sample, used_paths)
     }
 
     // TODO: back to a GAF line
@@ -861,13 +845,17 @@ impl Alignment {
     ///
     /// # Arguments
     ///
-    /// * `query`: Query sequence identifier.
+    /// * `prefix`: A common prefix of query sequence names.
+    /// * `query`: The remaining part of the query sequence name.
     /// * `target`: Target path starting position.
     /// * `numbers`: Encoded numerical fields.
     /// * `quality`: Encoded base quality sequence.
     /// * `difference`: Encoded difference string.
-    pub fn decode(query: usize, target_node: usize, numbers: &[u8], quality: Option<&[u8]>, difference: Option<&[u8]>) -> Result<Self, String> {
-        let name = SequenceName::Identifier(query);
+    pub fn decode(
+        prefix: &str, query: &str, target_node: usize,
+        numbers: &[u8], quality: Option<&[u8]>, difference: Option<&[u8]>
+    ) -> Result<Self, String> {
+        let name = format!("{}{}", prefix, query);
         let include_redundant = difference.is_none();
 
         // Decode the numerical fields.
@@ -958,28 +946,6 @@ impl Alignment {
 }
 
 //-----------------------------------------------------------------------------
-
-/// Name of a query sequence in [`Alignment`].
-///
-/// The name is stored either explicitly as a string or as an identifier relative to a list of sequence names.
-/// When the name is for an alignment stored in [`crate::GAFBase`], the identifier is the handle in table `Sequences`.
-/// During the construction of the database, this corresponds to a sample identifier in GBWT metadata.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SequenceName {
-    /// Sequence name.
-    Name(String),
-    /// Offset of the name in a list of sequence names.
-    Identifier(usize),
-}
-
-impl Display for SequenceName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SequenceName::Name(name) => write!(f, "(name: {})", name),
-            SequenceName::Identifier(id) => write!(f, "(id: {})", id),
-        }
-    }
-}
 
 /// Target path in [`Alignment`].
 ///
