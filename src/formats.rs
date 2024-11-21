@@ -441,13 +441,16 @@ impl Alignment {
         Ok(result)
     }
 
-    // TODO: Permissive mode where we ignore errors in optional fields? Strict mode that returns an error?
     /// Parses an alignment from a GAF line.
     ///
     /// Returns an error if the line cannot be parsed.
     /// The line may end with up to one endline character, which is ignored.
     /// The returned alignment stores the query sequence name and the target path explicitly.
     /// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
+    ///
+    /// If a difference string is present, some numerical fields will be recalculated from it.
+    /// These include interval ends on both the query and the target, as well as the number of matches and edits.
+    /// This behavior is justified, because some aligners may not calculate these values correctly.
     pub fn from_gaf(line: &[u8]) -> Result<Self, String> {
         // Check for an endline character which may be present.
         let line = if line.last() == Some(&b'\n') {
@@ -467,7 +470,7 @@ impl Alignment {
         // Query sequence.
         let name = SequenceName::Name(Self::parse_string(fields[0], "query sequence name")?);
         let seq_len = Self::parse_usize(fields[1], "query sequence length")?;
-        let seq_interval = Self::parse_interval(fields[2], fields[3])?;
+        let mut seq_interval = Self::parse_interval(fields[2], fields[3])?;
 
         // Target path.
         let orientation = Self::parse_orientation(fields[4], "target orientation")?;
@@ -484,9 +487,9 @@ impl Alignment {
         let path_interval = Self::parse_interval(fields[7], fields[8]);
 
         // Alignment statistics.
-        let matches = Self::parse_usize(fields[9], "matches")?;
+        let mut matches = Self::parse_usize(fields[9], "matches")?;
         let alignment_len = Self::parse_usize(fields[10], "alignment length")?;
-        let edits = if matches <= alignment_len { alignment_len - matches } else { 0 }; // TODO: Error in strict mode?
+        let mut edits = if matches <= alignment_len { alignment_len - matches } else { 0 };
         let mapq = Self::parse_usize(fields[11], "mapping quality")?;
         let mapq = if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) }; // TODO: Too large values?
 
@@ -494,7 +497,6 @@ impl Alignment {
         let mut score = None;
         let mut base_quality = None;
         let mut difference = None;
-        let mut target_len: Option<usize> = None; // TODO: Part of the interval end hack.
         let mut optional = Vec::new();
         for field in fields[Self::MANDATORY_FIELDS..].iter() {
             let parsed = TypedField::parse(field)?;
@@ -516,7 +518,6 @@ impl Alignment {
                         return Err(String::from("Multiple difference fields"));
                     }
                     let ops = Difference::parse_normalized(&value)?;
-                    target_len = Some(ops.iter().map(|op| op.target_len()).sum()); // TODO: Part of the interval end hack.
                     difference = Some(ops);
                 },
                 _ => { optional.push(parsed); },
@@ -527,17 +528,25 @@ impl Alignment {
         let mut path_interval = match path_interval {
             Ok(interval) => interval,
             Err(_) => {
-                if let Some(target_len) = target_len {
+                if let Some(_) = difference {
                     let target_start = Self::parse_usize(fields[7], "target interval start")?;
-                    target_start..target_start + target_len
+                    target_start..target_start
                 } else {
                     return Err(String::from("Target interval end cannot be parsed or inferred from the difference string"));
                 }
             },
         };
 
-        // TODO: Move to the target path section once the interval end hack becomes unnecessary.
-        // TODO: Error in strict mode, sanitize in permissive mode?
+        // If we have a difference string, recalculate the redundant numerical fields.
+        if let Some(ops) = difference.as_ref() {
+            let (query_len, target_len, num_matches, num_edits) = Difference::stats(ops);
+            seq_interval.end = seq_interval.start + query_len;
+            path_interval.end = path_interval.start + target_len;
+            matches = num_matches;
+            edits = num_edits;
+        }
+
+        // Now we have the final path interval. Flip its orientation if necessary.
         if orientation == Orientation::Reverse {
             let start = if path_interval.end < path_len { path_len - path_interval.end } else { 0 };
             let end = if path_interval.start < path_len { path_len - path_interval.start } else { 0 };
@@ -699,11 +708,13 @@ impl Alignment {
 /// Encoding / decoding the alignment in the format used in GAF-base.
 impl Alignment {
     // Normalizes the interval and encodes it as (left flank, length, right flank).
-    fn encode_coordinates(interval: Range<usize>, len: usize, encoder: &mut ByteCode) {
+    fn encode_coordinates(interval: Range<usize>, len: usize, include_redundant: bool, encoder: &mut ByteCode) {
         let start = if interval.start <= interval.end { interval.start } else { interval.end };
         let end = if interval.end <= len { interval.end } else { len };
         encoder.write(start);
-        encoder.write(end - start);
+        if include_redundant {
+            encoder.write(end - start);
+        }
         encoder.write(len - end);
     }
 
@@ -717,30 +728,34 @@ impl Alignment {
     ///
     /// This includes the following fields:
     ///
-    /// * Query sequence: `seq_len`, `seq_interval.start`, `seq_interval.end`.
-    /// * Target path: offset in the start node, `path_len`, `path_interval.start`, `path_interval.end`.
-    /// * Alignment statistics: `matches`, `edits`, `mapq`, `score`.
+    /// * Query sequence: `seq_len`, `seq_interval.start`, (`seq_interval.end`).
+    /// * Target path: offset in the start node, `path_len`, `path_interval.start`, (`path_interval.end`).
+    /// * Alignment statistics: (`matches`), (`edits`), `mapq`, `score`.
     ///
     /// The coordinates are normalized so that `start <= end <= len`.
+    /// If a difference string is present, the numbers in parentheses are not stored, as they can be derived from it.
     ///
     /// # Panics
     ///
     /// Will panic if the target path is not stored relative to a GBWT index.
     pub fn encode_numbers(&self) -> Vec<u8> {
         let mut encoder = ByteCode::new();
+        let include_redundant = self.difference.is_none();
 
         // Coordinates.
-        Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, &mut encoder);
+        Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, &mut encoder);
         if let TargetPath::StartPosition(pos) = self.path {
             encoder.write(pos.offset);
         } else {
             panic!("Target path is not stored relative to a GBWT index");
         }
-        Self::encode_coordinates(self.path_interval.clone(), self.path_len, &mut encoder);
+        Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, &mut encoder);
 
         // Alignment statistics.
-        encoder.write(self.matches);
-        encoder.write(self.edits);
+        if include_redundant {
+            encoder.write(self.matches);
+            encoder.write(self.edits);
+        }
         encoder.write(self.mapq.unwrap_or(Self::MISSING_MAPQ));
         if let Some(score) = self.score {
             Self::encode_signed(score, &mut encoder);
@@ -823,9 +838,9 @@ impl Alignment {
     // TODO: encode optional fields
 
     // Decodes an interval and a length from the iterator.
-    fn decode_coordinates(iter: &mut ByteCodeIter) -> Option<(Range<usize>, usize)> {
+    fn decode_coordinates(iter: &mut ByteCodeIter, include_redundant: bool) -> Option<(Range<usize>, usize)> {
         let left_flank = iter.next()?;
-        let interval_len = iter.next()?;
+        let interval_len = if include_redundant { iter.next()? } else { 0 };
         let right_flank = iter.next()?;
         Some((left_flank..left_flank + interval_len, left_flank + interval_len + right_flank))
     }
@@ -853,19 +868,24 @@ impl Alignment {
     /// * `difference`: Encoded difference string.
     pub fn decode(query: usize, target_node: usize, numbers: &[u8], quality: Option<&[u8]>, difference: Option<&[u8]>) -> Result<Self, String> {
         let name = SequenceName::Identifier(query);
+        let include_redundant = difference.is_none();
 
         // Decode the numerical fields.
         let mut number_decoder = ByteCodeIter::new(numbers);
-        let (seq_interval, seq_len) = Self::decode_coordinates(&mut number_decoder).ok_or(
+        let (mut seq_interval, mut seq_len) = Self::decode_coordinates(&mut number_decoder, include_redundant).ok_or(
             String::from("Missing query sequence coordinates")
         )?;
         let target_offset = number_decoder.next().ok_or(String::from("Missing target path offset"))?;
         let path = TargetPath::StartPosition(Pos::new(target_node, target_offset));
-        let (path_interval, path_len) = Self::decode_coordinates(&mut number_decoder).ok_or(
+        let (mut path_interval, mut path_len) = Self::decode_coordinates(&mut number_decoder, include_redundant).ok_or(
             String::from("Missing target path coordinates")
         )?;
-        let matches = number_decoder.next().ok_or(String::from("Missing number of matches"))?;
-        let edits = number_decoder.next().ok_or(String::from("Missing number of edits"))?;
+        let mut matches = if include_redundant {
+            number_decoder.next().ok_or(String::from("Missing number of matches"))?
+        } else { 0 };
+        let mut edits = if include_redundant {
+            number_decoder.next().ok_or(String::from("Missing number of edits"))?
+        } else { 0 };
         let mapq = match number_decoder.next() {
             Some(mapq) => if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) },
             None => return Err(String::from("Missing mapping quality")),
@@ -894,7 +914,7 @@ impl Alignment {
             None
         };
 
-        // Decode the difference string.
+        // Decode the difference string and calculate the values for redundant fields.
         let difference = if let Some(difference) = difference {
             let mut difference_decoder = RLEIter::with_sigma(difference, Difference::NUM_TYPES);
             let mut result: Vec<Difference> = Vec::new();
@@ -913,6 +933,13 @@ impl Alignment {
                     _ => return Err(format!("Invalid difference string operation: {}", run.value)),
                 }
             }
+            let (query_len, target_len, num_matches, num_edits) = Difference::stats(&result);
+            seq_interval.end = seq_interval.start + query_len;
+            seq_len += query_len;
+            path_interval.end = path_interval.start + target_len;
+            path_len += target_len;
+            matches = num_matches;
+            edits = num_edits;
             Some(result)
         } else {
             None
@@ -1095,6 +1122,39 @@ impl Difference {
     pub fn parse_normalized(difference_string: &[u8]) -> Result<Vec<Self>, String> {
         let ops = Self::parse(difference_string)?;
         Ok(Self::normalize(ops))
+    }
+
+    /// Calculates various statistics from a sequence of operations.
+    ///
+    /// The return value is (query length, target length, matches, edits).
+    pub fn stats(difference_string: &[Self]) -> (usize, usize, usize, usize) {
+        let mut query_len = 0;
+        let mut target_len = 0;
+        let mut matches = 0;
+        let mut edits = 0;
+        for diff in difference_string.iter() {
+            match diff {
+                Self::Match(len) => {
+                    query_len += len;
+                    target_len += len;
+                    matches += len;
+                },
+                Self::Mismatch(_) => {
+                    query_len += 1;
+                    target_len += 1;
+                    edits += 1;
+                }
+                Self::Insertion(seq) => {
+                    query_len += seq.len();
+                    edits += seq.len();
+                }
+                Self::Deletion(len) => {
+                    target_len += len;
+                    edits += len;
+                },
+            }
+        }
+        (query_len, target_len, matches, edits)
     }
 
     /// Returns the length of the operation.

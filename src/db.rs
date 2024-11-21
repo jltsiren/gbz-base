@@ -704,6 +704,7 @@ impl GAFBase {
         Ok(inserted / 2)
     }
 
+    // FIXME: Determine the longest common prefix but store the rest of the name in the alignment table?
     // Returns the longest common prefix of sequence names.
     fn insert_sequences(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<String> {
         eprintln!("Inserting sequence names");
