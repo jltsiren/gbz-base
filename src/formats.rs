@@ -354,6 +354,8 @@ pub struct Alignment {
     pub base_quality: Option<Vec<u8>>,
     /// Difference string.
     pub difference: Option<Vec<Difference>>,
+    /// Information about the paired alignment.
+    pub pair: Option<PairedRead>,
     /// Optional typed fields that have not been interpreted.
     pub optional: Vec<TypedField>,
 }
@@ -441,6 +443,22 @@ impl Alignment {
         Ok(result)
     }
 
+    // Parses a pair name from the value of a typed field.
+    fn parse_pair(value: Vec<u8>, is_next: bool, output: &mut Option<PairedRead>) -> Result<(), String> {
+        if let Some(_) = output {
+            return Err(String::from("Multiple pair fields"));
+        }
+        let name = String::from_utf8(value).map_err(|err| {
+            format!("Invalid pair name: {}", err)
+        })?;
+        *output = Some(PairedRead {
+            name,
+            is_next,
+            is_proper: false,
+        });
+        Ok(())
+    }
+
     /// Parses an alignment from a GAF line.
     ///
     /// Returns an error if the line cannot be parsed.
@@ -497,6 +515,8 @@ impl Alignment {
         let mut score = None;
         let mut base_quality = None;
         let mut difference = None;
+        let mut pair = None;
+        let mut properly_paired = None;
         let mut optional = Vec::new();
         for field in fields[Self::MANDATORY_FIELDS..].iter() {
             let parsed = TypedField::parse(field)?;
@@ -520,8 +540,23 @@ impl Alignment {
                     let ops = Difference::parse_normalized(&value)?;
                     difference = Some(ops);
                 },
+                TypedField::Bool([b'p', b'd'], value) => {
+                    if let Some(_) = properly_paired {
+                        return Err(String::from("Multiple properly paired fields"));
+                    }
+                    properly_paired = Some(value);
+                },
+                TypedField::String([b'f', b'n'], value) => {
+                    Self::parse_pair(value, true, &mut pair)?;
+                },
+                TypedField::String([b'f', b'p'], value) => {
+                    Self::parse_pair(value, false, &mut pair)?;
+                },
                 _ => { optional.push(parsed); },
             }
+        }
+        if pair.is_some() && properly_paired.is_some() {
+            pair.as_mut().unwrap().is_proper = properly_paired.unwrap();
         }
 
         // TODO: Part of the interval end hack.
@@ -557,7 +592,8 @@ impl Alignment {
             name, seq_len, seq_interval,
             path, path_len, path_interval,
             matches, edits, mapq, score,
-            base_quality, difference, optional,
+            base_quality, difference, pair,
+            optional,
         })
     }
 
@@ -811,6 +847,45 @@ impl Alignment {
         Some(Vec::from(encoder))
     }
 
+    const FLAG_PAIR_SAME_NAME: u8 = 0x01;
+    const FLAG_PAIR_IS_NEXT: u8 = 0x02;
+    const FLAG_PAIR_IS_PROPER: u8 = 0x04;
+
+    /// Encodes the pair information as a blob.
+    ///
+    /// Returns [`None`] if the pair information is missing.
+    /// The first byte in the encoding contains flags.
+    /// The remaining bytes contain the name of the pair without the common prefix, if necessary.
+    pub fn encode_pair(&self, prefix_len: usize) -> Option<Vec<u8>> {
+        if self.pair.is_none() {
+            return None;
+        }
+
+        let pair = self.pair.as_ref().unwrap();
+        let mut flags = 0;
+        let name_len = if pair.name == self.name {
+            flags |= Self::FLAG_PAIR_SAME_NAME;
+            0
+        } else if pair.name.len() >= prefix_len {
+            pair.name.len() - prefix_len
+        } else {
+            0
+        };
+        let mut result = Vec::with_capacity(1 + name_len);
+        if pair.is_next {
+            flags |= Self::FLAG_PAIR_IS_NEXT;
+        }
+        if pair.is_proper {
+            flags |= Self::FLAG_PAIR_IS_PROPER;
+        }
+        result.push(flags);
+        if flags & Self::FLAG_PAIR_SAME_NAME == 0 {
+            result.extend_from_slice(&pair.name.as_bytes()[prefix_len..]);
+        }
+
+        Some(result)
+    }
+
     // TODO: encode optional fields
 
     // Decodes an interval and a length from the iterator.
@@ -831,6 +906,66 @@ impl Alignment {
         }
     }
 
+    // Decodes a quality string.
+    fn decode_quality(quality: Option<&[u8]>, alphabet: &[u8]) -> Option<Vec<u8>> {
+        let quality = quality?;
+        let mut quality_decoder = RLEIter::with_sigma(quality, alphabet.len());
+        let mut result: Vec<u8> = Vec::new();
+        while let Some(run) = quality_decoder.next() {
+            let value = alphabet[run.value];
+            for _ in 0..run.len {
+                result.push(value);
+            }
+        }
+        Some(result)
+    }
+
+    // Decodes a difference string.
+    fn decode_difference(difference: &[u8]) -> Result<Vec<Difference>, String> {
+        let mut difference_decoder = RLEIter::with_sigma(difference, Difference::NUM_TYPES);
+        let mut result: Vec<Difference> = Vec::new();
+        while let Some(run) = difference_decoder.next() {
+            match run.value {
+                0 => result.push(Difference::Match(run.len)),
+                1 => result.push(Difference::Mismatch(run.len as u8)),
+                2 => {
+                    let mut seq: Vec<u8> = Vec::with_capacity(run.len);
+                    for _ in 0..run.len {
+                        seq.push(difference_decoder.byte().ok_or(String::from("Missing insertion base"))?);
+                    }
+                    result.push(Difference::Insertion(seq));
+                },
+                3 => result.push(Difference::Deletion(run.len)),
+                _ => return Err(format!("Invalid difference string operation: {}", run.value)),
+            }
+        }
+        Ok(result)
+    }
+
+    // Decodes pair information.
+    fn decode_pair(pair: Option<&[u8]>, prefix: &str, name_of_pair: &str) -> Result<Option<PairedRead>, String> {
+        if pair.is_none() {
+            return Ok(None);
+        }
+        let pair = pair.unwrap();
+        if pair.is_empty() {
+            return Err(String::from("Empty pair information field"));
+        }
+
+        let flags = pair[0];
+        let is_next = (flags & Self::FLAG_PAIR_IS_NEXT) != 0;
+        let is_proper = (flags & Self::FLAG_PAIR_IS_PROPER) != 0;
+
+        let name = if flags & Self::FLAG_PAIR_SAME_NAME != 0 {
+            name_of_pair.to_string()
+        } else {
+            let name = String::from_utf8_lossy(&pair[1..]);
+            format!("{}{}", prefix, name)
+        };
+
+        Ok(Some(PairedRead { name: format!("{}{}", prefix, name), is_next, is_proper }))
+    }
+
     /// Decodes the alignment from the given fields.
     ///
     /// Returns an error if the fields cannot be decoded.
@@ -846,7 +981,7 @@ impl Alignment {
     /// * `difference`: Encoded difference string.
     pub fn decode(
         prefix: &str, query: &str, target_node: usize,
-        numbers: &[u8], quality: Option<&[u8]>, alphabet: &[u8], difference: Option<&[u8]>
+        numbers: &[u8], quality: Option<&[u8]>, alphabet: &[u8], difference: Option<&[u8]>, pair: Option<&[u8]>
     ) -> Result<Self, String> {
         let name = format!("{}{}", prefix, query);
         let include_redundant = difference.is_none();
@@ -873,40 +1008,12 @@ impl Alignment {
         };
         let score = Self::decode_signed(&mut number_decoder);
 
-        // Decode the base quality sequence.
-        let base_quality = if let Some(quality) = quality {
-            let mut quality_decoder = RLEIter::with_sigma(quality, alphabet.len());
-            let mut result: Vec<u8> = Vec::with_capacity(seq_len);
-            while let Some(run) = quality_decoder.next() {
-                let value = alphabet[run.value];
-                for _ in 0..run.len {
-                    result.push(value);
-                }
-            }
-            Some(result)
-        } else {
-            None
-        };
+        // Decode the quality string.
+        let base_quality = Self::decode_quality(quality, alphabet);
 
         // Decode the difference string and calculate the values for redundant fields.
         let difference = if let Some(difference) = difference {
-            let mut difference_decoder = RLEIter::with_sigma(difference, Difference::NUM_TYPES);
-            let mut result: Vec<Difference> = Vec::new();
-            while let Some(run) = difference_decoder.next() {
-                match run.value {
-                    0 => result.push(Difference::Match(run.len)),
-                    1 => result.push(Difference::Mismatch(run.len as u8)),
-                    2 => {
-                        let mut seq: Vec<u8> = Vec::with_capacity(run.len);
-                        for _ in 0..run.len {
-                            seq.push(difference_decoder.byte().ok_or(String::from("Missing insertion base"))?);
-                        }
-                        result.push(Difference::Insertion(seq));
-                    },
-                    3 => result.push(Difference::Deletion(run.len)),
-                    _ => return Err(format!("Invalid difference string operation: {}", run.value)),
-                }
-            }
+            let result = Self::decode_difference(difference)?;
             let (query_len, target_len, num_matches, num_edits) = Difference::stats(&result);
             seq_interval.end = seq_interval.start + query_len;
             seq_len += query_len;
@@ -919,6 +1026,9 @@ impl Alignment {
             None
         };
 
+        // Decode the pair.
+        let pair = Self::decode_pair(pair, prefix, &name)?;
+
         // TODO: Decode optional fields
         let optional = Vec::new();
 
@@ -926,7 +1036,8 @@ impl Alignment {
             name, seq_len, seq_interval,
             path, path_len, path_interval,
             matches, edits, mapq, score,
-            base_quality, difference, optional,
+            base_quality, difference, pair,
+            optional,
         })
     }
 }
@@ -943,6 +1054,17 @@ pub enum TargetPath {
     Path(Vec<usize>),
     /// Starting position in the GBWT.
     StartPosition(Pos),
+}
+
+/// Information about the paired alignment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairedRead {
+    /// Name of the pair.
+    pub name: String,
+    /// Is the pair the next the next fragment?
+    pub is_next: bool,
+    /// Are the alignments properly paired?
+    pub is_proper: bool,
 }
 
 //-----------------------------------------------------------------------------

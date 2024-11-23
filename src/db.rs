@@ -1,5 +1,5 @@
 //! GBZ-base: A SQLite database storing a GBZ graph.
-// TODO: After the integration, move the module-level documentation here.
+// FIXME: also GAF-base
 
 use crate::Alignment;
 use crate::formats::TargetPath;
@@ -573,6 +573,7 @@ pub struct AlignmentStats {
     pub number_bytes: usize,
     pub quality_bytes: usize,
     pub difference_bytes: usize,
+    pub pair_bytes: usize,
 }
 
 /// Creating the database.
@@ -754,11 +755,9 @@ impl GAFBase {
         let mut file = File::open(gaf_file).map_err(|x| x.to_string())?;
         let mut reader = BufReader::new(&mut file);
 
-        // TODO: some of the information is redundant; but do we want to have it readily available?
-        // TODO: pair id + properly paired flag; optional tags
+        // TODO: optional tags
         // The primary key is the 0-based line number in the GAF file.
-        // `sequence` and `start_node` are foreign keys to `Sequences` and `Nodes`, but we do not enforce that
-        // for performance reasons.
+        // `start_node` is a foreign key to `Nodes`, but we do not enforce that for performance reasons.
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         connection.execute(
             "CREATE TABLE Alignments (
@@ -767,6 +766,7 @@ impl GAFBase {
                 start_node INTEGER NOT NULL,
                 numbers BLOB NOT NULL,
                 quality BLOB,
+                pair BLOB,
                 difference BLOB
             ) STRICT",
             (),
@@ -825,8 +825,8 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(handle, name, start_node, numbers, quality, difference)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                    Alignments(handle, name, start_node, numbers, quality, difference, pair)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
                 let _ = to_report.send(Err(message));
@@ -841,6 +841,7 @@ impl GAFBase {
                 number_bytes: 0,
                 quality_bytes: 0,
                 difference_bytes: 0,
+                pair_bytes: 0,
             };
             loop {
                 // This can only fail if the sender is disconnected.
@@ -859,6 +860,7 @@ impl GAFBase {
                             let numbers = aln.encode_numbers();
                             let quality = aln.encode_base_quality(alphabet.as_bytes());
                             let difference = aln.encode_difference();
+                            let pair = aln.encode_pair(lcp);
                             statistics.alignments += 1;
                             statistics.name_bytes += name.len();
                             statistics.number_bytes += numbers.len();
@@ -868,9 +870,12 @@ impl GAFBase {
                             if let Some(difference) = &difference {
                                 statistics.difference_bytes += difference.len();
                             }
+                            if let Some(pair) = &pair {
+                                statistics.pair_bytes += pair.len();
+                            }
                             let result = insert.execute((
                                 handle, name, start_node,
-                                numbers, quality, difference
+                                numbers, quality, difference, pair
                             )).map_err(|x| x.to_string());
                             if let Err(message) = result {
                                 let _ = to_report.send(Err(message));
@@ -953,11 +958,12 @@ impl GAFBase {
             eprintln!("Warning: Expected {} alignments", metadata.paths());
         }
         eprintln!(
-            "Field sizes: name {}, numbers {}, quality {}, difference {}",
+            "Field sizes: name {}, numbers {}, quality {}, difference {}, pair {}",
             human_readable_size(statistics.name_bytes),
             human_readable_size(statistics.number_bytes),
             human_readable_size(statistics.quality_bytes),
-            human_readable_size(statistics.difference_bytes)
+            human_readable_size(statistics.difference_bytes),
+            human_readable_size(statistics.pair_bytes)
         );
 
         Ok(())

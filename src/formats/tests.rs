@@ -297,12 +297,14 @@ fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
     let score = None;
     let base_quality = None;
     let difference = None;
+    let pair = None;
     let optional = Vec::new();
     Alignment {
         name, seq_len, seq_interval,
         path, path_len, path_interval,
         matches, edits, mapq, score,
-        base_quality, difference, optional
+        base_quality, difference, pair,
+        optional
     }
 }
 
@@ -358,6 +360,7 @@ fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_r
 
     assert_eq!(alignment.base_quality, truth.base_quality, "Wrong base quality string on line {}", line);
     assert_eq!(alignment.difference, truth.difference, "Wrong difference string on line {}", line);
+    assert_eq!(alignment.pair, truth.pair, "Wrong pair information on line {}", line);
 
     if !skip_optional {
         assert_eq!(alignment.optional, truth.optional, "Wrong optional fields on line {}", line);
@@ -392,16 +395,21 @@ fn alignment_known_good() {
         Difference::Insertion(b"CAT".to_vec()),
         Difference::Match(20)
     ]);
+    let pair = None;
     let optional = vec![
         TypedField::String([b'x', b'x'], b"unknown".to_vec()),
     ];
 
-    // The file contains three variants of the same alignment and two variants of unaligned sequences.
+    // The file contains:
+    // * three variants of the same alignment
+    // * three additional variants that are paired
+    // * two variants of unaligned sequences
     let forward = Alignment {
         name, seq_len, seq_interval,
         path, path_len, path_interval,
         matches, edits, mapq, score,
-        base_quality, difference, optional
+        base_quality, difference, pair,
+        optional
     };
     let mut reverse = forward.clone();
     reverse.name = String::from("reverse");
@@ -411,11 +419,34 @@ fn alignment_known_good() {
     let mut no_mapq = forward.clone();
     no_mapq.name = String::from("no_mapq");
     no_mapq.mapq = None;
+
+    let mut first = forward.clone();
+    first.name = String::from("first");
+    first.pair = Some(PairedRead {
+        name: String::from("second"),
+        is_next: true,
+        is_proper: true,
+    });
+    let mut second = forward.clone();
+    second.name = String::from("second");
+    second.pair = Some(PairedRead {
+        name: String::from("first"),
+        is_next: false,
+        is_proper: true,
+    });
+    let mut same = forward.clone();
+    same.name = String::from("same");
+    same.pair = Some(PairedRead {
+        name: String::from("same"),
+        is_next: true,
+        is_proper: true,
+    });
+
     let empty = empty_alignment("empty", seq_len);
     let missing_values = empty_alignment("missing_values", seq_len);
-    let truth = vec![forward, reverse, no_mapq, empty, missing_values];
 
     // And now the actual test.
+    let truth = vec![forward, reverse, no_mapq, first, second, same, empty, missing_values];
     let filename = formats::get_test_data("good.gaf");
     let alignments = parse_alignments(&filename, false);
     assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
@@ -485,13 +516,15 @@ fn alignment_set_relative_information() {
     let score = None;
     let base_quality = None;
     let difference = None;
+    let pair = None;
     let optional = Vec::new();
     let mut alignment = Alignment {
         name, seq_len, seq_interval,
         path, path_len, path_interval,
         matches, edits,
         mapq, score,
-        base_quality, difference, optional
+        base_quality, difference, pair,
+        optional
     };
 
     let original = alignment.clone();
@@ -535,12 +568,17 @@ fn check_encode_decode(alignment: &Alignment, prefix: &str, alphabet: &[u8], lin
     let numbers = alignment.encode_numbers();
     let quality = alignment.encode_base_quality(alphabet);
     let difference = alignment.encode_difference();
+    let pair = alignment.encode_pair(prefix.len());
+
     let decoded = Alignment::decode(
-        prefix, query, target.node,
-        &numbers, quality.as_ref().map(Vec::as_slice), alphabet, difference.as_ref().map(Vec::as_slice)
+        prefix, query, target.node, &numbers,
+        quality.as_ref().map(Vec::as_slice),
+        alphabet, difference.as_ref().map(Vec::as_slice),
+        pair.as_ref().map(Vec::as_slice)
     );
     assert!(decoded.is_ok(), "Failed to decode alignment {}: {}", line, decoded.err().unwrap());
     let decoded = decoded.unwrap();
+
     // TODO: Check the optional fields.
     check_alignment(&decoded, alignment, line, false, true);
 }
@@ -550,14 +588,14 @@ fn alignment_encode_decode() {
     // Parse the alignments.
     let filename = formats::get_test_data("good.gaf");
     let mut alignments = parse_alignments(&filename, false);
-    assert_eq!(alignments.len(), 5, "Unexpected number of parsed alignments");
+    assert_eq!(alignments.len(), 8, "Unexpected number of parsed alignments");
 
     // Set the relative information manually, as we do not have a GBWT index.
-    alignments[0].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Forward), 0));
-    alignments[1].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Reverse), 0));
-    alignments[2].path = TargetPath::StartPosition(Pos::new(support::encode_node(10, Orientation::Forward), 0));
-    alignments[3].path = TargetPath::StartPosition(Pos::new(gbwt::ENDMARKER, 0));
-    alignments[4].path = TargetPath::StartPosition(Pos::new(gbwt::ENDMARKER, 0));
+    let pos = Pos::new(support::encode_node(10, Orientation::Forward), 0);
+    let empty = Pos::new(gbwt::ENDMARKER, 0);
+    for (i, alignment) in alignments.iter_mut().enumerate() {
+        alignment.path = TargetPath::StartPosition(if i < 6 { pos } else { empty });
+    }
 
     // Encode and decode the alignments.
     let prefix = "";
