@@ -2,6 +2,8 @@ use std::time::Instant;
 use std::{env, fs, process};
 
 use gbz_base::GAFBase;
+use gbz_base::db;
+
 use getopts::Options;
 
 //-----------------------------------------------------------------------------
@@ -15,7 +17,7 @@ fn main() -> Result<(), String> {
     let config = Config::new();
 
     // Check if the database already exists.
-    if GAFBase::exists(&config.db_file) {
+    if db::file_exists(&config.db_file) {
         if config.overwrite {
             eprintln!("Overwriting database {}", config.db_file);
             fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;
@@ -56,7 +58,7 @@ impl Config {
     pub fn new() -> Config {
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
-        let header = format!("Usage: {} [options] alignments.gaf", program);
+        let header = format!("Usage: {} [options] alignments.gaf[.gz]", program);
 
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");

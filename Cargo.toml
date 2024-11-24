@@ -13,6 +13,7 @@ gbwt = { git = "https://github.com/jltsiren/gbwt-rs", branch = "main" }
 simple-sds = { git = "https://github.com/jltsiren/simple-sds", branch = "main" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 getopts = { version = "0.2" }
+flate2 = { version = "1.0" }
 
 [[bin]]
 name = "gbz2db"

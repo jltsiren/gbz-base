@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 fn create_database_from_graph(graph: &GBZ) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!GBZBase::exists(&db_file), "Database {} already exists", db_file.display());
+    assert!(!file_exists(&db_file), "Database {} already exists", db_file.display());
     let result = GBZBase::create(&graph, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     db_file
@@ -18,7 +18,7 @@ fn create_database_from_graph(graph: &GBZ) -> PathBuf {
 
 fn create_database_from_file(filename: &PathBuf) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!GBZBase::exists(&db_file), "Database {} already exists", db_file.display());
+    assert!(!file_exists(&db_file), "Database {} already exists", db_file.display());
     let result = GBZBase::create_from_file(&filename, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     db_file

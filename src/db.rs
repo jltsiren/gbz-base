@@ -6,11 +6,13 @@ use crate::formats::TargetPath;
 
 use std::path::Path;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::thread;
 use std::sync::{mpsc, Arc};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
+
+use flate2::bufread::MultiGzDecoder;
 
 use gbwt::{GBWT, GBZ, Orientation, Pos, FullPathName};
 use gbwt::bwt::{BWT, Record};
@@ -33,7 +35,7 @@ mod tests;
 /// # Examples
 ///
 /// ```
-/// use gbz_base::GBZBase;
+/// use gbz_base::{db, GBZBase};
 /// use gbwt::support;
 /// use simple_sds::serialize;
 /// use std::fs;
@@ -41,7 +43,7 @@ mod tests;
 /// // Create the database.
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("gbz-base");
-/// assert!(!GBZBase::exists(&db_file));
+/// assert!(!db::file_exists(&db_file));
 /// let result = GBZBase::create_from_file(&gbz_file, &db_file);
 /// assert!(result.is_ok());
 ///
@@ -77,7 +79,7 @@ impl GBZBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "0.2.0";
+    pub const VERSION: &'static str = "GBZ-base v0.3.0";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -127,11 +129,6 @@ impl GBZBase {
             version,
             nodes, samples, haplotypes, contigs, paths,
         })
-    }
-
-    /// Returns `true` if the database `filename` exists.
-    pub fn exists<P: AsRef<Path>>(filename: P) -> bool {
-        db_exists(filename)
     }
 
     /// Returns the filename of the database.
@@ -222,7 +219,7 @@ impl GBZBase {
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>>(graph: &GBZ, filename: P) -> Result<(), String> {
         eprintln!("Creating database {}", filename.as_ref().display());
-        if Self::exists(&filename) {
+        if file_exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
         }
         Self::sanity_checks(graph)?;
@@ -454,7 +451,7 @@ impl GAFBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "0.1.0";
+    pub const VERSION: &'static str = "GAF-base v0.1.0";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -507,11 +504,6 @@ impl GAFBase {
             nodes, alignments, sequences,
             prefix, quality,
         })
-    }
-
-    /// Returns `true` if the database `filename` exists.
-    pub fn exists<P: AsRef<Path>>(filename: P) -> bool {
-        db_exists(filename)
     }
 
     /// Returns the filename of the database.
@@ -567,7 +559,7 @@ impl GAFBase {
 
 // Statistics for the encoded alignments in the database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AlignmentStats {
+ struct AlignmentStats {
     pub alignments: usize,
     pub name_bytes: usize,
     pub number_bytes: usize,
@@ -582,7 +574,7 @@ impl GAFBase {
     ///
     /// # Arguments
     ///
-    /// * `gaf_file`: GAF file storing the alignments.
+    /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `gbwt_file`: GBWT file storing the target paths.
     /// * `db_file`: Output database file.
     ///
@@ -632,7 +624,7 @@ impl GAFBase {
     ///
     /// # Arguments
     ///
-    /// * `gaf_file`: GAF file storing the alignments.
+    /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `index`: GBWT index storing the target paths.
     /// * `db_file`: Output database file.
     ///
@@ -643,7 +635,7 @@ impl GAFBase {
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q) -> Result<(), String> {
         eprintln!("Creating database {}", db_file.as_ref().display());
-        if Self::exists(&db_file) {
+        if file_exists(&db_file) {
             return Err(format!("Database {} already exists", db_file.as_ref().display()));
         }
         Self::check_gbwt_metadata(&index)?;
@@ -653,10 +645,10 @@ impl GAFBase {
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
         let (prefix, alphabet) = Self::insert_tags(&index, nodes, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        drop(connection);
 
-        // Because `insert_alignments` is multithreaded, we do not pass the connection to it.
-        Self::insert_alignments(gaf_file, index, &db_file, prefix.len(), alphabet)?;
+        // `insert_alignments` consumes the connection, as it is moved to another thread.
+        let gaf_file = open_file(gaf_file)?;
+        Self::insert_alignments(gaf_file, index, connection, prefix.len(), alphabet)?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
@@ -742,8 +734,8 @@ impl GAFBase {
         Ok(inserted / 2)
     }
 
-    fn insert_alignments<P: AsRef<Path>, Q: AsRef<Path>>(
-        gaf_file: P, index: Arc<GBWT>, db_file: Q,
+    fn insert_alignments(
+        gaf_file: Box<dyn BufRead>, index: Arc<GBWT>, connection: Connection,
         lcp: usize, alphabet: String
     ) -> Result<(), String> {
         eprintln!("Building structures for mapping alignments to GBWT paths");
@@ -752,13 +744,12 @@ impl GAFBase {
         let mut used_paths = RawVector::with_len(metadata.paths(), false);
 
         eprintln!("Inserting alignments");
-        let mut file = File::open(gaf_file).map_err(|x| x.to_string())?;
-        let mut reader = BufReader::new(&mut file);
+        let mut gaf_file = gaf_file;
+        let mut connection = connection;
 
         // TODO: optional tags
         // The primary key is the 0-based line number in the GAF file.
         // `start_node` is a foreign key to `Nodes`, but we do not enforce that for performance reasons.
-        let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         connection.execute(
             "CREATE TABLE Alignments (
                 handle INTEGER PRIMARY KEY,
@@ -766,8 +757,8 @@ impl GAFBase {
                 start_node INTEGER NOT NULL,
                 numbers BLOB NOT NULL,
                 quality BLOB,
-                pair BLOB,
-                difference BLOB
+                difference BLOB,
+                pair BLOB
             ) STRICT",
             (),
         ).map_err(|x| x.to_string())?;
@@ -907,7 +898,7 @@ impl GAFBase {
         let mut failed = false;
         loop {
             let mut buf: Vec<u8> = Vec::new();
-            let len = reader.read_until(b'\n', &mut buf).map_err(|x| x.to_string());
+            let len = gaf_file.read_until(b'\n', &mut buf).map_err(|x| x.to_string());
             match len {
                 Ok(len) => {
                     if len == 0 {
@@ -1375,6 +1366,8 @@ impl<'a> GraphInterface<'a> {
 
 /*
   Helper functions for using the databases.
+
+  TODO: Should we have a separate module for these?
 */
 
 /// Returns the starting position of the given path in the given orientation.
@@ -1393,8 +1386,8 @@ const SIZE_UNITS: [(f64, &'static str); 6] = [
     (1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0, "PiB"),
 ];
 
-// Returns a human-readable representation of the given number of bytes.
-fn human_readable_size(bytes: usize) -> String {
+/// Returns a human-readable representation of the given number of bytes.
+pub fn human_readable_size(bytes: usize) -> String {
     let mut unit = 0;
     let value = bytes as f64;
     while unit + 1 < SIZE_UNITS.len() && value >= SIZE_UNITS[unit + 1].0 {
@@ -1403,8 +1396,8 @@ fn human_readable_size(bytes: usize) -> String {
     format!("{:.3} {}", value / SIZE_UNITS[unit].0, SIZE_UNITS[unit].1)
 }
 
-// Returns a human-readable size of the file.
-fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
+/// Returns a human-readable size of the file.
+pub fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
     let metadata = fs::metadata(filename).map_err(|x| x.to_string());
     if metadata.is_err() {
         return None;
@@ -1412,12 +1405,77 @@ fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
     Some(human_readable_size(metadata.unwrap().len() as usize))
 }
 
-// TODO: Add an option to check from the tags that this is the right kind and right version of the database.
-// Returns `true` if the database `filename` exists.
-fn db_exists<P: AsRef<Path>>(filename: P) -> bool {
+/// Type of a potential database file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DatabaseFileType {
+    /// The file does not exist.
+    Missing,
+    /// The file is not a valid SQLite database.
+    NotDatabase,
+    /// The file is an unknown SQLite database.
+    UnknownDatabase,
+    /// The file is a known SQLite database with the given version string.
+    Version(String),
+}
+
+/// Determines the type of the given file, which may be a SQLite database.
+pub fn identify_database<P: AsRef<Path>>(filename: P) -> DatabaseFileType {
+    let metadata = fs::metadata(&filename);
+    if metadata.is_err() {
+        return DatabaseFileType::Missing;
+    }
+    let metadata = metadata.unwrap();
+    if !metadata.is_file() {
+        return DatabaseFileType::NotDatabase;
+    }
+
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = Connection::open_with_flags(filename, flags);
-    connection.is_ok()
+    if connection.is_err() {
+        return DatabaseFileType::NotDatabase;
+    }
+    let connection = connection.unwrap();
+
+    let statement = connection.prepare("SELECT value FROM Tags WHERE key = 'version'");
+    if statement.is_err() {
+        return DatabaseFileType::UnknownDatabase;
+    }
+    let mut statement = statement.unwrap();
+
+    let version: rusqlite::Result<String> = statement.query_row([], |row| row.get(0));
+    if version.is_err() {
+        return DatabaseFileType::UnknownDatabase;
+    }
+    DatabaseFileType::Version(version.unwrap())
+}
+
+/// Returns `true` if the file exists.
+pub fn file_exists<P: AsRef<Path>>(filename: P) -> bool {
+    fs::metadata(filename).is_ok()
+}
+
+/// Returns `true` if the file appears to be gzip-compressed.
+pub fn is_gzipped<P: AsRef<Path>>(filename: P) -> bool {
+    let file = File::open(filename).ok();
+    if file.is_none() {
+        return false;
+    }
+    let mut reader = BufReader::new(file.unwrap());
+    let mut magic = [0; 2];
+    let len = reader.read(&mut magic).ok();
+    len == Some(2) && magic == [0x1F, 0x8B]
+}
+
+/// Returns a buffered reader for the file, which may be gzip-compressed.
+pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String> {
+    let file = File::open(&filename).map_err(|x| x.to_string())?;
+    let inner = BufReader::new(file);
+    if is_gzipped(&filename) {
+        let inner = MultiGzDecoder::new(inner);
+        Ok(Box::new(BufReader::new(inner)))
+    } else {
+        Ok(Box::new(inner))
+    }
 }
 
 // Executes the statement, which is expected to return a single string value.
@@ -1438,14 +1496,6 @@ fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, Stri
 fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
     let value = get_string_value(statement, key)?;
     value.parse::<usize>().map_err(|x| x.to_string())
-}
-
-// TODO: This can be useful for storing a list of common prefixes of read names.
-// Executes the statement, which is expected to return a single string value.
-// Then splits the value into a vector of strings using the given separator.
-fn _get_string_list(statement: &mut Statement, key: &str, separator: char) -> Result<Vec<String>, String> {
-    let value = get_string_value(statement, key)?;
-    Ok(value.split(separator).map(|x| x.to_string()).collect())
 }
 
 //-----------------------------------------------------------------------------

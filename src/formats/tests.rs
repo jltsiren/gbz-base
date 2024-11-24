@@ -1,14 +1,13 @@
 use super::*;
 
-use crate::formats;
+use crate::{db, formats};
 
 use gbwt::Metadata;
 
 use simple_sds::ops::BitVec;
 use simple_sds::serialize;
 
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 
 //-----------------------------------------------------------------------------
 
@@ -311,10 +310,9 @@ fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
 // Parses the alignments from the test file.
 // Returns them as a vector, unless told to expect a parse error.
 fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
-    let file = File::open(filename);
-    assert!(file.is_ok(), "Failed to open the test file: {}", file.err().unwrap());
-    let mut file = file.unwrap();
-    let mut reader = BufReader::new(&mut file);
+    let reader = db::open_file(filename);
+    assert!(reader.is_ok(), "Failed to open the test file: {}", reader.err().unwrap());
+    let mut reader = reader.unwrap();
 
     let mut result = Vec::new();
     let mut line_num = 1;
@@ -610,15 +608,14 @@ fn alignment_encode_decode() {
 // Tests for `Alignment`: integration.
 // This is the haplotype sampling test case from vg.
 
-#[test]
-fn alignment_real() {
+fn integration_test(gaf_file: &'static str, gbwt_file: &'static str) {
     // Parse the alignments.
-    let gaf_file = formats::get_test_data("micb-kir3dl1_HG003.gaf");
+    let gaf_file = formats::get_test_data(gaf_file);
     let mut alignments = parse_alignments(&gaf_file, false);
     assert_eq!(alignments.len(), 12439, "Unexpected number of parsed alignments");
 
     // Load the GBWT index and prepare the structures.
-    let gbwt_file = formats::get_test_data("micb-kir3dl1_HG003.gbwt");
+    let gbwt_file = formats::get_test_data(gbwt_file);
     let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
     let metadata = index.metadata().unwrap();
     let result = Alignment::paths_by_sample(&metadata);
@@ -643,6 +640,16 @@ fn alignment_real() {
     for (i, aln) in alignments.iter().enumerate() {
         check_encode_decode(aln, prefix, alphabet, i + 1);
     }
+}
+
+#[test]
+fn alignment_real() {
+    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt");
+}
+
+#[test]
+fn alignment_real_gzipped() {
+    integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt");
 }
 
 //-----------------------------------------------------------------------------
