@@ -654,6 +654,114 @@ fn alignment_real_gzipped() {
 
 //-----------------------------------------------------------------------------
 
+// Tests for `QualityEncoder`.
+
+fn create_quality_encoder(alphabet: &[u8], dictionary: &[(usize, usize)], name: &str) -> QualityEncoder {
+    let encoder = QualityEncoder::new(alphabet, dictionary);
+    assert!(encoder.is_some(), "Failed to create a quality encoder for {}", name);
+    encoder.unwrap()
+}
+
+fn check_quality_encoder(encoder: &QualityEncoder, sequence: &[u8], is_rle: bool, name: &str) {
+    let encoded = encoder.encode(sequence);
+    assert!(encoded.is_ok(), "Failed to encode the quality string for {}: {}", name, encoded.err().unwrap());
+    let encoded = encoded.unwrap();
+    assert_eq!(QualityEncoder::is_rle(&encoded), is_rle, "Wrong RLE status for {}", name);
+    let decoded = encoder.decode(&encoded, sequence.len());
+    assert!(decoded.is_ok(), "Failed to decode the quality string for {}: {}", name, decoded.err().unwrap());
+    let decoded = decoded.unwrap();
+    assert_eq!(decoded, sequence, "Wrong decoded quality string for {}", name);
+}
+
+fn check_invalid_sequence(encoder: &QualityEncoder, sequence: &[u8], name: &str) {
+    let encoded = encoder.encode(sequence);
+    assert!(encoded.is_err(), "Encoded an invalid quality string for {}", name);
+}
+
+#[test]
+fn quality_empty() {
+    let alphabet = b"";
+    let dictionary = [];
+    let name = "empty alphabet";
+    let encoder = create_quality_encoder(alphabet, &dictionary, name);
+
+    let sequence = b"";
+    check_quality_encoder(&encoder, sequence, false, name);
+    let invalid = b"ACGT";
+    check_invalid_sequence(&encoder, invalid, name);
+}
+
+#[test]
+fn quality_unary() {
+    let alphabet = b"A";
+    let dictionary = [(1, 1)];
+    let name = "unary alphabet";
+    let encoder = create_quality_encoder(alphabet, &dictionary, name);
+
+    let empty = b"";
+    check_quality_encoder(&encoder, empty, false, "unary alphabet, empty sequence");
+    let sequence = b"AAAAA";
+    check_quality_encoder(&encoder, sequence, false, name);
+    let invalid = b"ACGT";
+    check_invalid_sequence(&encoder, invalid, name);
+}
+
+#[test]
+fn quality_huffman() {
+    // A: 0, C: 10, G: 110, T: 111
+    let alphabet = b"ACGT";
+    let dictionary = [(1, 1), (2, 1), (3, 2)];
+    let name = "general alphabet";
+    let encoder = create_quality_encoder(alphabet, &dictionary, name);
+
+    let empty = b"";
+    check_quality_encoder(&encoder, empty, false, "general alphabet, empty sequence");
+    let sequence = b"ACGTACGTACGT";
+    check_quality_encoder(&encoder, sequence, false, name);
+    let invalid = b"ACGTN";
+    check_invalid_sequence(&encoder, invalid, name);
+}
+
+#[test]
+fn quality_large_alphabet() {
+    // A: 0, B: 100, C: 101, D: 1100, E: 1101, F: 111000, ...
+    let alphabet = b"ABCDEFGHIJKLM";
+    let dictionary = [(1, 1), (3, 2), (4, 2), (6, 8)];
+    let name = "large alphabet";
+    let encoder = create_quality_encoder(alphabet, &dictionary, name);
+
+    let empty = b"";
+    check_quality_encoder(&encoder, empty, false, "large alphabet, empty sequence");
+    let sequence = b"ABCDEFGHIJKLMABCDEFGHIJKLM";
+    check_quality_encoder(&encoder, sequence, false, name);
+    let invalid = b"ACGT";
+    check_invalid_sequence(&encoder, invalid, name);
+}
+
+// huffman + rle
+#[test]
+fn quality_with_rle() {
+    let alphabet = b"ACGT";
+    let dictionary = [(1, 1), (2, 1), (3, 2)];
+    let name = "possible rle";
+    let encoder = create_quality_encoder(alphabet, &dictionary, name);
+
+    let empty = b"";
+    check_quality_encoder(&encoder, empty, false, "possible rle, empty sequence");
+    let rle = b"AAAAAAAAACAAAAAAAAG";
+    check_quality_encoder(&encoder, rle, true, name);
+    let wrong_symbol = b"CCCCCCCCCACCCCCCCG";
+    check_quality_encoder(&encoder, wrong_symbol, false, "possible rle, wrong symbol in the runs");
+    let invalid = b"ACGTN";
+    check_invalid_sequence(&encoder, invalid, name);
+
+    let balanced = [(2, 4)];
+    let balanced_encoder = create_quality_encoder(alphabet, &balanced, "balanced alphabet");
+    check_quality_encoder(&balanced_encoder, rle, false, "balanced alphabet, long runs");
+}
+
+//-----------------------------------------------------------------------------
+
 // Tests for `Difference`.
 
 fn check_difference(seq: &[u8], truth: &[Difference], name: &str, normalize: bool) {

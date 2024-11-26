@@ -40,8 +40,9 @@ use gbwt::{GBWT, Metadata, Orientation, Pos, FullPathName};
 use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 use simple_sds::ops::Select;
-use simple_sds::raw_vector::{RawVector, AccessRaw};
+use simple_sds::raw_vector::{RawVector, AccessRaw, PushRaw};
 use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
+use simple_sds::bits;
 
 #[cfg(test)]
 mod tests;
@@ -320,7 +321,6 @@ pub fn json_path(path: &[usize], metadata: &WalkMetadata) -> JSONValue {
 
 //-----------------------------------------------------------------------------
 
-// TODO: Parse pairing information from tags.
 // FIXME examples
 /// An alignment between a query sequence and a target path in a graph.
 ///
@@ -726,6 +726,8 @@ impl Alignment {
 
 //-----------------------------------------------------------------------------
 
+// TODO: Move Alignment and related types to a separate module.
+
 /// Encoding / decoding the alignment in the format used in GAF-base.
 impl Alignment {
     // Normalizes the interval and encodes it as (left flank, length, right flank).
@@ -785,6 +787,7 @@ impl Alignment {
         Vec::from(encoder)
     }
 
+    // FIXME: Use QualityEncoder
     /// Encodes the base quality sequence as a run-length encoded blob.
     ///
     /// The base quality sequence is assumed to use the given alphabet.
@@ -1065,6 +1068,278 @@ pub struct PairedRead {
     pub is_next: bool,
     /// Are the alignments properly paired?
     pub is_proper: bool,
+}
+
+//-----------------------------------------------------------------------------
+
+/// An encoder and decoder for quality strings.
+///
+/// The encoder uses a canonical Huffman code for a fixed alphabet.
+/// There are four possible encodings:
+///
+/// * Empty alphabet: Works only for empty sequences.
+/// * Unary alphabet: The encoding is empty, as we get the length from an external source.
+/// * General alphabet: Huffman encoding.
+/// * General alphabet: Huffman encoding with run-length encoding using Gamma codes for symbols with code length 1.
+///
+/// With a general alphabet, the encoder tries both options and chooses the smaller one.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::formats::QualityEncoder;
+///
+/// // A: 0, C, 10, G: 110, T: 111
+/// let alphabet = b"ACGT";
+/// let dictionary = &[(1, 1), (2, 1), (3, 2)];
+/// let encoder = QualityEncoder::new(alphabet, dictionary).unwrap();
+///
+/// let sequence = b"GATTACA";
+/// let encoded = encoder.encode(sequence).unwrap();
+/// let decoded = encoder.decode(&encoded, sequence.len()).unwrap();
+/// assert_eq!(&decoded, sequence);
+/// ```
+#[derive(Clone, Debug)]
+pub struct QualityEncoder {
+    alphabet: Vec<u8>,
+    // Canonical Huffman dictionary.
+    // For each code length in increasing order: (length, count).
+    dictionary: Vec<(usize, usize)>,
+}
+
+impl QualityEncoder {
+    /// Constructs a new quality encoder with the given alphabet and canonical Huffman code lengths.
+    ///
+    /// Returns [`None`] if the code lengths do not match the alphabet.
+    /// If the code lengths are invalid, the encoder will not work and the encoding will fail.
+    pub fn new(alphabet: &[u8], dictionary: &[(usize, usize)]) -> Option<Self> {
+        let alphabet = alphabet.to_vec();
+        let dictionary = dictionary.to_vec();
+        let count = dictionary.iter().map(|&(_, count)| count).sum::<usize>();
+        if alphabet.len() != count {
+            return None;
+        }
+        Some(QualityEncoder { alphabet, dictionary })
+    }
+
+    /// Returns the size of the alphabet.
+    #[inline]
+    pub fn alphabet_len(&self) -> usize {
+        self.alphabet.len()
+    }
+
+    /// Returns `true` if the alphabet is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.alphabet.is_empty()
+    }
+
+    /// Returns `true` if the alphabet is unary.
+    #[inline]
+    pub fn is_unary(&self) -> bool {
+        self.alphabet_len() == 1
+    }
+
+    /// Returns `true` if the given encoding is run-length encoded.
+    pub fn is_rle(encoded: &[u8]) -> bool {
+        if encoded.is_empty() {
+            return false;
+        }
+        (encoded[0] & 0x1) != 0
+    }
+
+    // Returns the canonical Huffman code in little-endian order as well as code length.
+    // Returns `None` if the symbol is not in the alphabet.
+    fn encode_huffman(&self, symbol: u8) -> Option<(u64, usize)> {
+        let index = self.alphabet.iter().position(|&x| x == symbol)?;
+        let mut cumulative = 0;
+        let mut code_len = 0;
+        let mut code: u64 = 0;
+        for (new_len, count) in self.dictionary.iter() {
+            code <<= *new_len - code_len;
+            if index < cumulative + count {
+                code += (index - cumulative) as u64;
+                return Some((bits::reverse_low(code, *new_len), *new_len));
+            }
+            code += *count as u64;
+            cumulative += count;
+            code_len = *new_len;
+        }
+        None
+    }
+
+    // Appends a gamma code to the buffer.
+    // Because we use little-endian buffers, we need to store the highest bit separately.
+    fn encode_gamma(value: usize, buffer: &mut RawVector) {
+        let bit_len = bits::bit_len(value as u64);
+        unsafe { buffer.push_int(0, bit_len - 1); }
+        buffer.push_bit(true);
+        unsafe { buffer.push_int(value as u64, bit_len - 1); }
+    }
+
+    fn try_huffman(&self, sequence: &[u8]) -> Option<RawVector> {
+        let mut buffer = RawVector::new();
+        buffer.push_bit(false); // Not run-length encoded.
+        for symbol in sequence {
+            let (code, len) = self.encode_huffman(*symbol)?;
+            unsafe { buffer.push_int(code, len); }
+        }
+        Some(buffer)
+    }
+
+    fn try_huffman_rle(&self, sequence: &[u8]) -> Option<RawVector> {
+        let mut buffer = RawVector::new();
+        buffer.push_bit(true); // Run-length encoded.
+        let mut run: (u8, usize) = (0, 0);
+        for symbol in sequence {
+            if run.1 > 0 {
+                if *symbol == run.0 {
+                    run.1 += 1;
+                    continue;
+                } else {
+                    Self::encode_gamma(run.1, &mut buffer);
+                    run.1 = 0;
+                }
+            }
+            let (code, len) = self.encode_huffman(*symbol)?;
+            unsafe { buffer.push_int(code, len); }
+            if len == 1 {
+                run = (*symbol, 1);
+            }
+        }
+        if run.1 > 0 {
+            Self::encode_gamma(run.1, &mut buffer);
+        }
+        Some(buffer)
+    }
+
+    /// Encodes the given sequence of quality symbols.
+    ///
+    /// Returns an error if the encoding fails.
+    pub fn encode(&self, sequence: &[u8]) -> Result<Vec<u8>, String> {
+        if self.is_empty() {
+            if sequence.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Err(String::from("QualityEncoder: Empty alphabet with non-empty sequence"));
+        }
+        if self.is_unary() {
+            for symbol in sequence {
+                if *symbol != self.alphabet[0] {
+                    return Err(String::from("QualityEncoder: Invalid symbol with a unary alphabet"));
+                }
+            }
+            return Ok(Vec::new());
+        }
+
+        // Try encoding the sequence with and without run-length encoding.
+        let no_rle = self.try_huffman(sequence).ok_or(
+            String::from("QualityEncoder: Huffman encoding failed")
+        )?;
+        let with_rle = self.try_huffman_rle(sequence).ok_or(
+            String::from("QualityEncoder: Huffman + RLE encoding failed")
+        )?;
+        let buffer: &RawVector = if no_rle.len() <= with_rle.len() { &no_rle } else { &with_rle };
+
+        // Convert the selected encoding to a byte vector.
+        let mut result = Vec::with_capacity((buffer.len() + 7) / 8);
+        for i in 0..result.capacity() {
+            let byte = unsafe { buffer.int(i * 8, 8) };
+            result.push(byte as u8);
+        }
+        Ok(result)
+    }
+
+    // Decodes a canonical Huffman code from the buffer starting at the given offset.
+    // The code is assumed to be in little-endian order.
+    // Returns the symbol and the new offset.
+    // Returns `None` if the buffer runs out of bits or if the decoder is in an invalid state.
+    fn decode_huffman(&self, buffer: &RawVector, offset: usize) -> Option<(u8, usize)> {
+        let mut base_code = 0;
+        let mut index = 0;
+        let mut code_len = 0;
+        for (new_len, count) in self.dictionary.iter() {
+            if offset + new_len > buffer.len() {
+                return None;
+            }
+            base_code <<= *new_len - code_len;
+            let code = unsafe { buffer.int(offset, *new_len) };
+            let code = bits::reverse_low(code, *new_len);
+            if code - base_code < (*count as u64) {
+                index += (code - base_code) as usize;
+                return Some((self.alphabet[index], offset + new_len));
+            }
+            base_code += *count as u64;
+            index += *count;
+            code_len = *new_len;
+        }
+        None
+    }
+
+    // Decodes a gamma code from the buffer starting at the given offset.
+    // Returns the value and the new offset.
+    // Returns `None` if the buffer runs out of bits.
+    // Because we use little-endian buffers, we need to handle the highest bit separately.
+    fn decode_gamma(buffer: &RawVector, offset: usize) -> Option<(usize, usize)> {
+        let mut offset = offset;
+        let mut bit_len = 1;
+        while offset < buffer.len() && !buffer.bit(offset) {
+            offset += 1;
+            bit_len += 1;
+        }
+        if offset + bit_len > buffer.len() {
+            return None;
+        }
+        let mut value = unsafe { buffer.int(offset + 1, bit_len - 1) } as usize;
+        value += 1 << (bit_len - 1);
+        Some((value, offset + bit_len))
+    }
+
+    /// Decodes the given byte sequence.
+    ///
+    /// Returns an error if the encoding is invalid or does not contain the expected number of symbols.
+    /// Silently ignores any unused bytes in the encoding.
+    pub fn decode(&self, encoded: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
+        if self.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.is_unary() {
+            return Ok(vec![self.alphabet[0]; expected_len]);
+        }
+        if encoded.is_empty() && expected_len > 0 {
+            return Err(String::from("Empty encoding for a non-trivial quality sequence"));
+        }
+
+        // Copy the input to a RawVector.
+        let mut buffer = RawVector::with_capacity(encoded.len() * 8);
+        for &byte in encoded.iter() {
+            unsafe { buffer.push_int(byte as u64, 8); }
+        }
+        let rle = buffer.bit(0);
+
+        let mut result = Vec::with_capacity(expected_len);
+        let mut offset = 1;
+        while result.len() < expected_len {
+            let (symbol, new_offset) = self.decode_huffman(&buffer, offset).ok_or(
+                String::from("QualityEncoder: Huffman decoding failed")
+            )?;
+            let code_len = new_offset - offset;
+            offset = new_offset;
+            if rle && code_len == 1 {
+                let (run, new_offset) = Self::decode_gamma(&buffer, offset).ok_or(
+                    String::from("QualityEncoder: Gamma decoding failed")
+                )?;
+                offset = new_offset;
+                for _ in 0..run {
+                    result.push(symbol);
+                }
+            } else {
+                result.push(symbol);
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 //-----------------------------------------------------------------------------
