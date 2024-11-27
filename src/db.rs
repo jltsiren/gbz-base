@@ -2,7 +2,7 @@
 // FIXME: also GAF-base
 
 use crate::Alignment;
-use crate::formats::{QualityEncoder, TargetPath};
+use crate::alignment::{QualityEncoder, TargetPath};
 use crate::utils;
 
 use std::path::Path;

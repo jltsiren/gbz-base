@@ -25,11 +25,12 @@
 //! By default, only generic paths (sample name `_gbwt_ref`) and reference paths (sample name listed in GBWT tag `reference_samples`) are indexed.
 //! The database can become excessively large if all paths are indexed.
 
+pub mod alignment;
 pub mod db;
 pub mod formats;
 pub mod subgraph;
 pub mod utils;
 
+pub use alignment::Alignment;
 pub use db::{GBZBase, GAFBase, GBZPath, GBZRecord, GraphInterface};
-pub use formats::Alignment;
 pub use subgraph::{Subgraph, SubgraphQuery, HaplotypeOutput, PathIndex};
