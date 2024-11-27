@@ -33,7 +33,6 @@ use crate::db;
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::ops::Range;
-use std::path::PathBuf;
 use std::str;
 
 use gbwt::{GBWT, Metadata, Orientation, Pos, FullPathName};
@@ -46,17 +45,6 @@ use simple_sds::bits;
 
 #[cfg(test)]
 mod tests;
-
-//-----------------------------------------------------------------------------
-
-// TODO: Move somewhere else?
-/// Returns the full file name for a specific test file.
-pub fn get_test_data(filename: &'static str) -> PathBuf {
-    let mut buf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    buf.push("test-data");
-    buf.push(filename);
-    buf
-}
 
 //-----------------------------------------------------------------------------
 
@@ -381,7 +369,7 @@ impl Alignment {
     // Parses an unsigned integer from a GAF field.
     // Returns `0` if the value is missing.
     fn parse_usize(field: &[u8], field_name: &str) -> Result<usize, String> {
-        if field == &Self::MISSING_VALUE {
+        if field == Self::MISSING_VALUE {
             return Ok(0);
         }
         let number = str::from_utf8(field).map_err(|err| {
@@ -402,7 +390,7 @@ impl Alignment {
     // Parses an orientation from a GAF field.
     // Returns [`Orientation::Forward`] if the value is missing.
     fn parse_orientation(field: &[u8], field_name: &str) -> Result<Orientation, String> {
-        if field == &Self::MISSING_VALUE {
+        if field == Self::MISSING_VALUE {
             return Ok(Orientation::Forward);
         }
         if field.len() != 1 {
@@ -419,7 +407,7 @@ impl Alignment {
     // Returns an empty path if the value is missing.
     fn parse_path(field: &[u8]) -> Result<Vec<usize>, String> {
         let mut result = Vec::new();
-        if field == &Self::MISSING_VALUE {
+        if field == Self::MISSING_VALUE {
             return Ok(result);
         }
 
@@ -435,7 +423,7 @@ impl Alignment {
             let node = str::from_utf8(&field[start..end]).map_err(|err| {
                 format!("Invalid segment name: {}", err)
             })?.parse().map_err(|_| {
-                format!("Only numerical segment names are supported")
+                String::from("Only numerical segment names are supported")
             })?;
             result.push(support::encode_node(node, orientation));
             start = end;
@@ -445,7 +433,7 @@ impl Alignment {
 
     // Parses a pair name from the value of a typed field.
     fn parse_pair(value: Vec<u8>, is_next: bool, output: &mut Option<PairedRead>) -> Result<(), String> {
-        if let Some(_) = output {
+        if output.is_some() {
             return Err(String::from("Multiple pair fields"));
         }
         let name = String::from_utf8(value).map_err(|err| {
@@ -522,26 +510,26 @@ impl Alignment {
             let parsed = TypedField::parse(field)?;
             match parsed {
                 TypedField::Int([b'A', b'S'], value) => {
-                    if let Some(_) = score {
+                    if score.is_some() {
                         return Err(String::from("Multiple alignment score fields"));
                     }
                     score = Some(value);
                 },
                 TypedField::String([b'b', b'q'], value) => {
-                    if let Some(_) = base_quality {
+                    if base_quality.is_some() {
                         return Err(String::from("Multiple base quality fields"));
                     }
                     base_quality = Some(value.to_vec());
                 },
                 TypedField::String([b'c', b's'], value) => {
-                    if let Some(_) = difference {
+                    if difference.is_some() {
                         return Err(String::from("Multiple difference fields"));
                     }
                     let ops = Difference::parse_normalized(&value)?;
                     difference = Some(ops);
                 },
                 TypedField::Bool([b'p', b'd'], value) => {
-                    if let Some(_) = properly_paired {
+                    if properly_paired.is_some() {
                         return Err(String::from("Multiple properly paired fields"));
                     }
                     properly_paired = Some(value);
@@ -563,7 +551,7 @@ impl Alignment {
         let mut path_interval = match path_interval {
             Ok(interval) => interval,
             Err(_) => {
-                if let Some(_) = difference {
+                if difference.is_some() {
                     let target_start = Self::parse_usize(fields[7], "target interval start")?;
                     target_start..target_start
                 } else {
@@ -653,9 +641,9 @@ impl Alignment {
         let end = iter.next().unwrap_or((0, path_ids.len())).1;
 
         // Check the paths in the interval.
-        for offset in start..end {
+        for &path_id in path_ids[start..end].iter() {
             // Is it still available?
-            let path_id = path_ids[offset] as usize;
+            let path_id = path_id as usize;
             if let Some(used) = used_paths.as_ref() {
                 if used.bit(path_id) {
                     continue;
@@ -805,12 +793,10 @@ impl Alignment {
     ///
     /// Returns [`None`] if the difference string is missing.
     pub fn encode_difference(&self) -> Option<Vec<u8>> {
-        if self.difference.is_none() {
-            return None;
-        }
+        let difference = self.difference.as_ref()?;
 
         let mut encoder = RLE::with_sigma(Difference::NUM_TYPES);
-        for diff in self.difference.as_ref().unwrap().iter() {
+        for diff in difference.iter() {
             match diff {
                 Difference::Match(len) => encoder.write(Run::new(0, *len)),
                 Difference::Mismatch(base) => encoder.write(Run::new(1, *base as usize)),
@@ -837,11 +823,8 @@ impl Alignment {
     /// The first byte in the encoding contains flags.
     /// The remaining bytes contain the name of the pair without the common prefix, if necessary.
     pub fn encode_pair(&self, prefix_len: usize) -> Option<Vec<u8>> {
-        if self.pair.is_none() {
-            return None;
-        }
+        let pair = self.pair.as_ref()?;
 
-        let pair = self.pair.as_ref().unwrap();
         let mut flags = 0;
         let name_len = if pair.name == self.name {
             flags |= Self::FLAG_PAIR_SAME_NAME;
@@ -1382,7 +1365,7 @@ impl Difference {
     const OPS: &'static [u8] = b"=:*+-";
 
     fn base_to_upper(c: u8) -> u8 {
-        if c >= b'a' && c <= b'z' {
+        if c.is_ascii_lowercase() {
             c - b'a' + b'A'
         } else {
             c

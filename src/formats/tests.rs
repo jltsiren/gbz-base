@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::{db, formats};
+use crate::utils;
 
 use gbwt::Metadata;
 
@@ -8,6 +8,7 @@ use simple_sds::ops::BitVec;
 use simple_sds::serialize;
 
 use std::io::BufRead;
+use std::path::PathBuf;
 
 //-----------------------------------------------------------------------------
 
@@ -310,7 +311,7 @@ fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
 // Parses the alignments from the test file.
 // Returns them as a vector, unless told to expect a parse error.
 fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
-    let reader = db::open_file(filename);
+    let reader = utils::open_file(filename);
     assert!(reader.is_ok(), "Failed to open the test file: {}", reader.err().unwrap());
     let mut reader = reader.unwrap();
 
@@ -445,7 +446,7 @@ fn alignment_known_good() {
 
     // And now the actual test.
     let truth = vec![forward, reverse, no_mapq, first, second, same, empty, missing_values];
-    let filename = formats::get_test_data("good.gaf");
+    let filename = utils::get_test_data("good.gaf");
     let alignments = parse_alignments(&filename, false);
     assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
     for i in 0..truth.len() {
@@ -455,7 +456,7 @@ fn alignment_known_good() {
 
 #[test]
 fn alignment_known_bad() {
-    let filename = formats::get_test_data("bad.gaf");
+    let filename = utils::get_test_data("bad.gaf");
     let alignments = parse_alignments(&filename, true);
     assert_eq!(alignments.len(), 0, "There should be no valid alignments in the test file");
 }
@@ -584,7 +585,7 @@ fn check_encode_decode(alignment: &Alignment, prefix: &str, quality_encoder: &Qu
 #[test]
 fn alignment_encode_decode() {
     // Parse the alignments.
-    let filename = formats::get_test_data("good.gaf");
+    let filename = utils::get_test_data("good.gaf");
     let mut alignments = parse_alignments(&filename, false);
     assert_eq!(alignments.len(), 8, "Unexpected number of parsed alignments");
 
@@ -612,12 +613,12 @@ fn alignment_encode_decode() {
 
 fn integration_test(gaf_file: &'static str, gbwt_file: &'static str) {
     // Parse the alignments.
-    let gaf_file = formats::get_test_data(gaf_file);
+    let gaf_file = utils::get_test_data(gaf_file);
     let mut alignments = parse_alignments(&gaf_file, false);
     assert_eq!(alignments.len(), 12439, "Unexpected number of parsed alignments");
 
     // Load the GBWT index and prepare the structures.
-    let gbwt_file = formats::get_test_data(gbwt_file);
+    let gbwt_file = utils::get_test_data(gbwt_file);
     let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
     let metadata = index.metadata().unwrap();
     let result = Alignment::paths_by_sample(&metadata);

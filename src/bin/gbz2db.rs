@@ -2,7 +2,7 @@ use std::time::Instant;
 use std::{env, fs, process};
 
 use gbz_base::GBZBase;
-use gbz_base::db;
+use gbz_base::utils;
 
 use getopts::Options;
 
@@ -15,7 +15,7 @@ fn main() -> Result<(), String> {
     let config = Config::new();
 
     // Check if the database already exists.
-    if db::file_exists(&config.db_file) {
+    if utils::file_exists(&config.db_file) {
         if config.overwrite {
             eprintln!("Overwriting database {}", config.db_file);
             fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;

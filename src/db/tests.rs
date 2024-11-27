@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 fn create_database_from_graph(graph: &GBZ) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!file_exists(&db_file), "Database {} already exists", db_file.display());
+    assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
     let result = GBZBase::create(&graph, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     db_file
@@ -18,7 +18,7 @@ fn create_database_from_graph(graph: &GBZ) -> PathBuf {
 
 fn create_database_from_file(filename: &PathBuf) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!file_exists(&db_file), "Database {} already exists", db_file.display());
+    assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
     let result = GBZBase::create_from_file(&filename, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     db_file
@@ -418,15 +418,3 @@ fn indexed_position() {
 
 //-----------------------------------------------------------------------------
 
-#[test]
-fn sequence_encoding() {
-    let full_sequence = b"GATTACACACCAGATNNNNNACATTGAACCTTACACAGTCTGAC";
-    for i in 0..full_sequence.len() {
-        let sequence = &full_sequence[0..i];
-        let encoded = encode_sequence(sequence);
-        let decoded = decode_sequence(&encoded);
-        assert_eq!(decoded, sequence, "Wrong sequence encoding for length {}", i);
-    }
-}
-
-//-----------------------------------------------------------------------------

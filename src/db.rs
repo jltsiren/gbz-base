@@ -3,16 +3,14 @@
 
 use crate::Alignment;
 use crate::formats::{QualityEncoder, TargetPath};
+use crate::utils;
 
 use std::path::Path;
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
-use std::thread;
+use std::io::BufRead;
 use std::sync::{mpsc, Arc};
+use std::{fs, thread};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
-
-use flate2::bufread::MultiGzDecoder;
 
 use gbwt::{GBWT, GBZ, Orientation, Pos, FullPathName};
 use gbwt::bwt::{BWT, Record};
@@ -35,7 +33,7 @@ mod tests;
 /// # Examples
 ///
 /// ```
-/// use gbz_base::{db, GBZBase};
+/// use gbz_base::{utils, GBZBase};
 /// use gbwt::support;
 /// use simple_sds::serialize;
 /// use std::fs;
@@ -43,7 +41,7 @@ mod tests;
 /// // Create the database.
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("gbz-base");
-/// assert!(!db::file_exists(&db_file));
+/// assert!(!utils::file_exists(&db_file));
 /// let result = GBZBase::create_from_file(&gbz_file, &db_file);
 /// assert!(result.is_ok());
 ///
@@ -142,7 +140,7 @@ impl GBZBase {
         if filename.is_err() {
             return None;
         }
-        file_size(filename.unwrap())
+        utils::file_size(filename.unwrap())
     }
 
     /// Returns the version of the database.
@@ -219,7 +217,7 @@ impl GBZBase {
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>>(graph: &GBZ, filename: P) -> Result<(), String> {
         eprintln!("Creating database {}", filename.as_ref().display());
-        if file_exists(&filename) {
+        if utils::file_exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
         }
         Self::sanity_checks(graph)?;
@@ -312,7 +310,7 @@ impl GBZBase {
                 let record_id = index.node_to_record(forward_id);
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = graph.sequence(node_id).unwrap();
-                let encoded_sequence = encode_sequence(sequence);
+                let encoded_sequence = utils::encode_sequence(sequence);
                 insert.execute((forward_id, edge_bytes, bwt_bytes, encoded_sequence))?;
                 inserted += 1;
         
@@ -321,7 +319,7 @@ impl GBZBase {
                 let record_id = index.node_to_record(reverse_id);
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = support::reverse_complement(sequence);
-                let encoded_sequence = encode_sequence(&sequence);
+                let encoded_sequence = utils::encode_sequence(&sequence);
                 insert.execute((reverse_id, edge_bytes, bwt_bytes, encoded_sequence))?;
                 inserted += 1;
             }
@@ -550,7 +548,7 @@ impl GAFBase {
         if filename.is_err() {
             return None;
         }
-        file_size(filename.unwrap())
+        utils::file_size(filename.unwrap())
     }
 
     /// Returns the version of the database.
@@ -666,21 +664,21 @@ impl GAFBase {
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q) -> Result<(), String> {
         eprintln!("Creating database {}", db_file.as_ref().display());
-        if file_exists(&db_file) {
+        if utils::file_exists(&db_file) {
             return Err(format!("Database {} already exists", db_file.as_ref().display()));
         }
         Self::check_gbwt_metadata(&index)?;
 
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
-        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
         let (prefix, quality_encoder) = Self::insert_tags(&index, nodes, &mut connection)?;
-        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
-        let gaf_file = open_file(gaf_file)?;
+        let gaf_file = utils::open_file(gaf_file)?;
         Self::insert_alignments(gaf_file, index, connection, prefix.len(), quality_encoder)?;
-        eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
     }
@@ -989,11 +987,11 @@ impl GAFBase {
         }
         eprintln!(
             "Field sizes: name {}, numbers {}, quality {}, difference {}, pair {}",
-            human_readable_size(statistics.name_bytes),
-            human_readable_size(statistics.number_bytes),
-            human_readable_size(statistics.quality_bytes),
-            human_readable_size(statistics.difference_bytes),
-            human_readable_size(statistics.pair_bytes)
+            utils::human_readable_size(statistics.name_bytes),
+            utils::human_readable_size(statistics.number_bytes),
+            utils::human_readable_size(statistics.quality_bytes),
+            utils::human_readable_size(statistics.difference_bytes),
+            utils::human_readable_size(statistics.pair_bytes)
         );
 
         Ok(())
@@ -1331,7 +1329,7 @@ impl<'a> GraphInterface<'a> {
                 let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                 let bwt: Vec<u8> = row.get(1)?;
                 let encoded_sequence: Vec<u8> = row.get(2)?;
-                let sequence: Vec<u8> = decode_sequence(&encoded_sequence);
+                let sequence: Vec<u8> = utils::decode_sequence(&encoded_sequence);
                 Ok(GBZRecord { handle, edges, bwt, sequence })
             }
         ).optional().map_err(|x| x.to_string())
@@ -1403,45 +1401,13 @@ impl<'a> GraphInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
-/*
-  Helper functions for using the databases.
-
-  TODO: Should we have a separate module for these?
-*/
+// Helper functions for using the databases.
 
 /// Returns the starting position of the given path in the given orientation.
 ///
 /// Returns `(gbwt::ENDMARKER, 0)` if the path is empty or does not exist.
 pub fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos {
     index.start(support::encode_path(path_id, orientation)).unwrap_or(Pos::new(gbwt::ENDMARKER, 0))
-}
-
-const SIZE_UNITS: [(f64, &'static str); 6] = [
-    (1.0, "B"),
-    (1024.0, "KiB"),
-    (1024.0 * 1024.0, "MiB"),
-    (1024.0 * 1024.0 * 1024.0, "GiB"),
-    (1024.0 * 1024.0 * 1024.0 * 1024.0, "TiB"),
-    (1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0, "PiB"),
-];
-
-/// Returns a human-readable representation of the given number of bytes.
-pub fn human_readable_size(bytes: usize) -> String {
-    let mut unit = 0;
-    let value = bytes as f64;
-    while unit + 1 < SIZE_UNITS.len() && value >= SIZE_UNITS[unit + 1].0 {
-        unit += 1;
-    }
-    format!("{:.3} {}", value / SIZE_UNITS[unit].0, SIZE_UNITS[unit].1)
-}
-
-/// Returns a human-readable size of the file.
-pub fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
-    let metadata = fs::metadata(filename).map_err(|x| x.to_string());
-    if metadata.is_err() {
-        return None;
-    }
-    Some(human_readable_size(metadata.unwrap().len() as usize))
 }
 
 /// Type of a potential database file.
@@ -1488,35 +1454,6 @@ pub fn identify_database<P: AsRef<Path>>(filename: P) -> DatabaseFileType {
     DatabaseFileType::Version(version.unwrap())
 }
 
-/// Returns `true` if the file exists.
-pub fn file_exists<P: AsRef<Path>>(filename: P) -> bool {
-    fs::metadata(filename).is_ok()
-}
-
-/// Returns `true` if the file appears to be gzip-compressed.
-pub fn is_gzipped<P: AsRef<Path>>(filename: P) -> bool {
-    let file = File::open(filename).ok();
-    if file.is_none() {
-        return false;
-    }
-    let mut reader = BufReader::new(file.unwrap());
-    let mut magic = [0; 2];
-    let len = reader.read(&mut magic).ok();
-    len == Some(2) && magic == [0x1F, 0x8B]
-}
-
-/// Returns a buffered reader for the file, which may be gzip-compressed.
-pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String> {
-    let file = File::open(&filename).map_err(|x| x.to_string())?;
-    let inner = BufReader::new(file);
-    if is_gzipped(&filename) {
-        let inner = MultiGzDecoder::new(inner);
-        Ok(Box::new(BufReader::new(inner)))
-    } else {
-        Ok(Box::new(inner))
-    }
-}
-
 // Executes the statement, which is expected to return a single string value.
 // Then returns the value.
 fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, String> {
@@ -1539,66 +1476,3 @@ fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, Stri
 
 //-----------------------------------------------------------------------------
 
-/*
-    Encoding and decoding DNA sequences suitable for short to medium sequences.
-
-    The encoding stores three bases in a byte. The last encoded symbol is a
-    special 0 character in order to preserve the length.
-
-    TODO: If the length is divisible by 3, we do not need the null terminator.
-*/
-
-const DECODE: [u8; 6] = [0, b'A', b'C', b'G', b'T', b'N'];
-
-fn decode_sequence(encoding: &[u8]) -> Vec<u8> {
-    let capacity = if encoding.is_empty() { 0 } else { 3 * encoding.len() - 1 };
-    let mut result = Vec::with_capacity(capacity);
-
-    for byte in encoding {
-        let mut value = *byte as usize;
-        for _ in 0..3 {
-            let decoded = DECODE[value % DECODE.len()];
-            if decoded == 0 {
-                return result;
-            }
-            value /= DECODE.len();
-            result.push(decoded);
-        }
-    }
-
-    result
-}
-
-const fn generate_encoding() -> [u8; 256] {
-    let mut result = [5; 256];
-    result[b'a' as usize] = 1; result[b'A' as usize] = 1;
-    result[b'c' as usize] = 2; result[b'C' as usize] = 2;
-    result[b'g' as usize] = 3; result[b'G' as usize] = 3;
-    result[b't' as usize] = 4; result[b'T' as usize] = 4;
-    result
-}
-
-const ENCODE: [u8; 256] = generate_encoding();
-
-fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
-    let mut result: Vec<u8> = Vec::with_capacity(sequence.len() / 3 + 1);
-
-    let mut offset = 0;
-    while offset + 3 <= sequence.len() {
-        let byte = ENCODE[sequence[offset] as usize] +
-            6 * ENCODE[sequence[offset + 1] as usize] +
-            36 * ENCODE[sequence[offset + 2] as usize];
-        result.push(byte);
-        offset += 3;
-    }
-    let byte = match sequence.len() - offset {
-        0 => 0,
-        1 => ENCODE[sequence[offset] as usize],
-        _ => ENCODE[sequence[offset] as usize] + 6 * ENCODE[sequence[offset + 1] as usize],
-    };
-    result.push(byte);
-
-    result
-}
-
-//-----------------------------------------------------------------------------

@@ -28,6 +28,7 @@
 pub mod db;
 pub mod formats;
 pub mod subgraph;
+pub mod utils;
 
 pub use db::{GBZBase, GAFBase, GBZPath, GBZRecord, GraphInterface};
 pub use formats::Alignment;
