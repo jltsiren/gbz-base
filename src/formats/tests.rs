@@ -560,18 +560,18 @@ fn alignment_set_relative_information() {
 // Tests for `Alignment`: encoding and decoding.
 
 // This assumes that the alignment is relative to a GBWT index.
-fn check_encode_decode(alignment: &Alignment, prefix: &str, alphabet: &[u8], line: usize) {
+fn check_encode_decode(alignment: &Alignment, prefix: &str, quality_encoder: &QualityEncoder, line: usize) {
     let query = &alignment.name[prefix.len()..];
     let target = if let TargetPath::StartPosition(pos) = alignment.path { pos } else { unreachable!() };
     let numbers = alignment.encode_numbers();
-    let quality = alignment.encode_base_quality(alphabet);
+    let quality = alignment.encode_base_quality(quality_encoder);
     let difference = alignment.encode_difference();
     let pair = alignment.encode_pair(prefix.len());
 
     let decoded = Alignment::decode(
         prefix, query, target.node, &numbers,
         quality.as_ref().map(Vec::as_slice),
-        alphabet, difference.as_ref().map(Vec::as_slice),
+        quality_encoder, difference.as_ref().map(Vec::as_slice),
         pair.as_ref().map(Vec::as_slice)
     );
     assert!(decoded.is_ok(), "Failed to decode alignment {}: {}", line, decoded.err().unwrap());
@@ -598,8 +598,10 @@ fn alignment_encode_decode() {
     // Encode and decode the alignments.
     let prefix = "";
     let alphabet = b"?";
+    let dictionary = [(0, 1)];
+    let quality_encoder = QualityEncoder::new(alphabet, &dictionary).unwrap();
     for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, prefix, alphabet, i + 1);
+        check_encode_decode(aln, prefix, &quality_encoder, i + 1);
     }
 }
 
@@ -636,9 +638,11 @@ fn integration_test(gaf_file: &'static str, gbwt_file: &'static str) {
     assert_eq!(used_paths.count_ones(), used_paths.len(), "Not all paths were used");
 
     // Encode and decode the alignments.
-    let alphabet = b"#,:F";
+    let alphabet = b"F:#,";
+    let dictionary = [(1, 1), (2, 1), (3, 2)];
+    let quality_encoder = QualityEncoder::new(alphabet, &dictionary).unwrap();
     for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, prefix, alphabet, i + 1);
+        check_encode_decode(aln, prefix, &quality_encoder, i + 1);
     }
 }
 

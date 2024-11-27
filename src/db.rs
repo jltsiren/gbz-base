@@ -2,7 +2,7 @@
 // FIXME: also GAF-base
 
 use crate::Alignment;
-use crate::formats::TargetPath;
+use crate::formats::{QualityEncoder, TargetPath};
 
 use std::path::Path;
 use std::fs::{self, File};
@@ -442,7 +442,8 @@ pub struct GAFBase {
     alignments: usize,
     sequences: usize,
     prefix: String,
-    quality: String,
+    // Not in use yet
+    _quality_encoder: QualityEncoder,
 }
 
 /// Using the database.
@@ -466,15 +467,40 @@ impl GAFBase {
     const KEY_PREFIX: &'static str = "name_prefix";
 
     // Key for the alphabet of base quality values.
-    const KEY_QUALITY: &'static str = "quality_values";
+    const KEY_QUALITY_VALUES: &'static str = "quality_values";
+
+    // Key for the canonical Huffman code lengths of base quality values.
+    const KEY_QUALITY_LENGTHS: &'static str = "quality_lengths";
 
     // Key for the common prefix of sample names in GBWT tags.
     // Will be stored in the database using `KEY_PREFIX`.
     const KEY_GBWT_PREFIX: &'static str = "sample_prefix";
 
     // Key for the alphabet of base quality values in GBWT tags.
-    // Will be stored in the database using `KEY_QUALITY`.
-    const KEY_GBWT_QUALITY: &'static str = "quality_values";
+    // Will be stored in the database using `KEY_QUALITY_VALUES`.
+    const KEY_GBWT_QUALITY_VALUES: &'static str = "quality_values";
+
+    // Key for the canonical Huffman code lengths of base quality values in GBWT tags.
+    // Will be stored in the database using `KEY_QUALITY_LENGTHS`.
+    const KEY_GBWT_QUALITY_LENGTHS: &'static str = "quality_lengths";
+
+    // Parses the canonical Huffman code lengths.
+    fn parse_quality_lengths(value: &str) -> Result<Vec<(usize, usize)>, String> {
+        let mut result: Vec<(usize, usize)> = Vec::new();
+        for field in value.split(',') {
+            let code_len = field.parse::<usize>().map_err(|_|
+                format!("Invalid Huffman code length: {}", field)
+            )?;
+            if let Some(prev) = result.last_mut() {
+                if code_len == prev.0 {
+                    prev.1 += 1;
+                    continue;
+                }
+            }
+            result.push((code_len, 1));
+        }
+        Ok(result)
+    }
 
     /// Opens a connection to the database in the given file.
     ///
@@ -495,14 +521,21 @@ impl GAFBase {
         let alignments = get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
         let sequences = get_numeric_value(&mut get_tag, Self::KEY_SEQUENCES)?;
         let prefix = get_string_value(&mut get_tag, Self::KEY_PREFIX)?;
-        let quality = get_string_value(&mut get_tag, Self::KEY_QUALITY)?;
-        drop(get_tag);
 
+        let alphabet = get_string_value(&mut get_tag, Self::KEY_QUALITY_VALUES)?;
+        let code_lengths = get_string_value(&mut get_tag, Self::KEY_QUALITY_LENGTHS)?;
+        let dictionary = Self::parse_quality_lengths(&code_lengths)?;
+        let quality_encoder = QualityEncoder::new(alphabet.as_bytes(), &dictionary).ok_or(
+            String::from("Could not build a quality string encoder")
+        )?;
+
+        drop(get_tag);
         Ok(GAFBase {
             connection,
             version,
             nodes, alignments, sequences,
-            prefix, quality,
+            prefix,
+            _quality_encoder: quality_encoder,
         })
     }
 
@@ -547,11 +580,6 @@ impl GAFBase {
     /// This prefix is stored only once to save space.
     pub fn prefix(&self) -> &str {
         &self.prefix
-    }
-
-    /// Returns the alphabet of base quality values.
-    pub fn quality_values(&self) -> &str {
-        &self.quality
     }
 }
 
@@ -613,8 +641,11 @@ impl GAFBase {
         if !tags.contains_key(Self::KEY_GBWT_PREFIX) {
             return Err("The GBWT index does not contain a sample name prefix".to_string());
         }
-        if !tags.contains_key(Self::KEY_GBWT_QUALITY) {
+        if !tags.contains_key(Self::KEY_GBWT_QUALITY_VALUES) {
             return Err("The GBWT index does not contain base quality values".to_string());
+        }
+        if !tags.contains_key(Self::KEY_GBWT_QUALITY_LENGTHS) {
+            return Err("The GBWT index does not contain Huffman code lengths for base quality values".to_string());
         }
 
         Ok(())
@@ -643,19 +674,19 @@ impl GAFBase {
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
-        let (prefix, alphabet) = Self::insert_tags(&index, nodes, &mut connection).map_err(|x| x.to_string())?;
+        let (prefix, quality_encoder) = Self::insert_tags(&index, nodes, &mut connection)?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
         let gaf_file = open_file(gaf_file)?;
-        Self::insert_alignments(gaf_file, index, connection, prefix.len(), alphabet)?;
+        Self::insert_alignments(gaf_file, index, connection, prefix.len(), quality_encoder)?;
         eprintln!("Database size: {}", file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
     }
 
-    // Returns (prefix, quality alphabet).
-    fn insert_tags(index: &GBWT, nodes: usize, connection: &mut Connection) -> rusqlite::Result<(String, String)> {
+    // Returns (prefix, quality encoder).
+    fn insert_tags(index: &GBWT, nodes: usize, connection: &mut Connection) -> Result<(String, QualityEncoder), String> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -665,35 +696,43 @@ impl GAFBase {
                 value TEXT NOT NULL
             ) STRICT",
             (),
-        )?;
+        ).map_err(|x| x.to_string())?;
 
         let tags = index.tags();
         let prefix = tags.get(Self::KEY_GBWT_PREFIX).unwrap();
-        let quality = tags.get(Self::KEY_GBWT_QUALITY).unwrap();
+        let quality_values = tags.get(Self::KEY_GBWT_QUALITY_VALUES).unwrap();
+        let quality_lengths = tags.get(Self::KEY_GBWT_QUALITY_LENGTHS).unwrap();
+        let dictionary = Self::parse_quality_lengths(quality_lengths)?;
+        let quality_encoder = QualityEncoder::new(quality_values.as_bytes(), &dictionary).ok_or(
+            String::from("Could not build a quality string encoder")
+        )?;
 
         // Insert header and selected tags.
         let mut inserted = 0;
-        let transaction = connection.transaction()?;
+        let transaction = connection.transaction().map_err(|x| x.to_string())?;
         {
             let mut insert = transaction.prepare(
                 "INSERT INTO Tags(key, value) VALUES (?1, ?2)"
-            )?;
+            ).map_err(|x| x.to_string())?;
 
             let metadata = index.metadata().unwrap();
-            insert.execute((Self::KEY_VERSION, Self::VERSION))?;
-            insert.execute((Self::KEY_NODES, nodes))?;
-            insert.execute((Self::KEY_ALIGNMENTS, metadata.paths()))?;
-            insert.execute((Self::KEY_SEQUENCES, metadata.samples()))?;
+            insert.execute((Self::KEY_VERSION, Self::VERSION)).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_NODES, nodes)).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_ALIGNMENTS, metadata.paths())).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_SEQUENCES, metadata.samples())).map_err(|x| x.to_string())?;
             inserted += 4;
 
-            insert.execute((Self::KEY_PREFIX, prefix))?;
-            insert.execute((Self::KEY_QUALITY, quality))?;
-            inserted += 2;
+            insert.execute((Self::KEY_PREFIX, prefix)).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_QUALITY_VALUES, quality_values)).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_QUALITY_LENGTHS, quality_lengths)).map_err(|x| x.to_string())?;
+            inserted += 3;
         }
-        transaction.commit()?;
+        transaction.commit().map_err(|x| x.to_string())?;
 
         eprintln!("Inserted {} key-value pairs", inserted);
-        Ok((prefix.clone(), quality.clone()))
+
+
+        Ok((prefix.clone(), quality_encoder))
     }
 
     // Returns the number of nodes in the graph.
@@ -736,7 +775,7 @@ impl GAFBase {
 
     fn insert_alignments(
         gaf_file: Box<dyn BufRead>, index: Arc<GBWT>, connection: Connection,
-        lcp: usize, alphabet: String
+        lcp: usize, quality_encoder: QualityEncoder
     ) -> Result<(), String> {
         eprintln!("Building structures for mapping alignments to GBWT paths");
         let metadata = index.metadata().unwrap();
@@ -849,7 +888,7 @@ impl GAFBase {
                                 start.node
                             } else { unreachable!() };
                             let numbers = aln.encode_numbers();
-                            let quality = aln.encode_base_quality(alphabet.as_bytes());
+                            let quality = aln.encode_base_quality(&quality_encoder);
                             let difference = aln.encode_difference();
                             let pair = aln.encode_pair(lcp);
                             statistics.alignments += 1;

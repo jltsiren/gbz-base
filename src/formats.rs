@@ -787,40 +787,17 @@ impl Alignment {
         Vec::from(encoder)
     }
 
-    // FIXME: Use QualityEncoder
-    /// Encodes the base quality sequence as a run-length encoded blob.
+    // TODO: panic or error?
+    /// Encodes the base quality sequence using the given encoder.
     ///
-    /// The base quality sequence is assumed to use the given alphabet.
     /// Returns [`None`] if the base quality sequence is missing.
     ///
     /// # Panics
     ///
-    /// Will panic if the base quality sequence uses values outside the alphabet.
-    pub fn encode_base_quality(&self, alphabet: &[u8]) -> Option<Vec<u8>> {
-        if self.base_quality.is_none() {
-            return None;
-        }
-
-        let mut encoder = RLE::with_sigma(alphabet.len());
-        let mut run = Run::new(0, 0);
-        for &value in self.base_quality.as_ref().unwrap().iter() {
-            if value as usize == run.value {
-                run.len += 1;
-            } else {
-                if run.len > 0 {
-                    run.value = alphabet.iter().position(|&x| x as usize == run.value).unwrap();
-                    encoder.write(run);
-                }
-                run.value = value as usize;
-                run.len = 1;
-            }
-        }
-        if run.len > 0 {
-            run.value = alphabet.iter().position(|&x| x as usize == run.value).unwrap();
-            encoder.write(run);
-        }
-
-        Some(Vec::from(encoder))
+    /// Will panic if the base quality sequence cannot be encoded with the given encoder.
+    pub fn encode_base_quality(&self, encoder: &QualityEncoder) -> Option<Vec<u8>> {
+        let base_quality = self.base_quality.as_ref()?;
+        Some(encoder.encode(base_quality).unwrap())
     }
 
     // TODO: Use a more efficient encoding for mismatches and insertions.
@@ -910,17 +887,13 @@ impl Alignment {
     }
 
     // Decodes a quality string.
-    fn decode_quality(quality: Option<&[u8]>, alphabet: &[u8]) -> Option<Vec<u8>> {
-        let quality = quality?;
-        let mut quality_decoder = RLEIter::with_sigma(quality, alphabet.len());
-        let mut result: Vec<u8> = Vec::new();
-        while let Some(run) = quality_decoder.next() {
-            let value = alphabet[run.value];
-            for _ in 0..run.len {
-                result.push(value);
-            }
+    fn decode_quality(quality: Option<&[u8]>, len: usize, encoder: &QualityEncoder) -> Result<Option<Vec<u8>>, String> {
+        if quality.is_none() {
+            return Ok(None);
         }
-        Some(result)
+        let quality = quality.unwrap();
+        let result = encoder.decode(quality, len)?;
+        Ok(Some(result))
     }
 
     // Decodes a difference string.
@@ -980,11 +953,13 @@ impl Alignment {
     /// * `target`: Target path starting position.
     /// * `numbers`: Encoded numerical fields.
     /// * `quality`: Encoded base quality sequence.
-    /// * `alphabet`: Alphabet for the base quality sequence.
+    /// * `quality_encoder`: Encoder for the base quality sequence.
     /// * `difference`: Encoded difference string.
     pub fn decode(
         prefix: &str, query: &str, target_node: usize,
-        numbers: &[u8], quality: Option<&[u8]>, alphabet: &[u8], difference: Option<&[u8]>, pair: Option<&[u8]>
+        numbers: &[u8],
+        quality: Option<&[u8]>, quality_encoder: &QualityEncoder,
+        difference: Option<&[u8]>, pair: Option<&[u8]>
     ) -> Result<Self, String> {
         let name = format!("{}{}", prefix, query);
         let include_redundant = difference.is_none();
@@ -1011,9 +986,6 @@ impl Alignment {
         };
         let score = Self::decode_signed(&mut number_decoder);
 
-        // Decode the quality string.
-        let base_quality = Self::decode_quality(quality, alphabet);
-
         // Decode the difference string and calculate the values for redundant fields.
         let difference = if let Some(difference) = difference {
             let result = Self::decode_difference(difference)?;
@@ -1028,6 +1000,9 @@ impl Alignment {
         } else {
             None
         };
+
+        // Decode the quality string.
+        let base_quality = Self::decode_quality(quality, seq_len, quality_encoder)?;
 
         // Decode the pair.
         let pair = Self::decode_pair(pair, prefix, &name)?;
@@ -1111,7 +1086,7 @@ impl QualityEncoder {
     /// Constructs a new quality encoder with the given alphabet and canonical Huffman code lengths.
     ///
     /// Returns [`None`] if the code lengths do not match the alphabet.
-    /// If the code lengths are invalid, the encoder will not work and the encoding will fail.
+    /// If the code lengths are invalid, the encoder will not work and encoding will fail.
     pub fn new(alphabet: &[u8], dictionary: &[(usize, usize)]) -> Option<Self> {
         let alphabet = alphabet.to_vec();
         let dictionary = dictionary.to_vec();
@@ -1138,6 +1113,13 @@ impl QualityEncoder {
     #[inline]
     pub fn is_unary(&self) -> bool {
         self.alphabet_len() == 1
+    }
+
+    /// Returns `true` if there are symbols with code length 1 in the alphabet.
+    ///
+    /// Run-length encoding is only possible with such symbols.
+    pub fn supports_rle(&self) -> bool {
+        self.dictionary.iter().any(|&(len, _)| len == 1)
     }
 
     /// Returns `true` if the given encoding is run-length encoded.
@@ -1213,6 +1195,7 @@ impl QualityEncoder {
         Some(buffer)
     }
 
+    // TODO: optimize
     /// Encodes the given sequence of quality symbols.
     ///
     /// Returns an error if the encoding fails.
@@ -1233,13 +1216,17 @@ impl QualityEncoder {
         }
 
         // Try encoding the sequence with and without run-length encoding.
-        let no_rle = self.try_huffman(sequence).ok_or(
+        let mut buffer = self.try_huffman(sequence).ok_or(
             String::from("QualityEncoder: Huffman encoding failed")
         )?;
-        let with_rle = self.try_huffman_rle(sequence).ok_or(
-            String::from("QualityEncoder: Huffman + RLE encoding failed")
-        )?;
-        let buffer: &RawVector = if no_rle.len() <= with_rle.len() { &no_rle } else { &with_rle };
+        if self.supports_rle() {
+            let with_rle = self.try_huffman_rle(sequence).ok_or(
+                String::from("QualityEncoder: Huffman + RLE encoding failed")
+            )?;
+            if with_rle.len() < buffer.len() {
+                buffer = with_rle;
+            }
+        }
 
         // Convert the selected encoding to a byte vector.
         let mut result = Vec::with_capacity((buffer.len() + 7) / 8);
@@ -1295,6 +1282,7 @@ impl QualityEncoder {
         Some((value, offset + bit_len))
     }
 
+    // TODO: optimize
     /// Decodes the given byte sequence.
     ///
     /// Returns an error if the encoding is invalid or does not contain the expected number of symbols.
