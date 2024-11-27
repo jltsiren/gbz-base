@@ -7,7 +7,7 @@
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
 
-use crate::db;
+use crate::{db, utils};
 
 use std::fmt::Display;
 use std::ops::Range;
@@ -31,7 +31,7 @@ mod tests;
 ///
 /// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
 /// When the alignment is built from a GAF line, the target path is stored explicitly.
-/// For alignments stored in a database, only the GBWT starting position is stored..
+/// For alignments stored in a database, only the GBWT starting position is stored.
 /// See [`TargetPath`] for details and [`Self::set_relative_information`] for conversion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alignment {
@@ -503,7 +503,6 @@ impl Alignment {
         Some(encoder.encode(base_quality).unwrap())
     }
 
-    // TODO: Use a more efficient encoding for mismatches and insertions.
     /// Encodes the difference string as a blob.
     ///
     /// Returns [`None`] if the difference string is missing.
@@ -516,9 +515,11 @@ impl Alignment {
                 Difference::Match(len) => encoder.write(Run::new(0, *len)),
                 Difference::Mismatch(base) => encoder.write(Run::new(1, *base as usize)),
                 Difference::Insertion(seq) => {
-                    encoder.write(Run::new(2, seq.len()));
-                    for byte in seq.iter() {
-                        encoder.write_byte(*byte);
+                    let len = utils::encoded_length(seq.len());
+                    encoder.write(Run::new(2, len));
+                    let encoded = utils::encode_sequence(seq);
+                    for byte in encoded {
+                        encoder.write_byte(byte);
                     }
                 },
                 Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
@@ -603,10 +604,12 @@ impl Alignment {
                 0 => result.push(Difference::Match(run.len)),
                 1 => result.push(Difference::Mismatch(run.len as u8)),
                 2 => {
-                    let mut seq: Vec<u8> = Vec::with_capacity(run.len);
+                    let offset = difference_decoder.offset();
                     for _ in 0..run.len {
-                        seq.push(difference_decoder.byte().ok_or(String::from("Missing insertion base"))?);
+                        let _ = difference_decoder.byte().ok_or(String::from("Missing insertion base"))?;
                     }
+                    let encoded = &difference[offset..offset + run.len];
+                    let seq = utils::decode_sequence(encoded);
                     result.push(Difference::Insertion(seq));
                 },
                 3 => result.push(Difference::Deletion(run.len)),

@@ -81,11 +81,12 @@ pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String
 
 // Sequence encoding and decoding.
 
+// TODO: Precompute the decoding table for a byte.
 const DECODE: [u8; 6] = [0, b'A', b'C', b'G', b'T', b'N'];
 
 /// Decodes a sequence encoded with [`encode_sequence`].
 pub fn decode_sequence(encoded: &[u8]) -> Vec<u8> {
-    let capacity = if encoded.is_empty() { 0 } else { 3 * encoded.len() - 1 };
+    let capacity = if encoded.is_empty() { 0 } else { 3 * encoded.len() };
     let mut result = Vec::with_capacity(capacity);
 
     for byte in encoded {
@@ -114,14 +115,14 @@ const fn generate_encoding() -> [u8; 256] {
 
 const ENCODE: [u8; 256] = generate_encoding();
 
-// TODO: If the length is divisible by 3, we do not need the null terminator.
 /// Encodes a DNA sequence into a byte array, storing three bases in a byte.
 ///
 /// Values outside `acgtACGT` are encoded as `N`.
-/// The last encoded symbol is a special 0 character in order to preserve the length.
-/// See [`decode_sequence`] for decoding.
+/// The last encoded symbol may be a special 0 character in order to preserve the length.
+/// This sentinel is not used when the length is a multiple of 3.
+/// Use [`decode_sequence`] to decode the sequence.
 pub fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
-    let mut result: Vec<u8> = Vec::with_capacity(sequence.len() / 3 + 1);
+    let mut result: Vec<u8> = Vec::with_capacity(encoded_length(sequence.len()));
 
     let mut offset = 0;
     while offset + 3 <= sequence.len() {
@@ -131,14 +132,20 @@ pub fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
         result.push(byte);
         offset += 3;
     }
-    let byte = match sequence.len() - offset {
-        0 => 0,
-        1 => ENCODE[sequence[offset] as usize],
-        _ => ENCODE[sequence[offset] as usize] + 6 * ENCODE[sequence[offset + 1] as usize],
-    };
-    result.push(byte);
+    if sequence.len() - offset == 1 {
+        let byte = ENCODE[sequence[offset] as usize];
+        result.push(byte);
+    } else if sequence.len() - offset == 2 {
+        let byte = ENCODE[sequence[offset] as usize] + 6 * ENCODE[sequence[offset + 1] as usize];
+        result.push(byte);
+    }
 
     result
+}
+
+/// Returns the length of the encoding for a sequence of the given length.
+pub fn encoded_length(sequence_length: usize) -> usize {
+    (sequence_length + 2) / 3
 }
 
 //-----------------------------------------------------------------------------

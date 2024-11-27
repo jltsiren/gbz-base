@@ -8,8 +8,6 @@ use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
-// TODO: Handle gzip-compressed GAF.
-
 fn main() -> Result<(), String> {
     let start_time = Instant::now();
 
