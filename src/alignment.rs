@@ -513,7 +513,7 @@ impl Alignment {
         for diff in difference.iter() {
             match diff {
                 Difference::Match(len) => encoder.write(Run::new(0, *len)),
-                Difference::Mismatch(base) => encoder.write(Run::new(1, *base as usize)),
+                Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
                 Difference::Insertion(seq) => {
                     let len = utils::encoded_length(seq.len());
                     encoder.write(Run::new(2, len));
@@ -602,7 +602,7 @@ impl Alignment {
         while let Some(run) = difference_decoder.next() {
             match run.value {
                 0 => result.push(Difference::Match(run.len)),
-                1 => result.push(Difference::Mismatch(run.len as u8)),
+                1 => result.push(Difference::Mismatch(utils::decode_base(run.len))),
                 2 => {
                     let offset = difference_decoder.offset();
                     for _ in 0..run.len {

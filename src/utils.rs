@@ -84,6 +84,16 @@ pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String
 // TODO: Precompute the decoding table for a byte.
 const DECODE: [u8; 6] = [0, b'A', b'C', b'G', b'T', b'N'];
 
+/// Decodes a single base encoded with [`encode_base`].
+///
+/// # Panics
+///
+/// Panics if `encoded > 5`.
+#[inline]
+pub fn decode_base(encoded: usize) -> u8 {
+    DECODE[encoded]
+}
+
 /// Decodes a sequence encoded with [`encode_sequence`].
 pub fn decode_sequence(encoded: &[u8]) -> Vec<u8> {
     let capacity = if encoded.is_empty() { 0 } else { 3 * encoded.len() };
@@ -114,6 +124,14 @@ const fn generate_encoding() -> [u8; 256] {
 }
 
 const ENCODE: [u8; 256] = generate_encoding();
+
+/// Encodes a single base.
+///
+/// Use [`decode_base`] to decode.
+#[inline]
+pub fn encode_base(base: u8) -> usize {
+    ENCODE[base as usize] as usize
+}
 
 /// Encodes a DNA sequence into a byte array, storing three bases in a byte.
 ///
