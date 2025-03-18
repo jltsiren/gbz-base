@@ -15,7 +15,7 @@ use std::ops::Range;
 use std::cmp;
 
 use gbwt::ENDMARKER;
-use gbwt::{GBZ, GBWT, Orientation, Pos, FullPathName};
+use gbwt::{GBZ, GBWT, GraphPosition, Orientation, Pos, FullPathName};
 
 use gbwt::{algorithms, support};
 
@@ -369,11 +369,15 @@ impl PathIndex {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: Tests for new, with_context, has_node, has_handle, record, record_by_id, add_node, remove_node, clear_paths
+// FIXME: Also examples for has_node, has_handle, record, record_by_id, add_node, remove_node, clear_paths
+
 /// A subgraph based on a context around a graph position.
 ///
 /// The position can be based on a path offset, a path interval, or a node identifier.
 /// The path used for extracting the subgraph becomes the reference path for it.
 /// Non-reference haplotypes do not have any metadata associated with them, as we cannot determine the identifier of a path from its GBWT position efficiently.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Subgraph {
     // Node records for the subgraph.
     records: BTreeMap<usize, GBZRecord>,
@@ -385,7 +389,7 @@ pub struct Subgraph {
     ref_id: Option<usize>,
 
     // Metadata for the reference path, if any.
-    ref_path: Option<GBZPath>,
+    ref_path: Option<FullPathName>,
 
     // Interval of the reference path that is present in the subgraph, if any.
     ref_interval: Option<Range<usize>>,
@@ -393,6 +397,111 @@ pub struct Subgraph {
 
 // TODO: This could implement an interface similar to the node/edge part of GBZ.
 impl Subgraph {
+    /// Creates a new empty subgraph.
+    pub fn new() -> Self {
+        Subgraph::default()
+    }
+
+    // FIXME: also for a node and a path with an interval
+    /// Creates a subgraph based on a context around the given graph position.
+    ///
+    /// # Arguments
+    ///
+    /// * `pos`: The reference position for the subgraph.
+    /// * `context`: The context length around the reference position (in bp).
+    /// * `get_record`: A function that returns the record for the given node handle.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any errors from `get_record`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbz_base::{GBZRecord, Subgraph, HaplotypeOutput};
+    /// use gbwt::{GBZ, FullPathName, GraphPosition, Orientation};
+    /// use gbwt::support;
+    /// use simple_sds::serialize;
+    ///
+    /// // Get the graph.
+    /// let gbz_file = support::get_test_data("example.gbz");
+    /// let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    ///
+    /// // Extract a subgraph that contains an 1 bp context around node 14.
+    /// let pos = GraphPosition {
+    ///     node: 14,
+    ///     orientation: Orientation::Forward,
+    ///     offset: 0,
+    /// };
+    /// let subgraph = Subgraph::with_context(pos, 1, &mut |handle| {
+    ///     GBZRecord::from_gbz(&graph, handle).ok_or(
+    ///         format!("The graph does not contain handle {}", handle)
+    ///     )
+    /// });
+    /// assert!(subgraph.is_ok());
+    /// let subgraph = subgraph.unwrap();
+    ///
+    /// // The subgraph should be centered around 1 bp node 14 of degree 4.
+    /// assert_eq!(subgraph.node_count(), 5);
+    /// for node_id in 12..=16 {
+    ///     assert!(subgraph.has_node(node_id));
+    ///     for orientation in [Orientation::Forward, Orientation::Reverse] {
+    ///         let handle = support::encode_node(node_id, orientation);
+    ///         assert!(subgraph.has_handle(handle));
+    ///     }
+    /// }
+    ///
+    /// // But there are no paths.
+    /// assert_eq!(subgraph.path_count(), 0);
+    /// ```
+    pub fn with_context(pos: GraphPosition, context: usize, get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>) -> Result<Self, String> {
+        let mut result = Subgraph::new();
+
+        // Start graph traversal from the initial node.
+        let mut active: BinaryHeap<Reverse<(usize, GraphPosition)>> = BinaryHeap::new(); // (distance, node id)
+        active.push(Reverse((0, pos)));
+
+        result.insert_context(active, context, get_record)?;
+        Ok(result)
+    }
+
+    // Inserts all nodes within the context around the active positions into the subgraph.
+    fn insert_context(
+        &mut self,
+        active: BinaryHeap<Reverse<(usize, GraphPosition)>>,
+        context: usize,
+        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>
+    ) -> Result<(), String> {
+        let mut active = active;
+
+        while !active.is_empty() {
+            let (distance, position) = active.pop().unwrap().0;
+            if self.has_node(position.node) {
+                continue;
+            }
+            self.add_node(position.node, get_record)?;
+            for orientation in [Orientation::Forward, Orientation::Reverse] {
+                let handle = support::encode_node(position.node, orientation);
+                let record = self.record(handle).unwrap();
+                let next_distance = distance + distance_to_end(record, position, orientation);
+                if next_distance <= context {
+                    for successor in record.successors() {
+                        if !self.has_handle(successor) {
+                            let next = GraphPosition {
+                                node: support::node_id(successor),
+                                orientation: support::node_orientation(successor),
+                                offset: 0,
+                            };
+                            active.push(Reverse((next_distance, next)));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Extracts a subgraph around the given query position.
     ///
     /// # Arguments
@@ -448,8 +557,12 @@ impl Subgraph {
             // Transform the offset relative to the haplotype to the offset relative to the path.
             let query_offset = path_name.fragment - ref_path.name.fragment;
             let (query_pos, gbwt_pos) = query_position_from_gbz(graph, path_index, &ref_path, query_offset)?;
-            let records = extract_context_from_gbz(graph, query_pos, query.context)?;
-            Self::path_based(records, ref_path, query_offset, query_pos, gbwt_pos, query.output())
+            let mut result = Self::with_context(query_pos, query.context, &mut |handle| {
+                GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+            })?;
+            result.path_based(query_offset, query_pos, gbwt_pos, query.output())?;
+            result.ref_path = Some(ref_path.name);
+            Ok(result)
         } else if query.is_node_based() {
             let node_id = query.node_id().unwrap();
             let node_len = graph.sequence_len(node_id).ok_or(
@@ -463,8 +576,11 @@ impl Subgraph {
                 offset: node_len / 2
             };
             let context = query.context + node_len / 2;
-            let records = extract_context_from_gbz(graph, query_pos, context)?;
-            Self::node_based(records, query.output())
+            let mut result = Self::with_context(query_pos, context, &mut |handle| {
+                GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+            })?;
+            result.node_based(query.output())?;
+            Ok(result)
         } else {
             Err(format!("Invalid query: {}", query))
         }
@@ -519,8 +635,13 @@ impl Subgraph {
             // Transform the offset relative to the haplotype to the offset relative to the path.
             let query_offset = path_name.fragment - ref_path.name.fragment;
             let (query_pos, gbwt_pos) = query_position_from_db(graph, &ref_path, query_offset)?;
-            let records = extract_context_from_db(graph, query_pos, query.context)?;
-            Self::path_based(records, ref_path, query_offset, query_pos, gbwt_pos, query.output())
+            let mut result = Self::with_context(query_pos, query.context, &mut |handle| {
+                let record = graph.get_record(handle)?;
+                record.ok_or(format!("The graph does not contain handle {}", handle))
+            })?;
+            result.path_based(query_offset, query_pos, gbwt_pos, query.output())?;
+            result.ref_path = Some(ref_path.name);
+            Ok(result)
         } else if query.is_node_based() {
             let node_id = query.node_id().unwrap();
             let record = graph.get_record(support::encode_node(node_id, Orientation::Forward))?;
@@ -535,73 +656,167 @@ impl Subgraph {
                 offset: node_len / 2
             };
             let context = query.context + node_len / 2;
-            let records = extract_context_from_db(graph, query_pos, context)?;
-            Self::node_based(records, query.output())
+            let mut result = Self::with_context(query_pos, context, &mut |handle| {
+                let record = graph.get_record(handle)?;
+                record.ok_or(format!("The graph does not contain handle {}", handle))
+            })?;
+            result.node_based(query.output())?;
+            Ok(result)
         } else {
             Err(format!("Invalid query: {}", query))
         }
     }
 
+    // FIXME: This should be a public method.
     // Shared internal constructor for path-based queries.
     fn path_based(
-        records: BTreeMap<usize, GBZRecord>,
-        ref_path: GBZPath,
+        &mut self,
         offset: usize,
         query_pos: GraphPosition,
         gbwt_pos: Pos,
         output: HaplotypeOutput
-    ) -> Result<Self, String> {
-        let (mut paths, ref_id_offset) = extract_paths(&records, Some(gbwt_pos))?;
-        let (mut ref_id, path_offset) = ref_id_offset.unwrap();
-        let ref_start = offset - distance_to(&records, &paths[ref_id].path, path_offset, query_pos.offset);
-        let ref_interval = ref_start..ref_start + paths[ref_id].len;
+    ) -> Result<(), String> {
+        self.clear_paths();
 
+        let (paths, ref_id_offset) = extract_paths(&self.records, Some(gbwt_pos))?;
+        let (ref_id, path_offset) = ref_id_offset.unwrap();
+        let ref_start = offset - distance_to(&self.records, &paths[ref_id].path, path_offset, query_pos.offset);
+        self.ref_interval = Some(ref_start..ref_start + paths[ref_id].len);
+
+        self.paths = paths;
+        self.ref_id = Some(ref_id);
         if output == HaplotypeOutput::Distinct {
-            // TODO: We should use bidirectional search in GBWT to find the distinct paths directly.
-            let res = make_distinct(paths, Some(ref_id));
-            paths = res.0;
-            ref_id = res.1.unwrap();
+            self.make_distinct();
         } else if output == HaplotypeOutput::ReferenceOnly {
-            paths = vec![paths[ref_id].clone()];
-            ref_id = 0;
+            self.paths = vec![self.paths[ref_id].clone()];
+            self.ref_id = Some(0);
         }
 
-        Ok(Subgraph {
-            records,
-            paths,
-            ref_id: Some(ref_id),
-            ref_path: Some(ref_path),
-            ref_interval: Some(ref_interval),
-        })
+        Ok(())
     }
 
+    // FIXME: This should be a public method.
     // Shared internal constructor for node-based queries.
     fn node_based(
-        records: BTreeMap<usize, GBZRecord>,
+        &mut self,
         output: HaplotypeOutput
-    ) -> Result<Self, String> {
-        let (mut paths, _) = extract_paths(&records, None)?;
+    ) -> Result<(), String> {
+        self.clear_paths();
+        let (paths, _) = extract_paths(&self.records, None)?;
+        self.paths = paths;
         if output == HaplotypeOutput::Distinct {
-            let res = make_distinct(paths, None);
-            paths = res.0;
+            self.make_distinct();
         }
-        Ok(Subgraph {
-            records,
-            paths,
-            ref_id: None,
-            ref_path: None,
-            ref_interval: None,
-        })
+        Ok(())
+    }
+
+    // FIXME: Move extract_paths here; should be a public method?
+
+    // FIXME: This should also be a public method.
+    // Sorts the paths and merges duplicates, storing the count in the weight field.
+    fn make_distinct(&mut self) {
+        let ref_path = self.ref_id.map(|id| self.paths[id].path.clone());
+        self.paths.sort_unstable();
+
+        let mut new_paths: Vec<PathInfo> = Vec::new();
+        let mut ref_id = None;
+        for info in self.paths.iter() {
+            if new_paths.is_empty() || new_paths.last().unwrap().path != info.path {
+                if let Some(ref_path) = &ref_path {
+                    if info.path == *ref_path {
+                        ref_id = Some(new_paths.len());
+                    }
+                }
+                new_paths.push(PathInfo::weighted(info.path.clone(), info.len));
+            } else {
+                new_paths.last_mut().unwrap().increment_weight();
+            }
+        }
+
+        self.paths = new_paths;
+        self.ref_id = ref_id;
     }
 
     /// Returns the number of nodes in the subgraph.
+    #[inline]
     pub fn node_count(&self) -> usize {
         self.records.len() / 2
     }
 
+    /// Returns `true` if the subgraph contains the given node.
+    #[inline]
+    pub fn has_node(&self, node_id: usize) -> bool {
+        self.records.contains_key(&support::encode_node(node_id, Orientation::Forward))
+    }
+
+    /// Returns `true` if the subgraph contains the given handle.
+    #[inline]
+    pub fn has_handle(&self, handle: usize) -> bool {
+        self.records.contains_key(&handle)
+    }
+
+    /// Returns the record for the given node handle, or [`None`] if the node is not in the subgraph.
+    #[inline]
+    pub fn record(&self, handle: usize) -> Option<&GBZRecord> {
+        self.records.get(&handle)
+    }
+
+    /// Returns the record for the given node in the given orientation, or [`None`] if the node is not in the subgraph.
+    #[inline]
+    pub fn record_by_id(&self, node_id: usize, orientation: Orientation) -> Option<&GBZRecord> {
+        self.records.get(&support::encode_node(node_id, orientation))
+    }
+
+    /// Inserts the given node into the subgraph.
+    ///
+    /// No effect if the node is already in the subgraph.
+    /// Clears all path information from the subgraph.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id`: Identifier of the node to insert.
+    /// * `get_record`: A function that returns the record for the given node handle.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any errors from `get_record`.
+    pub fn add_node(&mut self, node_id: usize, get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>) -> Result<(), String> {
+        if self.has_node(node_id) {
+            return Ok(());
+        }
+        self.clear_paths();
+        let forward = get_record(support::encode_node(node_id, Orientation::Forward))?;
+        let reverse = get_record(support::encode_node(node_id, Orientation::Reverse))?;
+        self.records.insert(forward.handle(), forward);
+        self.records.insert(reverse.handle(), reverse);
+        Ok(())
+    }
+
+    /// Removes the given node from the subgraph.
+    ///
+    /// No effect if the node is not in the subgraph.
+    /// Clears all path information from the subgraph.
+    pub fn remove_node(&mut self, node_id: usize) {
+        if !self.has_node(node_id) {
+            return;
+        }
+        self.clear_paths();
+        self.records.remove(&support::encode_node(node_id, Orientation::Forward));
+        self.records.remove(&support::encode_node(node_id, Orientation::Reverse));
+    }
+
     /// Returns the number of paths in the subgraph.
+    #[inline]
     pub fn path_count(&self) -> usize {
         self.paths.len()
+    }
+
+    /// Clears all path information from the subgraph.
+    pub fn clear_paths(&mut self) {
+        self.paths.clear();
+        self.ref_id = None;
+        self.ref_path = None;
+        self.ref_interval = None;
     }
 
     // Returns the total length of the nodes.
@@ -794,7 +1009,7 @@ impl Subgraph {
     /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
     pub fn write_gfa<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Header.
-        let reference_samples = self.ref_path.as_ref().map(|path| path.name.sample.as_ref());
+        let reference_samples = self.ref_path.as_ref().map(|path| path.sample.as_ref());
         formats::write_gfa_header(reference_samples, output)?;
 
         // Segments.
@@ -914,7 +1129,7 @@ impl Subgraph {
         let ref_id = self.ref_id?;
         let ref_path = self.ref_path.as_ref()?;
         let interval = self.ref_interval.as_ref()?.clone();
-        let mut metadata = WalkMetadata::path_interval(ref_path.as_ref(), interval);
+        let mut metadata = WalkMetadata::path_interval(ref_path, interval);
         metadata.add_weight(self.paths[ref_id].weight);
         Some((metadata, ref_id))
     }
@@ -922,7 +1137,7 @@ impl Subgraph {
     // Determines a contig name for the subgraph.
     fn contig_name(&self) -> String {
         if let Some(ref_path) = self.ref_path.as_ref() {
-            ref_path.name.contig.clone()
+            ref_path.contig.clone()
         } else {
             String::from("unknown")
         }
@@ -1010,6 +1225,7 @@ fn query_position_from_gbz(graph: &GBZ, path_index: &PathIndex, path: &GBZPath, 
 
 //-----------------------------------------------------------------------------
 
+// FIXME: This should be a public function somewhere.
 fn distance_to_end(record: &GBZRecord, from: GraphPosition, orientation: Orientation) -> usize {
     if orientation == from.orientation {
         record.sequence_len() - from.offset
@@ -1018,76 +1234,9 @@ fn distance_to_end(record: &GBZRecord, from: GraphPosition, orientation: Orienta
     }
 }
 
-fn extract_context(
-    from: GraphPosition,
-    context: usize,
-    mut get_record: impl FnMut(usize) -> Result<GBZRecord, String>
-) -> Result<BTreeMap<usize, GBZRecord>, String> {
-    // Start graph traversal from the initial node.
-    let mut active: BinaryHeap<Reverse<(usize, GraphPosition)>> = BinaryHeap::new(); // (distance, node id)
-    active.push(Reverse((0, from)));
-
-    // Traverse in both directions.
-    let mut selected: BTreeMap<usize, GBZRecord> = BTreeMap::new();
-    while !active.is_empty() {
-        let (distance, position) = active.pop().unwrap().0;
-        for orientation in [Orientation::Forward, Orientation::Reverse] {
-            let handle = support::encode_node(position.node, orientation);
-            if selected.contains_key(&handle) {
-                continue;
-            }
-            let record = get_record(handle)?;
-            let next_distance = distance + distance_to_end(&record, position, orientation);
-            if next_distance <= context {
-                for successor in record.successors() {
-                    if !selected.contains_key(&successor) {
-                        let next = GraphPosition {
-                            node: support::node_id(successor),
-                            orientation: support::node_orientation(successor),
-                            offset: 0,
-                        };
-                        active.push(Reverse((next_distance, next)));
-                    }
-                }
-            }
-            selected.insert(handle, record);
-        }
-    }
-
-    Ok(selected)
-}
-
-// Returns all node records within `context` bp around the given position.
-fn extract_context_from_gbz(
-    graph: &GBZ,
-    from: GraphPosition,
-    context: usize
-) -> Result<BTreeMap<usize, GBZRecord>, String> {
-    extract_context(
-        from, context,
-        |handle| GBZRecord::from_gbz(graph, handle).ok_or(
-            format!("The graph does not contain handle {}", handle)
-        )
-    )
-}
-
-// Returns all node records within `context` bp around the given position.
-fn extract_context_from_db(
-    graph: &mut GraphInterface,
-    from: GraphPosition,
-    context: usize
-) -> Result<BTreeMap<usize, GBZRecord>, String> {
-    extract_context(
-        from, context,
-        |handle| {
-            let record = graph.get_record(handle)?;
-            record.ok_or(format!("The graph does not contain handle {}", handle))
-        }
-    )
-}
-
 //-----------------------------------------------------------------------------
 
+// TODO: Add hash of the path for faster comparisons?
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct PathInfo {
     path: Vec<usize>,
@@ -1128,13 +1277,6 @@ impl Display for EditOperation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct GraphPosition {
-    node: usize,
-    orientation: Orientation,
-    offset: usize,
-}
-
 //-----------------------------------------------------------------------------
 
 fn next_pos(pos: Pos, successors: &BTreeMap<usize, Vec<(Pos, bool)>>) -> Option<Pos> {
@@ -1150,6 +1292,8 @@ fn next_pos(pos: Pos, successors: &BTreeMap<usize, Vec<(Pos, bool)>>) -> Option<
     }
 }
 
+// FIXME: This should be a method that updates the paths in the subgraph.
+// FIXME: If ref_pos is given, this should set ref_id and return the offset.
 // Extract all paths in the subgraph. If a GBWT position for the reference path is
 // specified, the second return value is (offset in result, offset on that path) for
 // the handle corresponding to `ref_pos`.
@@ -1223,35 +1367,6 @@ fn distance_to(subgraph: &BTreeMap<usize, GBZRecord>, path: &[usize], path_offse
         result += subgraph.get(handle).unwrap().sequence_len();
     }
     result
-}
-
-// Returns all distinct paths and uses the weight field for storing their counts.
-// Also updates `ref_id` if given.
-// TODO: Use hashing?
-fn make_distinct(
-    paths: Vec<PathInfo>,
-    ref_id: Option<usize>
-) -> (Vec<PathInfo>, Option<usize>) {
-    let ref_path = ref_id.map(|id| paths[id].path.clone());
-    let mut paths = paths;
-    paths.sort_unstable();
-
-    let mut new_paths: Vec<PathInfo> = Vec::new();
-    let mut ref_id = None;
-    for info in paths.iter() {
-        if new_paths.is_empty() || new_paths.last().unwrap().path != info.path {
-            if let Some(ref_path) = &ref_path {
-                if info.path == *ref_path {
-                    ref_id = Some(new_paths.len());
-                }
-            }
-            new_paths.push(PathInfo::weighted(info.path.clone(), info.len));
-        } else {
-            new_paths.last_mut().unwrap().increment_weight();
-        }
-    }
-
-    (new_paths, ref_id)
 }
 
 //-----------------------------------------------------------------------------
