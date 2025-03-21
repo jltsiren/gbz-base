@@ -20,15 +20,16 @@ fn main() -> Result<(), String> {
 
     // Determine the type of the input file and extract the subgraph accordingly.
     let use_gbz = GBZ::is_gbz(&config.filename);
-    let subgraph = if use_gbz {
+    let mut subgraph = Subgraph::new();
+    if use_gbz {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
-        Subgraph::from_gbz(&graph, Some(&path_index), &config.query)?
+        subgraph.from_gbz(&graph, Some(&path_index), &config.query)?;
     } else {
         let database = GBZBase::open(&config.filename)?;
         let mut graph = GraphInterface::new(&database)?;
-        Subgraph::from_db(&mut graph, &config.query)?
-    };
+        subgraph.from_db(&mut graph, &config.query)?;
+    }
 
     // Write the output.
     let mut output = io::stdout();

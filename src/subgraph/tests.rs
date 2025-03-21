@@ -575,11 +575,11 @@ fn subgraph_from_gbz() {
     let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
     let (queries, nodes_and_paths) = queries_and_counts();
     for (query, (node_count, path_count)) in queries.iter().zip(nodes_and_paths.iter()) {
-        let subgraph = Subgraph::from_gbz(&graph, Some(&path_index), query);
-        if let Err(err) = subgraph {
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_gbz(&graph, Some(&path_index), query);
+        if let Err(err) = result {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
-        let subgraph = subgraph.unwrap();
         assert_eq!(subgraph.node_count(), *node_count, "Wrong node count for query {}", query);
         assert_eq!(subgraph.path_count(), *path_count, "Wrong path count for query {}", query);
     }
@@ -596,11 +596,11 @@ fn subgraph_from_db() {
 
     let (queries, nodes_and_paths) = queries_and_counts();
     for (query, (node_count, path_count)) in queries.iter().zip(nodes_and_paths.iter()) {
-        let subgraph = Subgraph::from_db(&mut graph, query);
-        if let Err(err) = subgraph {
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_db(&mut graph, query);
+        if let Err(err) = result {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
-        let subgraph = subgraph.unwrap();
         assert_eq!(subgraph.node_count(), *node_count, "Wrong node count for query {}", query);
         assert_eq!(subgraph.path_count(), *path_count, "Wrong path count for query {}", query);
     }
@@ -618,7 +618,8 @@ fn gfa_output() {
     for cigar in [false, true] {
         let (queries, gfas) = queries_and_gfas(cigar);
         for (query, truth) in queries.iter().zip(gfas.iter()) {
-            let subgraph = Subgraph::from_gbz(&graph, Some(&path_index), query).unwrap();
+            let mut subgraph = Subgraph::new();
+            let _ = subgraph.from_gbz(&graph, Some(&path_index), query);
             let mut output = Vec::new();
             let result = subgraph.write_gfa(&mut output, cigar);
             assert!(result.is_ok(), "Failed to write GFA for query {}: {}", query, result.unwrap_err());
@@ -638,7 +639,8 @@ fn json_output() {
     for cigar in [false, true] {
         let (queries, jsons) = queries_and_jsons(cigar);
         for (query, truth) in queries.iter().zip(jsons.iter()) {
-            let subgraph = Subgraph::from_gbz(&graph, Some(&path_index), query).unwrap();
+            let mut subgraph = Subgraph::new();
+            let _ = subgraph.from_gbz(&graph, Some(&path_index), query);
             let mut output = Vec::new();
             let result = subgraph.write_json(&mut output, cigar);
             assert!(result.is_ok(), "Failed to write JSON for query {}: {}", query, result.unwrap_err());

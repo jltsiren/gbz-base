@@ -372,6 +372,7 @@ impl PathIndex {
 
 // FIXME: Tests and examples for the new functionality.
 
+// FIXME: Document the intended use of this struct, for example as a sliding window over a reference path.
 /// A subgraph based on a context around a graph position.
 ///
 /// The position can be based on a path offset, a path interval, or a node identifier.
@@ -397,15 +398,6 @@ pub struct Subgraph {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: Overall idea:
-// - Start with an empty subgraph.
-// - Add nodes:
-//   * Replace the current nodes with a new context.
-//   * Reuse the records for nodes that are already in the subgraph.
-//   * Option for context around multiple nodes.
-//   * Any changes to nodes clears the paths.
-// - Add paths with the given HaplotypeOutput setting.
-
 // TODO: This could implement an interface similar to the node/edge part of GBZ.
 /// Construction.
 impl Subgraph {
@@ -415,6 +407,7 @@ impl Subgraph {
     }
 
     // FIXME: also for a node and a path with an interval
+    // FIXME: Make this report the number of inserted and removed nodes.
     /// Updates the subgraph to a context around the given graph position.
     ///
     /// Reuses existing records when possible.
@@ -539,6 +532,8 @@ impl Subgraph {
     // FIXME: from_gbz and from_db are very similar.
     /// Extracts a subgraph around the given query position.
     ///
+    /// Reuses existing records when possible.
+    ///
     /// # Arguments
     ///
     /// * `graph`: A GBZ graph.
@@ -563,9 +558,9 @@ impl Subgraph {
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
     /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, HaplotypeOutput::All);
-    /// let subgraph = Subgraph::from_gbz(&graph, Some(&path_index), &query);
-    /// assert!(subgraph.is_ok());
-    /// let subgraph = subgraph.unwrap();
+    /// let mut subgraph = Subgraph::new();
+    /// let result = subgraph.from_gbz(&graph, Some(&path_index), &query);
+    /// assert!(result.is_ok());
     ///
     /// // The subgraph should be centered around 1 bp node 14 of degree 4.
     /// assert_eq!(subgraph.node_count(), 5);
@@ -573,13 +568,13 @@ impl Subgraph {
     ///
     /// // We get the same result using a node id.
     /// let query = SubgraphQuery::node(14, 1, HaplotypeOutput::All);
-    /// let subgraph = Subgraph::from_gbz(&graph, None, &query);
-    /// assert!(subgraph.is_ok());
-    /// let subgraph = subgraph.unwrap();
+    /// let mut subgraph = Subgraph::new();
+    /// let result = subgraph.from_gbz(&graph, None, &query);
+    /// assert!(result.is_ok());
     /// assert_eq!(subgraph.node_count(), 5);
     /// assert_eq!(subgraph.path_count(), 3);
     /// ```
-    pub fn from_gbz(graph: &GBZ, path_index: Option<&PathIndex>, query: &SubgraphQuery) -> Result<Self, String> {
+    pub fn from_gbz(&mut self, graph: &GBZ, path_index: Option<&PathIndex>, query: &SubgraphQuery) -> Result<(), String> {
         // These depend on the query type.
         let query_pos;
         let mut context = query.context;
@@ -616,16 +611,17 @@ impl Subgraph {
         }
 
         // Now we can build the subgraph.
-        let mut result = Self::new();
-        result.with_context(query_pos, context, &mut |handle| {
+        self.with_context(query_pos, context, &mut |handle| {
             GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
         })?;
-        result.extract_paths(reference_path, query.output())?;
+        self.extract_paths(reference_path, query.output())?;
 
-        Ok(result)
+        Ok(())
     }
 
     /// Extracts a subgraph around the given query position.
+    ///
+    /// Reuses existing records when possible.
     ///
     /// # Examples
     ///
@@ -649,9 +645,9 @@ impl Subgraph {
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
     /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, HaplotypeOutput::All);
-    /// let subgraph = Subgraph::from_db(&mut interface, &query);
-    /// assert!(subgraph.is_ok());
-    /// let subgraph = subgraph.unwrap();
+    /// let mut subgraph = Subgraph::new();
+    /// let result = subgraph.from_db(&mut interface, &query);
+    /// assert!(result.is_ok());
     ///
     /// // The subgraph should be centered around 1 bp node 14 of degree 4.
     /// assert_eq!(subgraph.node_count(), 5);
@@ -662,7 +658,7 @@ impl Subgraph {
     /// drop(database);
     /// fs::remove_file(&db_file).unwrap();
     /// ```
-    pub fn from_db(graph: &mut GraphInterface, query: &SubgraphQuery) -> Result<Self, String> {
+    pub fn from_db(&mut self, graph: &mut GraphInterface, query: &SubgraphQuery) -> Result<(), String> {
         // These depend on the query type.
         let query_pos;
         let mut context = query.context;
@@ -699,14 +695,13 @@ impl Subgraph {
         }
 
         // Now we can build the subgraph.
-        let mut result = Self::new();
-        result.with_context(query_pos, context, &mut |handle| {
+        self.with_context(query_pos, context, &mut |handle| {
             let record = graph.get_record(handle)?;
             record.ok_or(format!("The graph does not contain handle {}", handle))
         })?;
-        result.extract_paths(reference_path, query.output())?;
+        self.extract_paths(reference_path, query.output())?;
 
-        Ok(result)
+        Ok(())
     }
 
     // Returns the successor position for the given GBWT position, if it is in the subgraph.
