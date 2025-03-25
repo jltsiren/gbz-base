@@ -501,7 +501,7 @@ impl Subgraph {
                 String::from("Path index is required for path-based queries")
             )?;
             let query_pos = query.path_name_with_offset();
-            let reference_path = reference_position_from_gbz(graph, path_index, query_pos)?;
+            let reference_path = reference_position_from_gbz(graph, path_index, &query_pos)?;
             self.around_position(reference_path.0.graph_pos, query.context, &mut |handle| {
                 GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
             })?;
@@ -572,7 +572,7 @@ impl Subgraph {
         // FIXME: Do interval-based properly.
         if query.is_path_based() {
             let query_pos = query.path_name_with_offset();
-            let reference_path = reference_position_from_db(graph, query_pos)?;
+            let reference_path = reference_position_from_db(graph, &query_pos)?;
             self.around_position(reference_path.0.graph_pos, query.context, &mut |handle| {
                 let record = graph.get_record(handle)?;
                 record.ok_or(format!("The graph does not contain handle {}", handle))
@@ -1199,7 +1199,6 @@ impl Subgraph {
 //-----------------------------------------------------------------------------
 
 // FIXME: This should be a method that updates the subgraph.
-// FIXME: example
 /// Returns the path position for the haplotype offset represented by the query position.
 ///
 /// `query_pos.fragment` is used as an offset in the haplotype.
@@ -1209,8 +1208,55 @@ impl Subgraph {
 ///
 /// Returns an error if database operations fail.
 /// Returns an error if there is no path covering the given position or the path has not been indexed for random access.
-pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: FullPathName) -> Result<(PathPosition, FullPathName), String> {
-    let path = graph.find_path(&query_pos)?;
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{GBZBase, GraphInterface};
+/// use gbz_base::subgraph;
+/// use gbwt::{FullPathName, Orientation};
+/// use gbwt::support;
+/// use simple_sds::serialize;
+/// use std::fs;
+///
+/// // Create the database.
+/// let gbz_file = support::get_test_data("example.gbz");
+/// let db_file = serialize::temp_file_name("subgraph");
+/// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+/// assert!(result.is_ok());
+///
+/// // Open the database and create a graph interface.
+/// let database = GBZBase::open(&db_file).unwrap();
+/// let mut interface = GraphInterface::new(&database).unwrap();
+///
+/// // Query for path A offset 2.
+/// let mut query_pos = FullPathName::generic("A");
+/// query_pos.fragment = 2;
+/// let result = subgraph::reference_position_from_db(&mut interface, &query_pos);
+/// assert!(result.is_ok());
+/// let (path_pos, path_name) = result.unwrap();
+/// assert_eq!(path_pos.seq_offset, query_pos.fragment);
+///
+/// // The query position is at the start of node 14 in forward orientation.
+/// assert_eq!(path_pos.graph_pos.node, 14);
+/// assert_eq!(path_pos.graph_pos.orientation, Orientation::Forward);
+/// assert_eq!(path_pos.graph_pos.offset, 0);
+///
+/// // And this happens to be the first path visit to the node.
+/// let gbwt_node = support::encode_node(14, Orientation::Forward);
+/// assert_eq!(path_pos.gbwt_pos.node, gbwt_node);
+/// assert_eq!(path_pos.gbwt_pos.offset, 0);
+///
+/// // And it is covered by the path fragment starting from offset 0.
+/// assert_eq!(path_name, FullPathName::generic("A"));
+///
+/// // Clean up.
+/// drop(interface);
+/// drop(database);
+/// fs::remove_file(&db_file).unwrap();
+/// ```
+pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: &FullPathName) -> Result<(PathPosition, FullPathName), String> {
+    let path = graph.find_path(query_pos)?;
     let path = path.ok_or(format!("Cannot find a path covering {}", query_pos))?;
     if !path.is_indexed {
         return Err(format!("Path {} has not been indexed for random access", query_pos));
@@ -1262,7 +1308,6 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: FullPat
 }
 
 // FIXME: This should be a method that updates the subgraph.
-// FIXME: example
 /// Returns the path position for the haplotype offset represented by the query position.
 ///
 /// `query_pos.fragment` is used as an offset in the haplotype.
@@ -1271,8 +1316,46 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: FullPat
 /// # Errors
 ///
 /// Returns an error if there is no path covering the given position or the path has not been indexed for random access.
-pub fn reference_position_from_gbz(graph: &GBZ, path_index: &PathIndex, query_pos: FullPathName) -> Result<(PathPosition, FullPathName), String> {
-    let path = GBZPath::with_name(graph, &query_pos).ok_or(
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::PathIndex;
+/// use gbz_base::subgraph;
+/// use gbwt::{GBZ, FullPathName, Orientation};
+/// use gbwt::support;
+/// use simple_sds::serialize;
+///
+/// // Get the graph.
+/// let gbz_file = support::get_test_data("example.gbz");
+/// let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+///
+/// // Create a path index with 3 bp intervals.
+/// let path_index = PathIndex::new(&graph, 3, false).unwrap();
+///
+/// // Query for path A offset 2.
+/// let mut query_pos = FullPathName::generic("A");
+/// query_pos.fragment = 2;
+/// let result = subgraph::reference_position_from_gbz(&graph, &path_index, &query_pos);
+/// assert!(result.is_ok());
+/// let (path_pos, path_name) = result.unwrap();
+/// assert_eq!(path_pos.seq_offset, query_pos.fragment);
+///
+/// // The query position is at the start of node 14 in forward orientation.
+/// assert_eq!(path_pos.graph_pos.node, 14);
+/// assert_eq!(path_pos.graph_pos.orientation, Orientation::Forward);
+/// assert_eq!(path_pos.graph_pos.offset, 0);
+///
+/// // And this happens to be the first path visit to the node.
+/// let gbwt_node = support::encode_node(14, Orientation::Forward);
+/// assert_eq!(path_pos.gbwt_pos.node, gbwt_node);
+/// assert_eq!(path_pos.gbwt_pos.offset, 0);
+///
+/// // And it is covered by the path fragment starting from offset 0.
+/// assert_eq!(path_name, FullPathName::generic("A"));
+/// ```
+pub fn reference_position_from_gbz(graph: &GBZ, path_index: &PathIndex, query_pos: &FullPathName) -> Result<(PathPosition, FullPathName), String> {
+    let path = GBZPath::with_name(graph, query_pos).ok_or(
         format!("Cannot find a path covering {}", query_pos)
     )?;
     // Transform the offset relative to the haplotype to the offset relative to the path.
@@ -1322,6 +1405,7 @@ pub fn reference_position_from_gbz(graph: &GBZ, path_index: &PathIndex, query_po
 
 //-----------------------------------------------------------------------------
 
+// FIXME: Make this non-reduntant and add methods for returning the desired position types.
 /// A path position represented in multiple ways.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PathPosition {
