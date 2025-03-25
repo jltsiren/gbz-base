@@ -502,7 +502,7 @@ impl Subgraph {
             )?;
             let query_pos = query.path_name_with_offset();
             let reference_path = reference_position_from_gbz(graph, path_index, &query_pos)?;
-            self.around_position(reference_path.0.graph_pos, query.context, &mut |handle| {
+            self.around_position(reference_path.0.graph_pos(), query.context, &mut |handle| {
                 GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
             })?;
             self.extract_paths(Some(reference_path), query.output())?;
@@ -573,7 +573,7 @@ impl Subgraph {
         if query.is_path_based() {
             let query_pos = query.path_name_with_offset();
             let reference_path = reference_position_from_db(graph, &query_pos)?;
-            self.around_position(reference_path.0.graph_pos, query.context, &mut |handle| {
+            self.around_position(reference_path.0.graph_pos(), query.context, &mut |handle| {
                 let record = graph.get_record(handle)?;
                 record.ok_or(format!("The graph does not contain handle {}", handle))
             })?;
@@ -676,7 +676,7 @@ impl Subgraph {
                 let mut len = 0;
                 while let Some(pos) = curr {
                     if let Some(position) = ref_pos.as_ref() {
-                        if pos == position.gbwt_pos {
+                        if pos == position.gbwt_pos() {
                             self.ref_id = Some(self.paths.len());
                             ref_offset = Some(path.len());
                             is_ref = true;
@@ -1235,17 +1235,17 @@ impl Subgraph {
 /// let result = subgraph::reference_position_from_db(&mut interface, &query_pos);
 /// assert!(result.is_ok());
 /// let (path_pos, path_name) = result.unwrap();
-/// assert_eq!(path_pos.seq_offset, query_pos.fragment);
+/// assert_eq!(path_pos.seq_offset(), query_pos.fragment);
 ///
 /// // The query position is at the start of node 14 in forward orientation.
-/// assert_eq!(path_pos.graph_pos.node, 14);
-/// assert_eq!(path_pos.graph_pos.orientation, Orientation::Forward);
-/// assert_eq!(path_pos.graph_pos.offset, 0);
+/// assert_eq!(path_pos.node_id(), 14);
+/// assert_eq!(path_pos.orientation(), Orientation::Forward);
+/// assert_eq!(path_pos.node_offset(), 0);
 ///
 /// // And this happens to be the first path visit to the node.
 /// let gbwt_node = support::encode_node(14, Orientation::Forward);
-/// assert_eq!(path_pos.gbwt_pos.node, gbwt_node);
-/// assert_eq!(path_pos.gbwt_pos.offset, 0);
+/// assert_eq!(path_pos.handle(), gbwt_node);
+/// assert_eq!(path_pos.gbwt_offset(), 0);
 ///
 /// // And it is covered by the path fragment starting from offset 0.
 /// assert_eq!(path_name, FullPathName::generic("A"));
@@ -1270,18 +1270,14 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: &FullPa
         format!("Path {} has not been indexed for random access", path.name())
     )?;
 
-    let mut graph_pos: Option<GraphPosition> = None;
+    let mut node_offset: Option<usize> = None;
     let mut gbwt_pos: Option<Pos> = None;
     loop {
         let handle = pos.node;
         let record = graph.get_record(handle)?;
         let record = record.ok_or(format!("The graph does not contain handle {}", handle))?;
         if path_offset + record.sequence_len() > query_offset {
-            graph_pos = Some(GraphPosition::new(
-                support::node_id(handle),
-                support::node_orientation(handle),
-                query_offset - path_offset
-            ));
+            node_offset = Some(query_offset - path_offset);
             gbwt_pos = Some(pos);
             break;
         }
@@ -1294,15 +1290,16 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: &FullPa
         pos = next.unwrap();
     }
 
-    let graph_pos = graph_pos.ok_or(
+    let node_offset = node_offset.ok_or(
         format!("Path {} does not contain offset {}", path.name(), query_offset)
     )?;
     let gbwt_pos = gbwt_pos.unwrap();
 
     let path_position = PathPosition {
         seq_offset: query_offset,
-        graph_pos,
-        gbwt_pos,
+        gbwt_node: gbwt_pos.node,
+        node_offset,
+        gbwt_offset: gbwt_pos.offset,
     };
     Ok((path_position, path.name))
 }
@@ -1339,17 +1336,17 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: &FullPa
 /// let result = subgraph::reference_position_from_gbz(&graph, &path_index, &query_pos);
 /// assert!(result.is_ok());
 /// let (path_pos, path_name) = result.unwrap();
-/// assert_eq!(path_pos.seq_offset, query_pos.fragment);
+/// assert_eq!(path_pos.seq_offset(), query_pos.fragment);
 ///
 /// // The query position is at the start of node 14 in forward orientation.
-/// assert_eq!(path_pos.graph_pos.node, 14);
-/// assert_eq!(path_pos.graph_pos.orientation, Orientation::Forward);
-/// assert_eq!(path_pos.graph_pos.offset, 0);
+/// assert_eq!(path_pos.node_id(), 14);
+/// assert_eq!(path_pos.orientation(), Orientation::Forward);
+/// assert_eq!(path_pos.node_offset(), 0);
 ///
 /// // And this happens to be the first path visit to the node.
 /// let gbwt_node = support::encode_node(14, Orientation::Forward);
-/// assert_eq!(path_pos.gbwt_pos.node, gbwt_node);
-/// assert_eq!(path_pos.gbwt_pos.offset, 0);
+/// assert_eq!(path_pos.handle(), gbwt_node);
+/// assert_eq!(path_pos.gbwt_offset(), 0);
 ///
 /// // And it is covered by the path fragment starting from offset 0.
 /// assert_eq!(path_name, FullPathName::generic("A"));
@@ -1367,18 +1364,14 @@ pub fn reference_position_from_gbz(graph: &GBZ, path_index: &PathIndex, query_po
     )?;
     let (mut path_offset, mut pos) = path_index.indexed_position(index_offset, query_offset).unwrap();
 
-    let mut graph_pos: Option<GraphPosition> = None;
+    let mut node_offset: Option<usize> = None;
     let mut gbwt_pos: Option<Pos> = None;
     let index: &GBWT = graph.as_ref();
     loop {
         let node_id = support::node_id(pos.node);
         let node_len = graph.sequence_len(node_id).unwrap();
         if path_offset + node_len > query_offset {
-            graph_pos = Some(GraphPosition::new(
-                node_id,
-                support::node_orientation(pos.node),
-                query_offset - path_offset,
-            ));
+            node_offset = Some(query_offset - path_offset);
             gbwt_pos = Some(pos);
             break;
         }
@@ -1390,31 +1383,90 @@ pub fn reference_position_from_gbz(graph: &GBZ, path_index: &PathIndex, query_po
         pos = next.unwrap();
     }
 
-    let graph_pos = graph_pos.ok_or(
+    let node_offset = node_offset.ok_or(
         format!("Path {} does not contain offset {}", path.name(), query_offset)
     )?;
     let gbwt_pos = gbwt_pos.unwrap();
 
     let path_position = PathPosition {
         seq_offset: query_offset,
-        graph_pos,
-        gbwt_pos,
+        gbwt_node: gbwt_pos.node,
+        node_offset,
+        gbwt_offset: gbwt_pos.offset,
     };
     Ok((path_position, path.name))
 }
 
 //-----------------------------------------------------------------------------
 
-// FIXME: Make this non-reduntant and add methods for returning the desired position types.
 /// A path position represented in multiple ways.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PathPosition {
-    /// Sequence offset in in bp.
-    pub seq_offset: usize,
-    /// Graph position corresponding to the offset.
-    pub graph_pos: GraphPosition,
-    /// GBWT position for the oriented node containing the position.
-    pub gbwt_pos: Pos,
+    // Sequence offset from the start of the path.
+    seq_offset: usize,
+    // GBWT node identifier encoding an oriented node.
+    gbwt_node: usize,
+    // Offset from the start of the node.
+    node_offset: usize,
+    // Offset within GBWT record.
+    gbwt_offset: usize,
+}
+
+impl PathPosition {
+    /// Returns the sequence offset in bp from the start of the path.
+    #[inline]
+    pub fn seq_offset(&self) -> usize {
+        self.seq_offset
+    }
+
+    /// Returns the node identifier.
+    #[inline]
+    pub fn node_id(&self) -> usize {
+        support::node_id(self.gbwt_node)
+    }
+
+    /// Returns the orientation of the node.
+    #[inline]
+    pub fn orientation(&self) -> Orientation {
+        support::node_orientation(self.gbwt_node)
+    }
+
+    /// Returns the offset from the start of the node.
+    #[inline]
+    pub fn node_offset(&self) -> usize {
+        self.node_offset
+    }
+
+    /// Returns the graph position.
+    #[inline]
+    pub fn graph_pos(&self) -> GraphPosition {
+        GraphPosition {
+            node: self.node_id(),
+            orientation: self.orientation(),
+            offset: self.node_offset(),
+        }
+    }
+
+    /// Returns the GBWT node identifier / handle.
+    #[inline]
+    pub fn handle(&self) -> usize {
+        self.gbwt_node
+    }
+
+    /// Returns the offset within the GBWT record.
+    #[inline]
+    pub fn gbwt_offset(&self) -> usize {
+        self.gbwt_offset
+    }
+
+    /// Returns the GBWT position for the oriented node containing the position.
+    #[inline]
+    pub fn gbwt_pos(&self) -> Pos {
+        Pos {
+            node: self.handle(),
+            offset: self.gbwt_offset(),
+        }
+    }
 }
 
 // TODO: This might belong to gbwt-rs.
@@ -1490,12 +1542,12 @@ impl PathInfo {
     // The sequence interval is for the part of the path contained in the subgraph.
     fn path_interval(&self, subgraph: &Subgraph, path_offset: usize, path_pos: &PathPosition) -> Range<usize> {
         // Distance from the start of the path to `path_pos`.
-        let mut ref_pos = path_pos.graph_pos.offset;
+        let mut ref_pos = path_pos.node_offset();
         for handle in self.path.iter().take(path_offset) {
             ref_pos += subgraph.records.get(handle).unwrap().sequence_len();
         }
 
-        let start = path_pos.seq_offset - ref_pos;
+        let start = path_pos.seq_offset() - ref_pos;
         let end = start + self.len;
         start..end
     }
