@@ -175,7 +175,7 @@ impl Display for SubgraphQuery {
 ///
 /// This struct is intended to be used as a sliding window in the graph.
 /// Individual nodes can be added and removed with the [`Subgraph::add_node`] and [`Subgraph::remove_node`] methods.
-/// The subgraph can be updated to a new context with the [`Subgraph::around_position`] and [`Subgraph::around_node`] methods.
+/// The subgraph can be updated to a new context with the [`Subgraph::around_position`], [`Subgraph::around_interval`], and [`Subgraph::around_nodes`] methods.
 /// These methods reuse existing records when possible.
 /// Changes to the subgraph do not preserve paths; they must be re-extracted with the [`Subgraph::extract_paths`] method.
 /// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are convenience methods for extracting a subgraph using a [`SubgraphQuery`].
@@ -208,7 +208,6 @@ impl Subgraph {
         Subgraph::default()
     }
 
-    // FIXME: also for a path with an interval
     // FIXME: Make this report the number of inserted and removed nodes.
     /// Updates the subgraph to a context around the given graph position.
     ///
@@ -271,12 +270,81 @@ impl Subgraph {
 
         // Start the graph traversal from both sides of the initial node.
         let mut active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>> = BinaryHeap::new();
-        let start_distance = pos.offset;
         let start = (pos.node, NodeSide::start(pos.orientation));
-        active.push(Reverse((start_distance, start)));
+        active.push(Reverse((pos.offset, start)));
         let end_distance = record.sequence_len() - pos.offset - 1;
         let end = (pos.node, NodeSide::end(pos.orientation));
         active.push(Reverse((end_distance, end)));
+
+        self.insert_context(active, context, get_record)
+    }
+
+    /// Updates the subgraph to a context around the given path interval.
+    ///
+    /// Reuses existing records when possible.
+    /// Removes all path information from the subgraph.
+    /// See [`reference_position_from_gbz`] for an example.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_pos`: The starting position for the interval.
+    /// * `len`: Length of the interval (in bp).
+    /// * `context`: The context length around the reference interval (in bp).
+    /// * `get_record`: A function that returns the record for the given node handle.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any errors from `get_record`.
+    /// Returns an error if the interval is empty, starts outside the initial node, or is longer than the remaining path.
+    pub fn around_interval(
+        &mut self,
+        start_pos: PathPosition,
+        len: usize,
+        context: usize,
+        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>
+    ) -> Result<(), String> {
+        if len == 0 {
+            return Err(String::from("Interval length must be greater than 0"));
+        }
+        let mut pos = start_pos.gbwt_pos();
+        let mut offset = start_pos.node_offset();
+        let mut len = len;
+
+        // Insert all nodes in the interval to the subgraph and to active node sides.
+        let mut active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>> = BinaryHeap::new();
+        loop {
+            let node_id = support::node_id(pos.node);
+            let orientation = support::node_orientation(pos.node);
+            if !self.has_node(node_id) {
+                self.add_node_internal(node_id, get_record)?;
+            }
+            let record = self.record(pos.node).unwrap();
+            if offset >= record.sequence_len() {
+                return Err(format!("Offset {} in node {} of length {}", offset, node_id, record.sequence_len()));
+            }
+
+            // Handle the current node.
+            let start = (node_id, NodeSide::start(orientation));
+            active.push(Reverse((offset, start)));
+            let end = (node_id, NodeSide::end(orientation));
+            let distance_to_next = record.sequence_len() - offset;
+            if len <= distance_to_next {
+                let end_distance = if len == distance_to_next { 0 } else { distance_to_next - len - 1 };
+                active.push(Reverse((end_distance, end)));
+                break;
+            } else {
+                active.push(Reverse((0, end)));
+            }
+
+            // Proceed to the next node.
+            if let Some(next) = record.to_gbwt_record().lf(pos.offset) {
+                pos = next;
+            } else {
+                return Err(format!("No successor for GBWT position ({}, {})", pos.node, pos.offset));
+            }
+            offset = 0;
+            len -= distance_to_next;
+        }
 
         self.insert_context(active, context, get_record)
     }
@@ -473,15 +541,11 @@ impl Subgraph {
                 self.extract_paths(Some(reference_path), query.output())?;
             }
             QueryType::PathInterval((query_pos, len)) => {
-                // FIXME: Do interval-based properly.
                 let path_index = path_index.ok_or(
                     String::from("Path index is required for path-based queries")
                 )?;
-                let radius = len / 2;
-                let mut query_pos = query_pos.clone();
-                query_pos.fragment += radius;
-                let reference_path = reference_position_from_gbz(graph, path_index, &query_pos)?;
-                self.around_position(reference_path.0.graph_pos(), query.context + radius, &mut |handle| {
+                let reference_path = reference_position_from_gbz(graph, path_index, query_pos)?;
+                self.around_interval(reference_path.0, *len, query.context, &mut |handle| {
                     GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
                 })?;
                 self.extract_paths(Some(reference_path), query.output())?;
@@ -557,12 +621,8 @@ impl Subgraph {
                 self.extract_paths(Some(reference_path), query.output())?;
             }
             QueryType::PathInterval((query_pos, len)) => {
-                // FIXME: Do interval-based properly.
-                let radius = len / 2;
-                let mut query_pos = query_pos.clone();
-                query_pos.fragment += radius;
-                let reference_path = reference_position_from_db(graph, &query_pos)?;
-                self.around_position(reference_path.0.graph_pos(), query.context + radius, &mut |handle| {
+                let reference_path = reference_position_from_db(graph, query_pos)?;
+                self.around_interval(reference_path.0, *len, query.context, &mut |handle| {
                     let record = graph.get_record(handle)?;
                     record.ok_or(format!("The graph does not contain handle {}", handle))
                 })?;
@@ -1306,6 +1366,7 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: &FullPa
 ///
 /// ```
 /// use gbz_base::PathIndex;
+/// use gbz_base::{GBZRecord, Subgraph};
 /// use gbz_base::subgraph;
 /// use gbwt::{GBZ, FullPathName, Orientation};
 /// use gbwt::support;
@@ -1338,6 +1399,21 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: &FullPa
 ///
 /// // And it is covered by the path fragment starting from offset 0.
 /// assert_eq!(path_name, FullPathName::generic("A"));
+///
+/// // Now extract 1 bp context around interval 2..4.
+/// let mut subgraph = Subgraph::new();
+/// let result = subgraph.around_interval(path_pos, 2, 1, &mut |handle| {
+///     GBZRecord::from_gbz(&graph, handle).ok_or(
+///         format!("The graph does not contain handle {}", handle)
+///     )
+/// });
+/// assert!(result.is_ok());
+///
+/// // The interval corresponds to nodes 14 and 15.
+/// let true_nodes = vec![12, 13, 14, 15, 16, 17];
+/// assert_eq!(subgraph.node_count(), true_nodes.len());
+/// let node_ids = subgraph.node_ids();
+/// assert!(node_ids.iter().eq(true_nodes.iter()));
 /// ```
 pub fn reference_position_from_gbz(graph: &GBZ, path_index: &PathIndex, query_pos: &FullPathName) -> Result<(PathPosition, FullPathName), String> {
     let path = GBZPath::with_name(graph, query_pos).ok_or(
