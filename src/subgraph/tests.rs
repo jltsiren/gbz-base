@@ -361,7 +361,7 @@ fn queries_and_counts() -> (Vec<SubgraphQuery>, Vec<(usize, usize)>) {
     let queries = vec![
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::All),
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::Distinct),
-        SubgraphQuery::node(14, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14], 1, HaplotypeOutput::Distinct),
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::ReferenceOnly),
         SubgraphQuery::path_offset(&path_b, 2, 1, HaplotypeOutput::Distinct),
     ];
@@ -381,7 +381,7 @@ fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
     let queries = vec![
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::All),
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::Distinct),
-        SubgraphQuery::node(14, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14], 1, HaplotypeOutput::Distinct),
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::ReferenceOnly),
         SubgraphQuery::path_offset(&path_b, 2, 1, HaplotypeOutput::Distinct),
     ];
@@ -465,7 +465,7 @@ fn queries_and_jsons(cigar: bool) -> (Vec<SubgraphQuery>, Vec<String>){
     let queries = vec![
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::All),
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::Distinct),
-        SubgraphQuery::node(14, 1, HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14], 1, HaplotypeOutput::Distinct),
         SubgraphQuery::path_offset(&path_a, 2, 1, HaplotypeOutput::ReferenceOnly),
     ];
 

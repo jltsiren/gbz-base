@@ -47,22 +47,21 @@ impl Display for HaplotypeOutput {
     }
 }
 
-// FIXME: There should be an enum (Offet(usize), Interval(Range<usize>), Node(usize)),
-// FIXME: Or maybe Nodes(Vec<usize>)
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum QueryType {
+    // Path name and offset in bp stored in the fragment field.
+    PathOffset(FullPathName),
+    // Starting position as in `PathOffset` and length in bp.
+    PathInterval((FullPathName, usize)),
+    // Set of node identifiers.
+    Nodes(BTreeSet<usize>),
+}
+
 // but we first need to implement context extraction based on an interval.
 /// Arguments for extracting a subgraph.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
-    // Name of the path to use as the reference path.
-    path_name: Option<FullPathName>,
-
-    // Position in the reference path (in bp).
-    // Fields `path_name` and `offset` must be both `Some` or both `None`.
-    offset: Option<usize>,
-
-    // Node to be used as the reference position.
-    // Fields `path_name` and `node` must be both `None` if this field is in use.
-    node_id: Option<usize>,
+    query_type: QueryType,
 
     // Context size around the reference position (in bp).
     context: usize,
@@ -85,16 +84,15 @@ impl SubgraphQuery {
     /// * `context`: Context length around the reference position (in bp).
     /// * `output`: How to output the haplotypes.
     pub fn path_offset(path_name: &FullPathName, offset: usize, context: usize, output: HaplotypeOutput) -> Self {
+        let mut path_name = path_name.clone();
+        path_name.fragment = offset;
         SubgraphQuery {
-            path_name: Some(path_name.clone()),
-            offset: Some(offset),
-            node_id: None,
+            query_type: QueryType::PathOffset(path_name),
             context,
-            output
+            output,
         }
     }
 
-    // FIXME: If interval length is odd, the right context is one bp too short.
     /// Cretes a query that retrieves a subgraph around a path interval.
     ///
     /// The reference path should be specified by using a sample name, a contig name, and optionally a haplotype number.
@@ -108,14 +106,12 @@ impl SubgraphQuery {
     /// * `context`: Context length around the reference interval (in bp).
     /// * `output`: How to output the haplotypes.
     pub fn path_interval(path_name: &FullPathName, interval: Range<usize>, context: usize, output: HaplotypeOutput) -> Self {
-        let radius = interval.len() / 2;
-        let midpoint = interval.start + radius;
+        let mut path_name = path_name.clone();
+        path_name.fragment = interval.start;
         SubgraphQuery {
-            path_name: Some(path_name.clone()),
-            offset: Some(midpoint),
-            node_id: None,
-            context: context + radius,
-            output
+            query_type: QueryType::PathInterval((path_name, interval.len())),
+            context,
+            output,
         }
     }
 
@@ -123,49 +119,26 @@ impl SubgraphQuery {
     ///
     /// # Arguments
     ///
-    /// * `node_id`: Identifier of the reference node.
+    /// * `nodes`: Set of node identifiers.
     /// * `context`: Context length around the reference node (in bp).
     /// * `output`: How to output the haplotypes.
     ///
     /// # Panics
     ///
     /// Panics if `output` is [`HaplotypeOutput::ReferenceOnly`].
-    pub fn node(node_id: usize, context: usize, output: HaplotypeOutput) -> Self {
+    pub fn nodes(nodes: impl IntoIterator<Item = usize>, context: usize, output: HaplotypeOutput) -> Self {
         if output == HaplotypeOutput::ReferenceOnly {
             panic!("Cannot output a reference path in a node-based query");
         }
         SubgraphQuery {
-            path_name: None,
-            offset: None,
-            node_id: Some(node_id),
+            query_type: QueryType::Nodes(nodes.into_iter().collect()),
             context,
-            output
+            output,
         }
     }
 
-    /// Returns `true` if this query is based on a path offset.
-    pub fn is_path_based(&self) -> bool {
-        self.path_name.is_some() && self.offset.is_some()
-    }
-
-    // Returns `true` if this query is based on a node.
-    pub fn is_node_based(&self) -> bool {
-        self.node_id.is_some()
-    }
-
-    /// Returns the path name for this query, or [`None`] if the query does not use a reference path.
-    pub fn path_name(&self) -> Option<&FullPathName> {
-        self.path_name.as_ref()
-    }
-
-    /// Returns the offset for this query, or [`None`] if the query does not use a reference path.
-    pub fn offset(&self) -> Option<usize> {
-        self.offset
-    }
-
-    /// Returns the node identifier for this query, or [`None`] if the query does not use a node.
-    pub fn node_id(&self) -> Option<usize> {
-        self.node_id
+    fn query_type(&self) -> &QueryType {
+        &self.query_type
     }
 
     /// Returns the context length (in bp) for the query.
@@ -177,23 +150,14 @@ impl SubgraphQuery {
     pub fn output(&self) -> HaplotypeOutput {
         self.output
     }
-
-    // Returns a path name containing the query offset, assuming that this is a path-based query.
-    fn path_name_with_offset(&self) -> FullPathName {
-        let mut result = self.path_name().unwrap().clone();
-        result.fragment = self.offset().unwrap();
-        result
-    }
 }
 
 impl Display for SubgraphQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if self.is_path_based() {
-            write!(f, "(path {}, offset {}, context {}, {})", self.path_name().unwrap(), self.offset.unwrap(), self.context, self.output)
-        } else if self.is_node_based() {
-            write!(f, "(node {}, context {}, {})", self.node_id.unwrap(), self.context, self.output)
-        } else {
-            write!(f, "(invalid query)")
+        match self.query_type() {
+            QueryType::PathOffset(path_name) => write!(f, "(path {}, context {}, {})", path_name, self.context, self.output),
+            QueryType::PathInterval((path_name, len)) => write!(f, "(path {}, len {}, context {}, {})", path_name, len, self.context, self.output),
+            QueryType::Nodes(nodes) => write!(f, "(nodes {:#?}, context {}, {})", nodes, self.context, self.output),
         }
     }
 }
@@ -317,14 +281,14 @@ impl Subgraph {
         self.insert_context(active, context, get_record)
     }
 
-    /// Updates the subgraph to a context around the given node.
+    /// Updates the subgraph to a context around the given nodes.
     ///
     /// Reuses existing records when possible.
     /// Removes all path information from the subgraph.
     ///
     /// # Arguments
     ///
-    /// * `node_id`: The reference node for the subgraph.
+    /// * `nodes`: Set of reference nodes for the subgraph.
     /// * `context`: The context length around the reference node (in bp).
     /// * `get_record`: A function that returns the record for the given node handle.
     ///
@@ -339,6 +303,7 @@ impl Subgraph {
     /// use gbwt::GBZ;
     /// use gbwt::support;
     /// use simple_sds::serialize;
+    /// use std::collections::BTreeSet;
     ///
     /// // Get the graph.
     /// let gbz_file = support::get_test_data("translation.gbz");
@@ -346,7 +311,9 @@ impl Subgraph {
     ///
     /// // Extract a subgraph that contains an 1 bp context around node 5.
     /// let mut subgraph = Subgraph::new();
-    /// let result = subgraph.around_node(5, 1, &mut |handle| {
+    /// let mut nodes = BTreeSet::new();
+    /// nodes.insert(5);
+    /// let result = subgraph.around_nodes(&nodes, 1, &mut |handle| {
     ///     GBZRecord::from_gbz(&graph, handle).ok_or(
     ///         format!("The graph does not contain handle {}", handle)
     ///     )
@@ -362,20 +329,20 @@ impl Subgraph {
     /// // But there are no paths.
     /// assert_eq!(subgraph.path_count(), 0);
     /// ```
-    pub fn around_node(
+    pub fn around_nodes(
         &mut self,
-        node_id: usize,
+        nodes: &BTreeSet<usize>,
         context: usize,
         get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>
     ) -> Result<(), String> {
-        // Start the graph traversal from both sides of the initial node.
+        // Start the graph traversal from both sides of the initial nodes.
         let mut active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>> = BinaryHeap::new();
-        let start_distance = 0;
-        let start = (node_id, NodeSide::Left);
-        active.push(Reverse((start_distance, start)));
-        let end_distance = 0;
-        let end = (node_id, NodeSide::Right);
-        active.push(Reverse((end_distance, end)));
+        for &node_id in nodes {
+            let start = (node_id, NodeSide::Left);
+            active.push(Reverse((0, start)));
+            let end = (node_id, NodeSide::Right);
+            active.push(Reverse((0, end)));
+        }
 
         self.insert_context(active, context, get_record)
     }
@@ -442,7 +409,6 @@ impl Subgraph {
         Ok(())
     }
 
-    // FIXME: from_gbz and from_db are very similar.
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
@@ -487,7 +453,7 @@ impl Subgraph {
     /// assert_eq!(subgraph.path_count(), 3);
     ///
     /// // We get the same result using a node id.
-    /// let query = SubgraphQuery::node(14, 1, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::nodes([14], 1, HaplotypeOutput::All);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_gbz(&graph, None, &query);
     /// assert!(result.is_ok());
@@ -495,28 +461,40 @@ impl Subgraph {
     /// assert_eq!(subgraph.path_count(), 3);
     /// ```
     pub fn from_gbz(&mut self, graph: &GBZ, path_index: Option<&PathIndex>, query: &SubgraphQuery) -> Result<(), String> {
-        // FIXME: Do interval-based properly.
-        if query.is_path_based() {
-            let path_index = path_index.ok_or(
-                String::from("Path index is required for path-based queries")
-            )?;
-            let query_pos = query.path_name_with_offset();
-            let reference_path = reference_position_from_gbz(graph, path_index, &query_pos)?;
-            self.around_position(reference_path.0.graph_pos(), query.context, &mut |handle| {
-                GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-            })?;
-            self.extract_paths(Some(reference_path), query.output())?;
-        } else if query.is_node_based() {
-            if query.output() == HaplotypeOutput::ReferenceOnly {
-                return Err(String::from("Cannot output a reference path in a node-based query"));
+        match query.query_type() {
+            QueryType::PathOffset(query_pos) => {
+                let path_index = path_index.ok_or(
+                    String::from("Path index is required for path-based queries")
+                )?;
+                let reference_path = reference_position_from_gbz(graph, path_index, query_pos)?;
+                self.around_position(reference_path.0.graph_pos(), query.context, &mut |handle| {
+                    GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                })?;
+                self.extract_paths(Some(reference_path), query.output())?;
             }
-            let node_id = query.node_id().unwrap();
-            self.around_node(node_id, query.context, &mut |handle| {
-                GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-            })?;
-            self.extract_paths(None, query.output())?;
-        } else {
-            return Err(format!("Invalid query: {}", query));
+            QueryType::PathInterval((query_pos, len)) => {
+                // FIXME: Do interval-based properly.
+                let path_index = path_index.ok_or(
+                    String::from("Path index is required for path-based queries")
+                )?;
+                let radius = len / 2;
+                let mut query_pos = query_pos.clone();
+                query_pos.fragment += radius;
+                let reference_path = reference_position_from_gbz(graph, path_index, &query_pos)?;
+                self.around_position(reference_path.0.graph_pos(), query.context + radius, &mut |handle| {
+                    GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                })?;
+                self.extract_paths(Some(reference_path), query.output())?;
+            }
+            QueryType::Nodes(nodes) => {
+                if query.output() == HaplotypeOutput::ReferenceOnly {
+                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                }
+                self.around_nodes(nodes, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                })?;
+                self.extract_paths(None, query.output())?;
+            }
         }
 
         Ok(())
@@ -569,27 +547,37 @@ impl Subgraph {
     /// fs::remove_file(&db_file).unwrap();
     /// ```
     pub fn from_db(&mut self, graph: &mut GraphInterface, query: &SubgraphQuery) -> Result<(), String> {
-        // FIXME: Do interval-based properly.
-        if query.is_path_based() {
-            let query_pos = query.path_name_with_offset();
-            let reference_path = reference_position_from_db(graph, &query_pos)?;
-            self.around_position(reference_path.0.graph_pos(), query.context, &mut |handle| {
-                let record = graph.get_record(handle)?;
-                record.ok_or(format!("The graph does not contain handle {}", handle))
-            })?;
-            self.extract_paths(Some(reference_path), query.output())?;
-        } else if query.is_node_based() {
-            if query.output() == HaplotypeOutput::ReferenceOnly {
-                return Err(String::from("Cannot output a reference path in a node-based query"));
+        match query.query_type() {
+            QueryType::PathOffset(query_pos) => {
+                let reference_path = reference_position_from_db(graph, query_pos)?;
+                self.around_position(reference_path.0.graph_pos(), query.context, &mut |handle| {
+                    let record = graph.get_record(handle)?;
+                    record.ok_or(format!("The graph does not contain handle {}", handle))
+                })?;
+                self.extract_paths(Some(reference_path), query.output())?;
             }
-            let node_id = query.node_id().unwrap();
-            self.around_node(node_id, query.context, &mut |handle| {
-                let record = graph.get_record(handle)?;
-                record.ok_or(format!("The graph does not contain handle {}", handle))
-            })?;
-            self.extract_paths(None, query.output())?;
-        } else {
-            return Err(format!("Invalid query: {}", query));
+            QueryType::PathInterval((query_pos, len)) => {
+                // FIXME: Do interval-based properly.
+                let radius = len / 2;
+                let mut query_pos = query_pos.clone();
+                query_pos.fragment += radius;
+                let reference_path = reference_position_from_db(graph, &query_pos)?;
+                self.around_position(reference_path.0.graph_pos(), query.context + radius, &mut |handle| {
+                    let record = graph.get_record(handle)?;
+                    record.ok_or(format!("The graph does not contain handle {}", handle))
+                })?;
+                self.extract_paths(Some(reference_path), query.output())?;
+            }
+            QueryType::Nodes(nodes) => {
+                if query.output() == HaplotypeOutput::ReferenceOnly {
+                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                }
+                self.around_nodes(nodes, query.context, &mut |handle| {
+                    let record = graph.get_record(handle)?;
+                    record.ok_or(format!("The graph does not contain handle {}", handle))
+                })?;
+                self.extract_paths(None, query.output())?;
+            }
         }
 
         Ok(())
