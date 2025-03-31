@@ -543,8 +543,8 @@ fn subgraph_from_gbz() {
         if let Err(err) = result {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
-        assert_eq!(subgraph.node_count(), *node_count, "Wrong node count for query {}", query);
-        assert_eq!(subgraph.path_count(), *path_count, "Wrong path count for query {}", query);
+        assert_eq!(subgraph.nodes(), *node_count, "Wrong node count for query {}", query);
+        assert_eq!(subgraph.paths(), *path_count, "Wrong path count for query {}", query);
     }
 }
 
@@ -564,8 +564,8 @@ fn subgraph_from_db() {
         if let Err(err) = result {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
-        assert_eq!(subgraph.node_count(), *node_count, "Wrong node count for query {}", query);
-        assert_eq!(subgraph.path_count(), *path_count, "Wrong path count for query {}", query);
+        assert_eq!(subgraph.nodes(), *node_count, "Wrong node count for query {}", query);
+        assert_eq!(subgraph.paths(), *path_count, "Wrong path count for query {}", query);
     }
 
     drop(graph);

@@ -16,6 +16,7 @@ use std::cmp;
 
 use gbwt::ENDMARKER;
 use gbwt::{GBZ, GBWT, GraphPosition, Orientation, Pos, FullPathName};
+use gbwt::gbz::EdgeIter;
 
 use gbwt::{algorithms, support};
 
@@ -200,7 +201,6 @@ pub struct Subgraph {
 
 //-----------------------------------------------------------------------------
 
-// TODO: This could implement an interface similar to the node/edge part of GBZ.
 /// Construction.
 impl Subgraph {
     /// Creates a new empty subgraph.
@@ -208,7 +208,6 @@ impl Subgraph {
         Subgraph::default()
     }
 
-    // FIXME: Make this report the number of inserted and removed nodes.
     /// Updates the subgraph to a context around the given graph position.
     ///
     /// Reuses existing records when possible.
@@ -248,12 +247,11 @@ impl Subgraph {
     ///
     /// // The subgraph should be centered around 1 bp node 14 of degree 4.
     /// let true_nodes = [12, 13, 14, 15, 16];
-    /// assert_eq!(subgraph.node_count(), true_nodes.len());
-    /// let node_ids = subgraph.node_ids();
-    /// assert!(node_ids.iter().eq(true_nodes.iter()));
+    /// assert_eq!(subgraph.nodes(), true_nodes.len());
+    /// assert!(subgraph.node_iter().eq(true_nodes.iter().copied()));
     ///
     /// // But there are no paths.
-    /// assert_eq!(subgraph.path_count(), 0);
+    /// assert_eq!(subgraph.paths(), 0);
     /// ```
     pub fn around_position(
         &mut self,
@@ -390,12 +388,11 @@ impl Subgraph {
     ///
     /// // The subgraph should be centered around 2 bp node 5 of degree 3.
     /// let true_nodes = [3, 4, 5, 6];
-    /// assert_eq!(subgraph.node_count(), true_nodes.len());
-    /// let node_ids = subgraph.node_ids();
-    /// assert!(node_ids.iter().eq(true_nodes.iter()));
+    /// assert_eq!(subgraph.nodes(), true_nodes.len());
+    /// assert!(subgraph.node_iter().eq(true_nodes.iter().copied()));
     ///
     /// // But there are no paths.
-    /// assert_eq!(subgraph.path_count(), 0);
+    /// assert_eq!(subgraph.paths(), 0);
     /// ```
     pub fn around_nodes(
         &mut self,
@@ -432,7 +429,7 @@ impl Subgraph {
 
         let mut active = active;
         let mut visited: BTreeSet<(usize, NodeSide)> = BTreeSet::new();
-        let mut to_remove = self.node_ids();
+        let mut to_remove: BTreeSet<usize> = self.node_iter().collect();
 
         while !active.is_empty() {
             let (distance, node_side) = active.pop().unwrap().0;
@@ -517,16 +514,16 @@ impl Subgraph {
     /// assert!(result.is_ok());
     ///
     /// // The subgraph should be centered around 1 bp node 14 of degree 4.
-    /// assert_eq!(subgraph.node_count(), 5);
-    /// assert_eq!(subgraph.path_count(), 3);
+    /// assert_eq!(subgraph.nodes(), 5);
+    /// assert_eq!(subgraph.paths(), 3);
     ///
     /// // We get the same result using a node id.
     /// let query = SubgraphQuery::nodes([14], 1, HaplotypeOutput::All);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_gbz(&graph, None, &query);
     /// assert!(result.is_ok());
-    /// assert_eq!(subgraph.node_count(), 5);
-    /// assert_eq!(subgraph.path_count(), 3);
+    /// assert_eq!(subgraph.nodes(), 5);
+    /// assert_eq!(subgraph.paths(), 3);
     /// ```
     pub fn from_gbz(&mut self, graph: &GBZ, path_index: Option<&PathIndex>, query: &SubgraphQuery) -> Result<(), String> {
         match query.query_type() {
@@ -602,8 +599,8 @@ impl Subgraph {
     /// assert!(result.is_ok());
     ///
     /// // The subgraph should be centered around 1 bp node 14 of degree 4.
-    /// assert_eq!(subgraph.node_count(), 5);
-    /// assert_eq!(subgraph.path_count(), 3);
+    /// assert_eq!(subgraph.nodes(), 5);
+    /// assert_eq!(subgraph.paths(), 3);
     ///
     /// // Clean up.
     /// drop(interface);
@@ -801,51 +798,6 @@ impl Subgraph {
         self.ref_id = Some(0);
         Ok(())
     }
-}
-
-//-----------------------------------------------------------------------------
-
-/// Operations.
-impl Subgraph {
-    /// Returns the number of nodes in the subgraph.
-    #[inline]
-    pub fn node_count(&self) -> usize {
-        self.records.len() / 2
-    }
-
-    /// Returns `true` if the subgraph contains the given node.
-    #[inline]
-    pub fn has_node(&self, node_id: usize) -> bool {
-        self.records.contains_key(&support::encode_node(node_id, Orientation::Forward))
-    }
-
-    /// Returns `true` if the subgraph contains the given handle.
-    #[inline]
-    pub fn has_handle(&self, handle: usize) -> bool {
-        self.records.contains_key(&handle)
-    }
-
-    /// Returns the set of node identifiers in the subgraph.
-    pub fn node_ids(&self) -> BTreeSet<usize> {
-        self.records.keys().map(|&handle| support::node_id(handle)).collect()
-    }
-
-    /// Returns the set of handles in the subgraph.
-    pub fn handles(&self) -> BTreeSet<usize> {
-        self.records.keys().cloned().collect()
-    }
-
-    /// Returns the record for the given node handle, or [`None`] if the node is not in the subgraph.
-    #[inline]
-    pub fn record(&self, handle: usize) -> Option<&GBZRecord> {
-        self.records.get(&handle)
-    }
-
-    /// Returns the record for the given node in the given orientation, or [`None`] if the node is not in the subgraph.
-    #[inline]
-    pub fn record_by_id(&self, node_id: usize, orientation: Orientation) -> Option<&GBZRecord> {
-        self.records.get(&support::encode_node(node_id, orientation))
-    }
 
     // Adds a new node to the subgraph.
     fn add_node_internal(&mut self, node_id: usize, get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>) -> Result<(), String> {
@@ -895,18 +847,94 @@ impl Subgraph {
         self.remove_node_internal(node_id);
     }
 
-    /// Returns the number of paths in the subgraph.
-    #[inline]
-    pub fn path_count(&self) -> usize {
-        self.paths.len()
-    }
-
     // Clears all path information from the subgraph.
     fn clear_paths(&mut self) {
         self.paths.clear();
         self.ref_id = None;
         self.ref_path = None;
         self.ref_interval = None;
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+/// Node/edge operations similar to [`GBZ`].
+impl Subgraph {
+    /// Returns the number of nodes in the subgraph.
+    #[inline]
+    pub fn nodes(&self) -> usize {
+        self.records.len() / 2
+    }
+
+    /// Returns the smallest node identifier in the subgraph.
+    #[inline]
+    pub fn min_node(&self) -> Option<usize> {
+        self.records.keys().next().map(|&handle| support::node_id(handle))
+    }
+
+    /// Returns the largest node identifier in the subgraph.
+    #[inline]
+    pub fn max_node(&self) -> Option<usize> {
+        self.records.keys().next_back().map(|&handle| support::node_id(handle))
+    }
+
+    /// Returns `true` if the subgraph contains the given node.
+    #[inline]
+    pub fn has_node(&self, node_id: usize) -> bool {
+        self.records.contains_key(&support::encode_node(node_id, Orientation::Forward))
+    }
+
+    /// Returns the sequence for the node in the subgraph, or [`None`] if there is no such node.
+    #[inline]
+    pub fn sequence(&self, node_id: usize) -> Option<&[u8]> {
+        self.records.get(&support::encode_node(node_id, Orientation::Forward)).map(|record| record.sequence())
+    }
+
+    /// Returns the sequence for the node in the given orientation, or [`None`] if there is no such node.
+    #[inline]
+    pub fn oriented_sequence(&self, node_id: usize, orientation: Orientation) -> Option<&[u8]> {
+        self.records.get(&support::encode_node(node_id, orientation)).map(|record| record.sequence())
+    }
+
+    /// Returns the length of the sequence for the node in the subgraph, or [`None`] if there is no such node.
+    #[inline]
+    pub fn sequence_len(&self, node_id: usize) -> Option<usize> {
+        self.records.get(&support::encode_node(node_id, Orientation::Forward)).map(|record| record.sequence_len())
+    }
+
+    /// Returns an iterator over the node identifiers in the subgraph.
+    ///
+    /// The identifiers are listed in ascending order.
+    pub fn node_iter(&'_ self) -> impl Iterator<Item = usize> + use<'_> {
+        self.records.keys().step_by(2).map(|&handle| support::node_id(handle))
+    }
+
+    /// Returns an iterator over the successors of an oriented node, or [`None`] if there is no such node.
+    pub fn successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
+        let handle = support::encode_node(node_id, orientation);
+        let gbz_record = self.records.get(&handle)?;
+        let record = gbz_record.to_gbwt_record();
+        Some(EdgeIter::new(record, false))
+    }
+
+    /// Returns an iterator over the predecessors of an oriented node, or [`None`] if there is no such node.
+    pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
+        let handle = support::encode_node(node_id, orientation);
+        let gbz_record = self.records.get(&handle)?;
+        let record = gbz_record.to_gbwt_record();
+        Some(EdgeIter::new(record, true))
+    }
+
+    // Returns the record for the given node handle, or [`None`] if the node is not in the subgraph.
+    #[inline]
+    fn record(&self, handle: usize) -> Option<&GBZRecord> {
+        self.records.get(&handle)
+    }
+
+    /// Returns the number of paths in the subgraph.
+    #[inline]
+    pub fn paths(&self) -> usize {
+        self.paths.len()
     }
 }
 
@@ -1411,9 +1439,8 @@ pub fn reference_position_from_db(graph: &mut GraphInterface, query_pos: &FullPa
 ///
 /// // The interval corresponds to nodes 14 and 15.
 /// let true_nodes = vec![12, 13, 14, 15, 16, 17];
-/// assert_eq!(subgraph.node_count(), true_nodes.len());
-/// let node_ids = subgraph.node_ids();
-/// assert!(node_ids.iter().eq(true_nodes.iter()));
+/// assert_eq!(subgraph.nodes(), true_nodes.len());
+/// assert!(subgraph.node_iter().eq(true_nodes.iter().copied()));
 /// ```
 pub fn reference_position_from_gbz(graph: &GBZ, path_index: &PathIndex, query_pos: &FullPathName) -> Result<(PathPosition, FullPathName), String> {
     let path = GBZPath::with_name(graph, query_pos).ok_or(
