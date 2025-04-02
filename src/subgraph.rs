@@ -167,20 +167,69 @@ impl Display for SubgraphQuery {
 
 // FIXME: Tests for the new functionality.
 
-// FIXME: example that replicates from_gbz with a path offset using lower-level functions.
-/// A subgraph based on a context around a graph position.
+/// A subgraph induced by a set of node identifiers.
 ///
-/// The position can be based on a path offset, a path interval, or a node identifier.
-/// The path used for extracting the subgraph becomes the reference path for it.
-/// Non-reference haplotypes do not have any metadata associated with them, as we cannot determine the identifier of a path from its GBWT position efficiently.
+/// The subgraph contains the specified nodes and the edges between them.
+/// Paths in the current subgraph can be extracted using [`Subgraph::extract_paths`].
+/// Only the provided reference path will have proper metadata.
+/// Other paths remain anonymous, as we cannot identify them efficiently using the GBWT.
+/// Any changes to the subgraph will remove the extracted paths.
+/// When a subgraph is changed, the operations will try to reuse already extracted node records.
+/// This makes it viable as a sliding window over a reference path.
 ///
-/// This struct is intended to be used as a sliding window in the graph.
-/// Individual nodes can be added and removed with the [`Subgraph::add_node`] and [`Subgraph::remove_node`] methods.
-/// The subgraph can be updated to a new context with the [`Subgraph::around_position`], [`Subgraph::around_interval`], and [`Subgraph::around_nodes`] methods.
-/// These methods reuse existing records when possible.
-/// Changes to the subgraph do not preserve paths; they must be re-extracted with the [`Subgraph::extract_paths`] method.
-/// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are convenience methods for extracting a subgraph using a [`SubgraphQuery`].
-/// The subgraph can be converted to GFA or JSON with the [`Subgraph::write_gfa`] and [`Subgraph::write_json`] methods.
+/// Node identifiers can be selected using:
+/// * [`Subgraph::add_node`] and [`Subgraph::remove_node`] with individual ids.
+/// * [`Subgraph::around_position`] for a context around a graph position.
+/// * [`Subgraph::around_interval`] for a context around path interval.
+/// * [`Subgraph::around_nodes`] for a context around a set of nodes.
+///
+/// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are integrated methods for extracting a subgraph using a [`SubgraphQuery`].
+///
+/// `Subgraph` implements a similar graph interface to the node/edge operations of [`GBZ`].
+/// It can also be serialized in GFA and JSON formats using [`Subgraph::write_gfa`] and [`Subgraph::write_json`].
+///
+/// # Examples
+///
+/// The following example replicates an offset-based [`Subgraph::from_gbz`] query using lower-level functions.
+///
+/// ```
+/// use gbz_base::{GBZRecord, PathIndex, Subgraph, HaplotypeOutput};
+/// use gbz_base::subgraph;
+/// use gbwt::{GBZ, FullPathName};
+/// use gbwt::support;
+/// use simple_sds::serialize;
+///
+/// // Get the graph.
+/// let gbz_file = support::get_test_data("example.gbz");
+/// let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+///
+/// // Create a path index with 3 bp intervals.
+/// let path_index = PathIndex::new(&graph, 3, false).unwrap();
+///
+/// // Find the position for path A offset 2.
+/// let mut query_pos = FullPathName::generic("A");
+/// query_pos.fragment = 2;
+/// let result = subgraph::reference_position_from_gbz(&graph, &path_index, &query_pos);
+/// assert!(result.is_ok());
+/// let (path_pos, path_name) = result.unwrap();
+///
+/// // Extract a 1 bp context around the position.
+/// let mut subgraph = Subgraph::new();
+/// let result = subgraph.around_position(path_pos.graph_pos(), 1, &mut |handle| {
+///    GBZRecord::from_gbz(&graph, handle).ok_or(
+///        format!("The graph does not contain handle {}", handle)
+///    )
+/// });
+/// assert!(result.is_ok());
+///
+/// // Extract all paths in the subgraph.
+/// let result = subgraph.extract_paths(Some((path_pos, path_name)), HaplotypeOutput::All);
+/// assert!(result.is_ok());
+///
+/// // The subgraph should be centered around 1 bp node 14 of degree 4.
+/// assert_eq!(subgraph.nodes(), 5);
+/// assert_eq!(subgraph.paths(), 3);
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Subgraph {
     // Node records for the subgraph.
@@ -211,7 +260,7 @@ impl Subgraph {
     /// Updates the subgraph to a context around the given graph position.
     ///
     /// Reuses existing records when possible.
-    /// Removes all path information from the subgraph.
+    /// Removes node records outside the context as well as all path information.
     ///
     /// # Arguments
     ///
@@ -280,7 +329,7 @@ impl Subgraph {
     /// Updates the subgraph to a context around the given path interval.
     ///
     /// Reuses existing records when possible.
-    /// Removes all path information from the subgraph.
+    /// Removes node records outside the context as well as all path information.
     /// See [`reference_position_from_gbz`] for an example.
     ///
     /// # Arguments
@@ -350,7 +399,7 @@ impl Subgraph {
     /// Updates the subgraph to a context around the given nodes.
     ///
     /// Reuses existing records when possible.
-    /// Removes all path information from the subgraph.
+    /// Removes node records outside the context as well as all path information.
     ///
     /// # Arguments
     ///
@@ -477,6 +526,7 @@ impl Subgraph {
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
+    /// Removes node records not covered by the query.
     ///
     /// # Arguments
     ///
@@ -564,6 +614,7 @@ impl Subgraph {
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
+    /// Removes node records not covered by the query.
     ///
     /// # Errors
     ///
@@ -654,7 +705,6 @@ impl Subgraph {
         }
     }
 
-    // FIXME: Example using add_node and remove_node.
     /// Extracts all paths in the subgraph.
     ///
     /// Clears the current paths in the subgraph.
@@ -671,6 +721,54 @@ impl Subgraph {
     /// Returns an error if no path visits the reference position.
     /// Returns an error if reference-only output is requested without a reference path.
     /// Clears all path information in case of an error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbz_base::{GBZRecord, Subgraph, HaplotypeOutput};
+    /// use gbwt::GBZ;
+    /// use gbwt::support;
+    /// use simple_sds::serialize;
+    ///
+    /// // Get the graph.
+    /// let gbz_file = support::get_test_data("example.gbz");
+    /// let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    /// let get_record = &mut |handle| {
+    ///     GBZRecord::from_gbz(&graph, handle).ok_or(
+    ///         format!("The graph does not contain handle {}", handle)
+    ///     )
+    /// };
+    ///
+    /// // Start with an empty subgraph and add a node.
+    /// let mut subgraph = Subgraph::new();
+    /// let result = subgraph.add_node(15, get_record);
+    /// assert!(result.is_ok());
+    ///
+    /// // There are no paths until we extract them.
+    /// assert_eq!(subgraph.paths(), 0);
+    /// let result = subgraph.extract_paths(None, HaplotypeOutput::All);
+    /// assert!(result.is_ok());
+    /// assert_eq!(subgraph.paths(), 2);
+    ///
+    /// // When we change the subgraph, we need to extract the paths again.
+    /// for node_id in [13, 14] {
+    ///    let result = subgraph.add_node(node_id, get_record);
+    ///    assert!(result.is_ok());
+    /// }
+    /// assert_eq!(subgraph.paths(), 0);
+    /// let result = subgraph.extract_paths(None, HaplotypeOutput::All);
+    /// assert!(result.is_ok());
+    /// assert_eq!(subgraph.paths(), 3);
+    ///
+    /// // The same is true for removing nodes.
+    /// for node_id in [14, 15] {
+    ///     subgraph.remove_node(node_id);
+    /// }
+    /// assert_eq!(subgraph.paths(), 0);
+    /// let result = subgraph.extract_paths(None, HaplotypeOutput::All);
+    /// assert!(result.is_ok());
+    /// assert_eq!(subgraph.paths(), 1);
+    /// ```
     pub fn extract_paths(
         &mut self,
         reference_path: Option<(PathPosition, FullPathName)>,
@@ -919,7 +1017,7 @@ impl Subgraph {
 
     /// Returns an iterator over the predecessors of an oriented node, or [`None`] if there is no such node.
     pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
-        let handle = support::encode_node(node_id, orientation);
+        let handle = support::encode_node(node_id, orientation.flip());
         let gbz_record = self.records.get(&handle)?;
         let record = gbz_record.to_gbwt_record();
         Some(EdgeIter::new(record, true))
