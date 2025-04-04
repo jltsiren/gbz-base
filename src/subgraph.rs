@@ -11,12 +11,13 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::io::{self, Write};
+use std::iter::FusedIterator;
 use std::ops::Range;
 use std::cmp;
 
 use gbwt::ENDMARKER;
 use gbwt::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
-use gbwt::gbz::EdgeIter;
+use gbwt::bwt::Record;
 
 use gbwt::{algorithms, support};
 
@@ -164,8 +165,6 @@ impl Display for SubgraphQuery {
 }
 
 //-----------------------------------------------------------------------------
-
-// FIXME: Tests for the new functionality.
 
 /// A subgraph induced by a set of node identifiers.
 ///
@@ -1180,6 +1179,7 @@ impl Subgraph {
 
 //-----------------------------------------------------------------------------
 
+// FIXME Examples using these
 /// Node/edge operations similar to [`GBZ`].
 impl Subgraph {
     /// Returns the number of nodes in the subgraph.
@@ -1204,6 +1204,12 @@ impl Subgraph {
     #[inline]
     pub fn has_node(&self, node_id: usize) -> bool {
         self.records.contains_key(&support::encode_node(node_id, Orientation::Forward))
+    }
+
+    // Returns `true` if the subgraph contains the given handle.
+    #[inline]
+    pub fn has_handle(&self, handle: usize) -> bool {
+        self.records.contains_key(&handle)
     }
 
     /// Returns the sequence for the node in the subgraph, or [`None`] if there is no such node.
@@ -1236,7 +1242,7 @@ impl Subgraph {
         let handle = support::encode_node(node_id, orientation);
         let gbz_record = self.records.get(&handle)?;
         let record = gbz_record.to_gbwt_record();
-        Some(EdgeIter::new(record, false))
+        Some(EdgeIter::new(record, self, false))
     }
 
     /// Returns an iterator over the predecessors of an oriented node, or [`None`] if there is no such node.
@@ -1244,7 +1250,7 @@ impl Subgraph {
         let handle = support::encode_node(node_id, orientation.flip());
         let gbz_record = self.records.get(&handle)?;
         let record = gbz_record.to_gbwt_record();
-        Some(EdgeIter::new(record, true))
+        Some(EdgeIter::new(record, self, true))
     }
 
     // Returns the record for the given node handle, or [`None`] if the node is not in the subgraph.
@@ -1474,7 +1480,7 @@ impl Subgraph {
             let from = support::decode_node(*handle);
             for successor in record.successors() {
                 let to = support::decode_node(successor);
-                if self.records.contains_key(&successor) && support::edge_is_canonical(from, to) {
+                if self.has_handle(successor) && support::edge_is_canonical(from, to) {
                     formats::write_gfa_link(
                         (from.0.to_string().as_bytes(), from.1),
                         (to.0.to_string().as_bytes(), to.1),
@@ -1530,7 +1536,7 @@ impl Subgraph {
             let from = support::decode_node(*handle);
             for successor in record.successors() {
                 let to = support::decode_node(successor);
-                if self.records.contains_key(&successor) && support::edge_is_canonical(from, to) {
+                if self.has_handle(successor) && support::edge_is_canonical(from, to) {
                     let edge = JSONValue::Object(vec![
                         ("from".to_string(), JSONValue::String(from.0.to_string())),
                         ("from_is_reverse".to_string(), JSONValue::Boolean(from.1 == Orientation::Reverse)),
@@ -1766,5 +1772,88 @@ impl Display for EditOperation {
         }
     }
 }
+
+//-----------------------------------------------------------------------------
+
+// FIXME examples
+/// An iterator over the predecessors or successors of a node.
+///
+/// The type of `Item` is `(`[`usize`]`, `[`Orientation`]`)`.
+/// These values encode the identifier and the orientation of the node.
+/// Successor nodes are always listed in sorted order.
+/// Predecessor nodes are sorted by their identifiers, but the reverse orientation is listed before the forward orientation.
+/// Like [`gbwt::gbz::EdgeIter`], but only for edges in the subgraph.
+#[derive(Clone, Debug)]
+pub struct EdgeIter<'a> {
+    record: Record<'a>, // FIXME: We could simply have an edge slice.
+    parent: &'a Subgraph,
+    // The first outrank that has not been visited.
+    next: usize,
+    // The first outrank that we should not visit.
+    limit: usize,
+    // Flip the orientation in the iterated values.
+    flip: bool,
+}
+
+
+impl<'a> EdgeIter<'a> {
+    /// Creates a new iterator over the successors of the record.
+    ///
+    /// If `flip` is `true`, the iterator will flip the orientation of the successors.
+    /// This is effectively the same as listing the predecessors of the reverse orientation of the record.
+    pub fn new(record: Record<'a>, parent: &'a Subgraph, flip: bool) -> Self {
+        let next = if record.outdegree() > 0 && record.successor(0) == ENDMARKER { 1 } else { 0 };
+        let limit = record.outdegree();
+        EdgeIter {
+            record,
+            parent,
+            next,
+            limit,
+            flip,
+        }
+    }
+}
+
+impl<'a> Iterator for EdgeIter<'a> {
+    type Item = (usize, Orientation);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next < self.limit {
+            let handle = self.record.successor(self.next);
+            self.next += 1;
+            if self.parent.has_handle(handle) {
+                let node_id = support::node_id(handle);
+                let orientation = if self.flip {
+                    support::node_orientation(handle).flip()
+                } else {
+                    support::node_orientation(handle)
+                };
+                return Some((node_id, orientation));
+            }
+        }
+        None
+    }
+}
+
+impl<'a> DoubleEndedIterator for EdgeIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        while self.next < self.limit {
+            let handle = self.record.successor(self.limit - 1);
+            self.limit -= 1;
+            if self.parent.has_handle(handle) {
+                let node_id = support::node_id(handle);
+                let orientation = if self.flip {
+                    support::node_orientation(handle).flip()
+                } else {
+                    support::node_orientation(handle)
+                };
+                return Some((node_id, orientation));
+            }
+        }
+        None
+    }
+}
+
+impl<'a> FusedIterator for EdgeIter<'a> {}
 
 //-----------------------------------------------------------------------------
