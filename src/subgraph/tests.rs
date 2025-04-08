@@ -794,6 +794,73 @@ fn manual_db_queries() {
     fs::remove_file(&db_file).unwrap();
 }
 
+
+#[test]
+fn duplicate_gbz_queries() {
+    let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let (queries, _) = queries_and_truth();
+    for query in queries {
+        let mut subgraph = Subgraph::new();
+        match query.query_type() {
+            QueryType::PathOffset(query_pos) => {
+                let result = subgraph.path_pos_from_gbz(&graph, &path_index, query_pos);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                let graph_pos = result.unwrap().0.graph_pos();
+                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                match result {
+                    Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
+                    Err(err) => panic!("Duplicate query {} failed: {}", query, err),
+                }
+            }
+            QueryType::PathInterval((query_pos, len)) => {
+                let result = subgraph.path_pos_from_gbz(&graph, &path_index, query_pos);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                let start_pos = result.unwrap().0;
+                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                match result {
+                    Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
+                    Err(err) => panic!("Duplicate query {} failed: {}", query, err),
+                }
+            }
+            QueryType::Nodes(nodes) => {
+                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                match result {
+                    Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
+                    Err(err) => panic!("Duplicate query {} failed: {}", query, err),
+                }
+            }
+        }
+    }
+}
+
 //-----------------------------------------------------------------------------
 
 // GFA/JSON output.

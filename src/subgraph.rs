@@ -486,6 +486,8 @@ impl Subgraph {
     ///
     /// Reuses existing records when possible.
     /// Removes node records outside the context as well as all path information.
+    /// Returns the number of inserted and removed nodes.
+    /// See [`Subgraph`] for an example.
     ///
     /// # Arguments
     ///
@@ -496,43 +498,12 @@ impl Subgraph {
     /// # Errors
     ///
     /// Passes through any errors from `get_record`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use gbz_base::{GBZRecord, Subgraph};
-    /// use gbwt::{GBZ, GraphPosition, Orientation};
-    /// use gbwt::support;
-    /// use simple_sds::serialize;
-    ///
-    /// // Get the graph.
-    /// let gbz_file = support::get_test_data("example.gbz");
-    /// let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    ///
-    /// // Extract a subgraph that contains an 1 bp context around node 14.
-    /// let pos = GraphPosition::new(14, Orientation::Forward, 0);
-    /// let mut subgraph = Subgraph::new();
-    /// let result = subgraph.around_position(pos, 1, &mut |handle| {
-    ///     GBZRecord::from_gbz(&graph, handle).ok_or(
-    ///         format!("The graph does not contain handle {}", handle)
-    ///     )
-    /// });
-    /// assert!(result.is_ok());
-    ///
-    /// // The subgraph should be centered around 1 bp node 14 of degree 4.
-    /// let true_nodes = [12, 13, 14, 15, 16];
-    /// assert_eq!(subgraph.nodes(), true_nodes.len());
-    /// assert!(subgraph.node_iter().eq(true_nodes.iter().copied()));
-    ///
-    /// // But there are no paths.
-    /// assert_eq!(subgraph.paths(), 0);
-    /// ```
     pub fn around_position(
         &mut self,
         pos: GraphPosition,
         context: usize,
         get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>
-    ) -> Result<(), String> {
+    ) -> Result<(usize, usize), String> {
         // The initial node is always in the subgraph, so we might as well add it now to determine sequence length.
         if !self.has_node(pos.node) {
             self.add_node_internal(pos.node, get_record)?;
@@ -555,6 +526,7 @@ impl Subgraph {
     ///
     /// Reuses existing records when possible.
     /// Removes node records outside the context as well as all path information.
+    /// Returns the number of inserted and removed nodes.
     /// See [`Self::path_pos_from_gbz`] for an example.
     ///
     /// # Arguments
@@ -574,7 +546,7 @@ impl Subgraph {
         len: usize,
         context: usize,
         get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>
-    ) -> Result<(), String> {
+    ) -> Result<(usize, usize), String> {
         if len == 0 {
             return Err(String::from("Interval length must be greater than 0"));
         }
@@ -625,6 +597,7 @@ impl Subgraph {
     ///
     /// Reuses existing records when possible.
     /// Removes node records outside the context as well as all path information.
+    /// Returns the number of inserted and removed nodes.
     ///
     /// # Arguments
     ///
@@ -673,7 +646,7 @@ impl Subgraph {
         nodes: &BTreeSet<usize>,
         context: usize,
         get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>
-    ) -> Result<(), String> {
+    ) -> Result<(usize, usize), String> {
         // Start the graph traversal from both sides of the initial nodes.
         let mut active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>> = BinaryHeap::new();
         for &node_id in nodes {
@@ -686,9 +659,9 @@ impl Subgraph {
         self.insert_context(active, context, get_record)
     }
 
-    // FIXME: check that if we call this twice, we do not add or remove any records.
     // Inserts all nodes within the context, starting from the active node sides.
     //
+    // Returns the number of inserted and removed nodes.
     // All nodes in `active` are assumed to be in the subgraph, even if the distances to the sides exceed the context.
     // Reuses existing records if possible.
     // Removes existing nodes that are not in the new context.
@@ -698,12 +671,13 @@ impl Subgraph {
         active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>>,
         context: usize,
         get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>
-    ) -> Result<(), String> {
+    ) -> Result<(usize, usize), String> {
         self.clear_paths();
 
         let mut active = active;
         let mut visited: BTreeSet<(usize, NodeSide)> = BTreeSet::new();
         let mut to_remove: BTreeSet<usize> = self.node_iter().collect();
+        let mut inserted = 0;
 
         while !active.is_empty() {
             let (distance, node_side) = active.pop().unwrap().0;
@@ -714,6 +688,7 @@ impl Subgraph {
             to_remove.remove(&node_side.0);
             if !self.has_node(node_side.0) {
                 self.add_node_internal(node_side.0, get_record)?;
+                inserted += 1;
             }
 
             // We can reach the other side by traversing the node.
@@ -742,10 +717,11 @@ impl Subgraph {
             }
         }
 
+        let removed = to_remove.len();
         for node_id in to_remove {
             self.remove_node_internal(node_id);
         }
-        Ok(())
+        Ok((inserted, removed))
     }
 
     /// Extracts a subgraph around the given query position.
