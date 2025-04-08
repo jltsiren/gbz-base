@@ -4,6 +4,8 @@
 //! The subgraph contains all nodes within a given context and all edges between them.
 //! All other paths within the subgraph can also be extracted, but they will not have any true metadata associated with them.
 
+// TODO: Could we just provide the GBZ / DB versions of get_record() somewhere?
+
 use crate::{GBZRecord, GBZPath, GraphInterface, PathIndex};
 use crate::formats::{self, WalkMetadata, JSONValue};
 
@@ -182,7 +184,7 @@ impl Display for SubgraphQuery {
 /// * [`Subgraph::around_interval`] for a context around path interval.
 /// * [`Subgraph::around_nodes`] for a context around a set of nodes.
 ///
-/// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are integrated methods for extracting a subgraph using a [`SubgraphQuery`].
+/// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are integrated methods for extracting a subgraph with paths using a [`SubgraphQuery`].
 ///
 /// `Subgraph` implements a similar graph interface to the node/edge operations of [`GBZ`].
 /// It can also be serialized in GFA and JSON formats using [`Subgraph::write_gfa`] and [`Subgraph::write_json`].

@@ -357,34 +357,34 @@ fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathInde
     (graph, path_index.unwrap())
 }
 
-fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_count: usize) {
+fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_count: usize, test_case: &str) {
     // Counts.
-    assert_eq!(subgraph.nodes(), true_nodes.len(), "Wrong number of nodes in subgraph");
-    assert_eq!(subgraph.paths(), path_count, "Wrong number of paths in subgraph");
+    assert_eq!(subgraph.nodes(), true_nodes.len(), "Wrong number of nodes for {}", test_case);
+    assert_eq!(subgraph.paths(), path_count, "Wrong number of paths for {}", test_case);
 
     // Minimum and maximum node ids, assuming that `true_nodes` is sorted.
     if !true_nodes.is_empty() {
-        assert_eq!(subgraph.min_node(), true_nodes.first().copied(), "Wrong minimum node id in subgraph");
-        assert_eq!(subgraph.max_node(), true_nodes.last().copied(), "Wrong maximum node id in subgraph");
+        assert_eq!(subgraph.min_node(), true_nodes.first().copied(), "Wrong minimum node id for {}", test_case);
+        assert_eq!(subgraph.max_node(), true_nodes.last().copied(), "Wrong maximum node id for {}", test_case);
     }
 
     // Node ids and sequences.
-    assert!(subgraph.node_iter().eq(true_nodes.iter().copied()), "Wrong node ids in subgraph");
+    assert!(subgraph.node_iter().eq(true_nodes.iter().copied()), "Wrong node ids for {}", test_case);
     for node_id in graph.node_iter() {
         if true_nodes.contains(&node_id) {
-            assert!(subgraph.has_node(node_id), "Subgraph does not contain node {}", node_id);
+            assert!(subgraph.has_node(node_id), "Subgraph {} does not contain node {}", test_case, node_id);
             let forward = graph.sequence(node_id).unwrap();
             let reverse = support::reverse_complement(forward);
-            assert_eq!(subgraph.sequence(node_id), Some(forward), "Subgraph has wrong sequence for node {}", node_id);
-            assert_eq!(subgraph.oriented_sequence(node_id, Orientation::Forward), Some(forward), "Subgraph has wrong forward sequence for node {}", node_id);
-            assert_eq!(subgraph.oriented_sequence(node_id, Orientation::Reverse), Some(reverse.as_slice()), "Subgraph has wrong reverse sequence for node {}", node_id);
-            assert_eq!(subgraph.sequence_len(node_id), Some(forward.len()), "Subgraph has wrong sequence length for node {}", node_id);
+            assert_eq!(subgraph.sequence(node_id), Some(forward), "Subgraph {} has wrong sequence for node {}", test_case, node_id);
+            assert_eq!(subgraph.oriented_sequence(node_id, Orientation::Forward), Some(forward), "Subgraph {} has wrong forward sequence for node {}", test_case, node_id);
+            assert_eq!(subgraph.oriented_sequence(node_id, Orientation::Reverse), Some(reverse.as_slice()), "Subgraph {} has wrong reverse sequence for node {}", test_case, node_id);
+            assert_eq!(subgraph.sequence_len(node_id), Some(forward.len()), "Subgraph {} has wrong sequence length for node {}", test_case, node_id);
         } else {
-            assert!(!subgraph.has_node(node_id), "Subgraph contains node {}", node_id);
-            assert!(subgraph.sequence(node_id).is_none(), "Subgraph contains sequence for node {}", node_id);
-            assert!(subgraph.oriented_sequence(node_id, Orientation::Forward).is_none(), "Subgraph contains forward sequence for node {}", node_id);
-            assert!(subgraph.oriented_sequence(node_id, Orientation::Reverse).is_none(), "Subgraph contains reverse sequence for node {}", node_id);
-            assert!(subgraph.sequence_len(node_id).is_none(), "Subgraph contains sequence length for node {}", node_id);
+            assert!(!subgraph.has_node(node_id), "Subgraph {} contains node {}", test_case, node_id);
+            assert!(subgraph.sequence(node_id).is_none(), "Subgraph {} contains sequence for node {}", test_case, node_id);
+            assert!(subgraph.oriented_sequence(node_id, Orientation::Forward).is_none(), "Subgraph {} contains forward sequence for node {}", test_case, node_id);
+            assert!(subgraph.oriented_sequence(node_id, Orientation::Reverse).is_none(), "Subgraph {} contains reverse sequence for node {}", test_case, node_id);
+            assert!(subgraph.sequence_len(node_id).is_none(), "Subgraph {} contains sequence length for node {}", test_case, node_id);
         }
     }
 
@@ -394,18 +394,18 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
             if subgraph.has_node(node_id) {
                 let graph_succ = graph.successors(node_id, orientation).unwrap();
                 let subgraph_succ = subgraph.successors(node_id, orientation);
-                assert!(subgraph_succ.is_some(), "Subgraph does not contain successors for node {} ({})", node_id, orientation);
+                assert!(subgraph_succ.is_some(), "Subgraph {} does not contain successors for node {} ({})", test_case, node_id, orientation);
                 let subgraph_succ = subgraph_succ.unwrap();
-                assert!(graph_succ.filter(|(id, _)| subgraph.has_node(*id)).eq(subgraph_succ), "Subgraph has wrong successors for node {} ({})", node_id, orientation);
+                assert!(graph_succ.filter(|(id, _)| subgraph.has_node(*id)).eq(subgraph_succ), "Subgraph {} has wrong successors for node {} ({})", test_case, node_id, orientation);
 
                 let graph_pred = graph.predecessors(node_id, orientation).unwrap();
                 let subgraph_pred = subgraph.predecessors(node_id, orientation);
-                assert!(subgraph_pred.is_some(), "Subgraph does not contain predecessors for node {} ({})", node_id, orientation);
+                assert!(subgraph_pred.is_some(), "Subgraph {} does not contain predecessors for node {} ({})", test_case, node_id, orientation);
                 let subgraph_pred = subgraph_pred.unwrap();
-                assert!(graph_pred.filter(|(id, _)| subgraph.has_node(*id)).eq(subgraph_pred), "Subgraph has wrong predecessors for node {} ({})", node_id, orientation);
+                assert!(graph_pred.filter(|(id, _)| subgraph.has_node(*id)).eq(subgraph_pred), "Subgraph {} has wrong predecessors for node {} ({})", test_case, node_id, orientation);
             } else {
-                assert!(subgraph.successors(node_id, orientation).is_none(), "Subgraph contains successors for node {} ({})", node_id, orientation);
-                assert!(subgraph.predecessors(node_id, orientation).is_none(), "Subgraph contains predecessors for node {} ({})", node_id, orientation);
+                assert!(subgraph.successors(node_id, orientation).is_none(), "Subgraph {} contains successors for node {} ({})", test_case, node_id, orientation);
+                assert!(subgraph.predecessors(node_id, orientation).is_none(), "Subgraph {} contains predecessors for node {} ({})", test_case, node_id, orientation);
             }
         }
     }
@@ -595,10 +595,6 @@ fn queries_and_jsons(cigar: bool) -> (Vec<SubgraphQuery>, Vec<String>){
 
 // Construction and operations.
 
-// FIXME: path_pos_from_gbz() and path_pos_from_db()
-
-// FIXME: around_position(), around_interval(), and around_nodes(); + extract_paths()
-
 #[test]
 fn random_nodes() {
     let gbz_file = support::get_test_data("example.gbz");
@@ -630,7 +626,7 @@ fn random_nodes() {
 
     // We have a subgraph with known nodes and no paths.
     let true_nodes: Vec<usize> = selected.iter().copied().collect();
-    check_subgraph(&graph, &subgraph, &true_nodes, 0);
+    check_subgraph(&graph, &subgraph, &true_nodes, 0, "(random nodes)");
 }
 
 #[test]
@@ -643,7 +639,7 @@ fn subgraph_from_gbz() {
         if let Err(err) = result {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
-        check_subgraph(&graph, &subgraph, &true_nodes, *path_count);
+        check_subgraph(&graph, &subgraph, &true_nodes, *path_count, &query.to_string());
     }
 }
 
@@ -664,7 +660,133 @@ fn subgraph_from_db() {
         if let Err(err) = result {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
-        check_subgraph(&gbz_graph, &subgraph, &true_nodes, *path_count);
+        check_subgraph(&gbz_graph, &subgraph, &true_nodes, *path_count, &query.to_string());
+    }
+
+    drop(graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
+}
+
+#[test]
+fn manual_gbz_queries() {
+    let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let (queries, truth) = queries_and_truth();
+    for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
+        let mut subgraph = Subgraph::new();
+        let mut reference_path = None;
+        match query.query_type() {
+            QueryType::PathOffset(query_pos) => {
+                let result = subgraph.path_pos_from_gbz(&graph, &path_index, query_pos);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                reference_path = Some(result.unwrap());
+                let graph_pos = reference_path.as_ref().unwrap().0.graph_pos();
+                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            }
+            QueryType::PathInterval((query_pos, len)) => {
+                let result = subgraph.path_pos_from_gbz(&graph, &path_index, query_pos);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                reference_path = Some(result.unwrap());
+                let start_pos = reference_path.as_ref().unwrap().0;
+                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            }
+            QueryType::Nodes(nodes) => {
+                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
+                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            }
+        }
+
+        // We do not have paths yet.
+        assert_eq!(subgraph.paths(), 0, "Subgraph {} has paths", query);
+        let result = subgraph.extract_paths(reference_path, query.output());
+        if let Err(err) = result {
+            panic!("Path extraction for query {} failed: {}", query, err);
+        }
+        check_subgraph(&graph, &subgraph, &true_nodes, *path_count, &query.to_string());
+    }
+}
+
+#[test]
+fn manual_db_queries() {
+    let gbz_file = support::get_test_data("example.gbz");
+    let gbz_graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let db_file = serialize::temp_file_name("subgraph-from-db");
+    let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut graph = GraphInterface::new(&mut database).unwrap();
+
+    let (queries, truth) = queries_and_truth();
+    for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
+        let mut subgraph = Subgraph::new();
+        let mut reference_path = None;
+        match query.query_type() {
+            QueryType::PathOffset(query_pos) => {
+                let result = subgraph.path_pos_from_db(&mut graph, query_pos);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                reference_path = Some(result.unwrap());
+                let graph_pos = reference_path.as_ref().unwrap().0.graph_pos();
+                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
+                    let record = graph.get_record(handle)?;
+                    record.ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            }
+            QueryType::PathInterval((query_pos, len)) => {
+                let result = subgraph.path_pos_from_db(&mut graph, query_pos);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                reference_path = Some(result.unwrap());
+                let start_pos = reference_path.as_ref().unwrap().0;
+                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
+                    let record = graph.get_record(handle)?;
+                    record.ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            }
+            QueryType::Nodes(nodes) => {
+                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
+                    let record = graph.get_record(handle)?;
+                    record.ok_or(format!("The graph does not contain handle {}", handle))
+                });
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            }
+        }
+
+        // We do not have paths yet.
+        assert_eq!(subgraph.paths(), 0, "Subgraph {} has paths", query);
+        let result = subgraph.extract_paths(reference_path, query.output());
+        if let Err(err) = result {
+            panic!("Path extraction for query {} failed: {}", query, err);
+        }
+        check_subgraph(&gbz_graph, &subgraph, &true_nodes, *path_count, &query.to_string());
     }
 
     drop(graph);
