@@ -19,7 +19,6 @@ use std::cmp;
 
 use gbwt::ENDMARKER;
 use gbwt::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
-use gbwt::bwt::Record;
 
 use gbwt::{algorithms, support};
 
@@ -119,12 +118,12 @@ impl SubgraphQuery {
         }
     }
 
-    /// Creates a query that retrieves a subgraph around a node.
+    /// Creates a query that retrieves a subgraph around a set of nodes.
     ///
     /// # Arguments
     ///
     /// * `nodes`: Set of node identifiers.
-    /// * `context`: Context length around the reference node (in bp).
+    /// * `context`: Context length around the reference nodes (in bp).
     /// * `output`: How to output the haplotypes.
     ///
     /// # Panics
@@ -192,10 +191,11 @@ impl Display for SubgraphQuery {
 /// # Examples
 ///
 /// The following example replicates an offset-based [`Subgraph::from_gbz`] query using lower-level functions.
+/// It also demonstrates some parts of the graph interface in the subgraph object.
 ///
 /// ```
 /// use gbz_base::{GBZRecord, PathIndex, Subgraph, HaplotypeOutput};
-/// use gbwt::{GBZ, FullPathName};
+/// use gbwt::{GBZ, FullPathName, Orientation};
 /// use gbwt::support;
 /// use simple_sds::serialize;
 ///
@@ -227,8 +227,26 @@ impl Display for SubgraphQuery {
 /// assert!(result.is_ok());
 ///
 /// // The subgraph should be centered around 1 bp node 14 of degree 4.
-/// assert_eq!(subgraph.nodes(), 5);
+/// let nodes = [12, 13, 14, 15, 16];
+/// assert_eq!(subgraph.nodes(), nodes.len());
+/// assert!(subgraph.node_iter().eq(nodes.iter().copied()));
 /// assert_eq!(subgraph.paths(), 3);
+///
+/// // The result is a subgraph induced by the nodes.
+/// for &node_id in nodes.iter() {
+///     assert!(subgraph.has_node(node_id));
+///     assert_eq!(subgraph.sequence(node_id), graph.sequence(node_id));
+///     for orientation in [Orientation::Forward, Orientation::Reverse] {
+///         // Successors are present if they are in the subgraph.
+///         let sub_succ = subgraph.successors(node_id, orientation).unwrap();
+///         let graph_succ = graph.successors(node_id, orientation).unwrap();
+///         assert!(sub_succ.eq(graph_succ.filter(|(id, _)| nodes.contains(id))));
+///         // And the same applies to predecessors.
+///         let sub_pred = subgraph.predecessors(node_id, orientation).unwrap();
+///         let graph_pred = graph.predecessors(node_id, orientation).unwrap();
+///         assert!(sub_pred.eq(graph_pred.filter(|(id, _)| nodes.contains(id))));
+///     }
+/// }
 /// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Subgraph {
@@ -1157,7 +1175,6 @@ impl Subgraph {
 
 //-----------------------------------------------------------------------------
 
-// FIXME Examples using these
 /// Node/edge operations similar to [`GBZ`].
 impl Subgraph {
     /// Returns the number of nodes in the subgraph.
@@ -1218,17 +1235,15 @@ impl Subgraph {
     /// Returns an iterator over the successors of an oriented node, or [`None`] if there is no such node.
     pub fn successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
         let handle = support::encode_node(node_id, orientation);
-        let gbz_record = self.records.get(&handle)?;
-        let record = gbz_record.to_gbwt_record();
-        Some(EdgeIter::new(record, self, false))
+        let record = self.records.get(&handle)?;
+        Some(EdgeIter::new(self, record, false))
     }
 
     /// Returns an iterator over the predecessors of an oriented node, or [`None`] if there is no such node.
     pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
         let handle = support::encode_node(node_id, orientation.flip());
-        let gbz_record = self.records.get(&handle)?;
-        let record = gbz_record.to_gbwt_record();
-        Some(EdgeIter::new(record, self, true))
+        let record = self.records.get(&handle)?;
+        Some(EdgeIter::new(self, record, true))
     }
 
     // Returns the record for the given node handle, or [`None`] if the node is not in the subgraph.
@@ -1753,7 +1768,6 @@ impl Display for EditOperation {
 
 //-----------------------------------------------------------------------------
 
-// FIXME examples
 /// An iterator over the predecessors or successors of a node.
 ///
 /// The type of `Item` is `(`[`usize`]`, `[`Orientation`]`)`.
@@ -1763,8 +1777,9 @@ impl Display for EditOperation {
 /// Like [`gbwt::gbz::EdgeIter`], but only for edges in the subgraph.
 #[derive(Clone, Debug)]
 pub struct EdgeIter<'a> {
-    record: Record<'a>, // FIXME: We could simply have an edge slice.
     parent: &'a Subgraph,
+    // Successors of the record, excluding the possible endmarker.
+    successors: &'a [Pos],
     // The first outrank that has not been visited.
     next: usize,
     // The first outrank that we should not visit.
@@ -1779,13 +1794,13 @@ impl<'a> EdgeIter<'a> {
     ///
     /// If `flip` is `true`, the iterator will flip the orientation of the successors.
     /// This is effectively the same as listing the predecessors of the reverse orientation of the record.
-    pub fn new(record: Record<'a>, parent: &'a Subgraph, flip: bool) -> Self {
-        let next = if record.outdegree() > 0 && record.successor(0) == ENDMARKER { 1 } else { 0 };
-        let limit = record.outdegree();
+    pub fn new(parent: &'a Subgraph, record: &'a GBZRecord, flip: bool) -> Self {
+        let successors = record.edges_slice();
+        let limit = successors.len();
         EdgeIter {
-            record,
             parent,
-            next,
+            successors,
+            next: 0,
             limit,
             flip,
         }
@@ -1797,7 +1812,7 @@ impl<'a> Iterator for EdgeIter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while self.next < self.limit {
-            let handle = self.record.successor(self.next);
+            let handle = self.successors[self.next].node;
             self.next += 1;
             if self.parent.has_handle(handle) {
                 let node_id = support::node_id(handle);
@@ -1816,7 +1831,7 @@ impl<'a> Iterator for EdgeIter<'a> {
 impl<'a> DoubleEndedIterator for EdgeIter<'a> {
     fn next_back(&mut self) -> Option<Self::Item> {
         while self.next < self.limit {
-            let handle = self.record.successor(self.limit - 1);
+            let handle = self.successors[self.limit - 1].node;
             self.limit -= 1;
             if self.parent.has_handle(handle) {
                 let node_id = support::node_id(handle);
