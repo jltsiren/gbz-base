@@ -20,15 +20,16 @@ fn main() -> Result<(), String> {
 
     // Determine the type of the input file and extract the subgraph accordingly.
     let use_gbz = GBZ::is_gbz(&config.filename);
-    let subgraph = if use_gbz {
+    let mut subgraph = Subgraph::new();
+    if use_gbz {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
-        Subgraph::from_gbz(&graph, Some(&path_index), &config.query)?
+        subgraph.from_gbz(&graph, Some(&path_index), &config.query)?;
     } else {
         let database = GBZBase::open(&config.filename)?;
         let mut graph = GraphInterface::new(&database)?;
-        Subgraph::from_db(&mut graph, &config.query)?
-    };
+        subgraph.from_db(&mut graph, &config.query)?;
+    }
 
     // Write the output.
     let mut output = io::stdout();
@@ -71,9 +72,9 @@ impl Config {
         opts.optflag("h", "help", "print this help");
         opts.optopt("", "sample", "sample name (default: no sample name)", "STR");
         opts.optopt("", "contig", "contig name (required for -o and -i)", "STR");
-        opts.optopt("o", "offset", "sequence offset (-o, -i, or -n is required)", "INT");
-        opts.optopt("i", "interval", "sequence interval (-o, -i, or -n is required)", "INT..INT");
-        opts.optopt("n", "node", "node identifier (-o, -i, or -n is required)", "INT");
+        opts.optopt("o", "offset", "sequence offset", "INT");
+        opts.optopt("i", "interval", "sequence interval", "INT..INT");
+        opts.optmulti("n", "node", "node identifier (may repeat)", "INT");
         let context_desc = format!("context length in bp (default: {})", Self::DEFAULT_CONTEXT);
         opts.optopt("", "context", &context_desc, "INT");
         opts.optflag("", "distinct", "output distinct haplotypes with weights");
@@ -82,8 +83,8 @@ impl Config {
         opts.optopt("", "format", "output format (gfa or json, default: gfa)", "STR");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
+        let header = format!("Usage: {} [options] graph.gbz[.db]\n\nQuery type must be speficied using one of -o, -i, and -n.", program);
         if matches.opt_present("help") {
-            let header = format!("Usage: {} [options] graph.gbz[.db]", program);
             eprint!("{}", opts.usage(&header));
             process::exit(0);
         }
@@ -91,7 +92,6 @@ impl Config {
         let filename = if let Some(s) = matches.free.first() {
             s.clone()
         } else {
-            let header = format!("Usage: {} [options] graph.gbz[.db]", program);
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
@@ -163,14 +163,15 @@ impl Config {
             let interval = Self::parse_interval(&s)?;
             let query = SubgraphQuery::path_interval(&path_name.unwrap(), interval, context, output);
             Ok(query)
-        }
-        else if let Some(s) = matches.opt_str("node") {
-            let node = Self::parse_integer(&s, "node")?;
-            let query = SubgraphQuery::node(node, context, output);
+        } else {
+            let node_strings = matches.opt_strs("node");
+            let mut nodes = Vec::with_capacity(node_strings.len());
+            for node in node_strings {
+                let id = Self::parse_integer(&node, "node")?;
+                nodes.push(id);
+            }
+            let query = SubgraphQuery::nodes(nodes, context, output);
             Ok(query)
-        }
-        else {
-            unreachable!();
         }
     }
 }

@@ -1103,6 +1103,18 @@ impl GBZRecord {
         self.edges.iter().filter(|x| x.node != gbwt::ENDMARKER).copied()
     }
 
+    /// Returns the slice of edges stored in the record.
+    ///
+    /// Each edge is a pair consisting of a destination node handle and a offset in the corresponding GBWT record.
+    /// The edges are sorted by destination node.
+    /// This slice does not list the possible edge to [`gbwt::ENDMARKER`], as it only exists for technical purposes.
+    pub(crate) fn edges_slice(&self) -> &[Pos] {
+        if !self.edges.is_empty() && self.edges[0].node == gbwt::ENDMARKER {
+            return &self.edges[1..];
+        }
+        &self.edges
+    }
+
     /// Returns the sequence of the record.
     ///
     /// This is the sequence of the node in the correct orientation.
