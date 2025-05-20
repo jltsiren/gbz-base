@@ -30,8 +30,8 @@ fn main() -> Result<(), String> {
     // Statistics.
     let database = GAFBase::open(&config.db_file)?;
     eprintln!(
-        "The database contains {} nodes, {} alignments, and {} sequences",
-        database.nodes(), database.alignments(), database.sequences()
+        "The database contains {} nodes and {} alignments",
+        database.nodes(), database.alignments()
     );
     let size = database.file_size().unwrap_or(String::from("unknown"));
     eprintln!("Final database size: {}", size);

@@ -10,8 +10,11 @@
 use crate::{db, utils};
 
 use std::fmt::Display;
+use std::io::Write;
 use std::ops::Range;
 use std::str;
+
+use zstd::stream::Encoder as ZstdEncoder;
 
 use gbwt::{GBWT, Metadata, Orientation, Pos};
 use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
@@ -470,11 +473,11 @@ impl Alignment {
 
         // Coordinates.
         Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, &mut encoder);
-        if let TargetPath::StartPosition(pos) = self.path {
+/*        if let TargetPath::StartPosition(pos) = self.path {
             encoder.write(pos.offset);
         } else {
             panic!("Target path is not stored relative to a GBWT index");
-        }
+        }*/
         Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, &mut encoder);
 
         // Alignment statistics.
@@ -482,7 +485,10 @@ impl Alignment {
             encoder.write(self.matches);
             encoder.write(self.edits);
         }
-        encoder.write(self.mapq.unwrap_or(Self::MISSING_MAPQ));
+        if let Some(mapq) = self.mapq {
+            encoder.write(mapq);
+        }
+//        encoder.write(self.mapq.unwrap_or(Self::MISSING_MAPQ));
         if let Some(score) = self.score {
             Self::encode_signed(score, &mut encoder);
         };
@@ -503,30 +509,43 @@ impl Alignment {
         Some(encoder.encode(base_quality).unwrap())
     }
 
+    // FIXME: remove
     /// Encodes the difference string as a blob.
     ///
     /// Returns [`None`] if the difference string is missing.
+    /// [`Difference::End`] values are not included in the encoding, but one is always added at the end.
     pub fn encode_difference(&self) -> Option<Vec<u8>> {
-        let difference = self.difference.as_ref()?;
-
+        if self.difference.is_none() {
+            return None;
+        }
         let mut encoder = RLE::with_sigma(Difference::NUM_TYPES);
-        for diff in difference.iter() {
-            match diff {
-                Difference::Match(len) => encoder.write(Run::new(0, *len)),
-                Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
-                Difference::Insertion(seq) => {
-                    let len = utils::encoded_length(seq.len());
-                    encoder.write(Run::new(2, len));
-                    let encoded = utils::encode_sequence(seq);
-                    for byte in encoded {
-                        encoder.write_byte(byte);
-                    }
-                },
-                Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
+        self.encode_difference_into(&mut encoder);
+        Some(Vec::from(encoder))
+    }
+
+    /// Encodes the difference string into the given encoder.
+    ///
+    /// [`Difference::End`] values are not included in the encoding, but one is always added at the end.
+    pub fn encode_difference_into(&self, encoder: &mut RLE) {
+        if let Some(difference) = self.difference.as_ref() {
+            for diff in difference.iter() {
+                match diff {
+                    Difference::Match(len) => encoder.write(Run::new(0, *len)),
+                    Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
+                    Difference::Insertion(seq) => {
+                        let len = utils::encoded_length(seq.len());
+                        encoder.write(Run::new(2, len));
+                        let encoded = utils::encode_sequence(seq);
+                        for byte in encoded {
+                            encoder.write_byte(byte);
+                        }
+                    },
+                    Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
+                    Difference::End => {},
+                }
             }
         }
-
-        Some(Vec::from(encoder))
+        encoder.write(Run::new(4, 1));
     }
 
     const FLAG_PAIR_SAME_NAME: u8 = 0x01;
@@ -613,6 +632,7 @@ impl Alignment {
                     result.push(Difference::Insertion(seq));
                 },
                 3 => result.push(Difference::Deletion(run.len)),
+                4 => break,
                 _ => return Err(format!("Invalid difference string operation: {}", run.value)),
             }
         }
@@ -718,6 +738,34 @@ impl Alignment {
             base_quality, difference, pair,
             optional,
         })
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// FIXME test these
+// Operations on the Alignment object.
+
+impl Alignment {
+    /// Returns `true` if the read is unaligned.
+    pub fn is_unaligned(&self) -> bool {
+        self.seq_interval.is_empty()
+    }
+
+    /// Returns the minimum GBWT node identifier in the target path, or [`None`] if there is no path.
+    pub fn min_node(&self) -> Option<usize> {
+        match self.path {
+            TargetPath::Path(ref path) => path.iter().copied().min(),
+            TargetPath::StartPosition(_) => None,
+        }
+    }
+
+    /// Returns the maximum GBWT node identifier in the target path, or [`None`] if there is no path.
+    pub fn max_node(&self) -> Option<usize> {
+        match self.path {
+            TargetPath::Path(ref path) => path.iter().copied().max(),
+            TargetPath::StartPosition(_) => None,
+        }
     }
 }
 
@@ -1073,11 +1121,13 @@ pub enum Difference {
     Insertion(Vec<u8>),
     /// Deletion from the reference represented as deletion length.
     Deletion(usize),
+    /// Marker for the end of the sequence.
+    End,
 }
 
 impl Difference {
     /// Number of supported operation types.
-    pub const NUM_TYPES: usize = 4;
+    pub const NUM_TYPES: usize = 5;
 
     // TODO: This does not support `~` (intron length and splice signal) yet.
     const OPS: &'static [u8] = b"=:*+-";
@@ -1190,6 +1240,7 @@ impl Difference {
                     target_len += len;
                     edits += len;
                 },
+                Self::End => {},
             }
         }
         (query_len, target_len, matches, edits)
@@ -1202,6 +1253,7 @@ impl Difference {
             Self::Mismatch(_) => 1,
             Self::Insertion(seq) => seq.len(),
             Self::Deletion(len) => *len,
+            Self::End => 0,
         }
     }
 
@@ -1217,6 +1269,7 @@ impl Difference {
             Self::Mismatch(_) => 1,
             Self::Insertion(_) => 0,
             Self::Deletion(len) => *len,
+            Self::End => 0,
         }
     }
 
@@ -1227,6 +1280,7 @@ impl Difference {
             Self::Mismatch(_) => 1,
             Self::Insertion(seq) => seq.len(),
             Self::Deletion(_) => 0,
+            Self::End => 0,
         }
     }
 
@@ -1388,6 +1442,135 @@ impl Display for TypedField {
                 write!(f, "{}{}:b:{}", tag[0] as char, tag[1] as char, if *value { '1' } else { '0' })
             },
         }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// FIXME: document, example, tests
+// FIXME: extract an individual alignment, decompress the entire block
+// An encoded block of alignments.
+#[derive(Debug, Clone)]
+pub struct AlignmentBlock {
+    pub min_node: Option<usize>,
+    pub max_node: Option<usize>,
+    pub alignments: usize,
+    pub gbwt_starts: Vec<u8>,
+    pub names: Vec<u8>,
+    pub quality_strings: Vec<u8>,
+    pub difference_strings: Vec<u8>,
+    pub flags: Vec<u8>,
+    pub numbers: Vec<u8>,
+}
+
+impl AlignmentBlock {
+    /// Number of flags per alignment.
+    pub const NUM_FLAGS: usize = 4;
+
+    // Flags expressed as a bit offset.
+    pub const FLAG_PAIR_IS_NEXT: usize = 0;
+    pub const FLAG_PAIR_IS_PROPER: usize = 1;
+    pub const FLAG_HAS_MAPQ: usize = 2;
+    pub const FLAG_HAS_SCORE: usize = 3;
+
+    // TODO: Make this a parameter?
+    /// Compression level for Zstandard.
+    pub const COMPRESSION_LEVEL: i32 = 7;
+
+    pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Self {
+        let min_node = alignments.iter().map(|aln| aln.min_node()).min().flatten();
+        let max_node = alignments.iter().map(|aln| aln.max_node()).max().flatten();
+
+        let mut gbwt_starts = ByteCode::new();
+        let mut names: Vec<u8> = Vec::new();
+        let mut quality_strings: Vec<u8> = Vec::new();
+        let mut difference_strings = RLE::with_sigma(Difference::NUM_TYPES);
+        let flag_bits = alignments.len() * Self::NUM_FLAGS;
+        let mut flags: Vec<u8> = vec![0; (flag_bits + 7) / 8];
+        let mut numbers: Vec<u8> = Vec::new();
+
+        let base_node = min_node.unwrap_or(0);
+         for (i, aln) in alignments.iter().enumerate() {
+            // GBWT start as (node - min_node, offset).
+            if let Some(start) = index.start(support::encode_path(first_id + i, Orientation::Forward)) {
+                gbwt_starts.write(start.node - base_node);
+                gbwt_starts.write(start.offset);
+            } else {
+                assert!(gbwt_starts.is_empty(), "Line {}: Unaligned read in a block with aligned reads", first_id + i);
+            }
+
+            // Read/pair names as 0-terminated strings.
+            names.extend_from_slice(aln.name.as_bytes());
+            names.push(0);
+            if let Some(pair) = &aln.pair {
+                names.extend_from_slice(pair.name.as_bytes());
+            }
+            names.push(0);
+
+            // Quality strings as 0-terminated strings.
+            if let Some(quality) = &aln.base_quality {
+                quality_strings.extend_from_slice(quality);
+            }
+            quality_strings.push(0);
+
+            // Difference strings using a custom encoder.
+            aln.encode_difference_into(&mut difference_strings);
+
+            // Flags as an ad hoc bitvector.
+            let flag_offset = i * Self::NUM_FLAGS;
+            if let Some(pair) = &aln.pair {
+                if pair.is_next {
+                    let bit = flag_offset + Self::FLAG_PAIR_IS_NEXT;
+                    flags[bit / 8] |= 1 << (bit % 8);
+                }
+                if pair.is_proper {
+                    let bit = flag_offset + Self::FLAG_PAIR_IS_PROPER;
+                    flags[bit / 8] |= 1 << (bit % 8);
+                }
+            }
+            if aln.mapq.is_some() {
+                let bit = flag_offset + Self::FLAG_HAS_MAPQ;
+                flags[bit / 8] |= 1 << (bit % 8);
+            }
+            if aln.score.is_some() {
+                let bit = flag_offset + Self::FLAG_HAS_SCORE;
+                flags[bit / 8] |= 1 << (bit % 8);
+            }
+
+            // FIXME: refactor
+            // Numbers with a custom encoder.
+            let encoded = aln.encode_numbers();
+            numbers.extend_from_slice(&encoded);
+        }
+
+        // FIXME: error handling
+        // Compress the names and quality strings.
+        let mut name_encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
+        name_encoder.write_all(&names).unwrap();
+        names = name_encoder.finish().unwrap();
+        let mut quality_encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
+        quality_encoder.write_all(&quality_strings).unwrap();
+        quality_strings = quality_encoder.finish().unwrap();
+
+        Self {
+            min_node,
+            max_node,
+            alignments: alignments.len(),
+            gbwt_starts: Vec::from(gbwt_starts),
+            names,
+            quality_strings,
+            difference_strings: Vec::from(difference_strings),
+            flags,
+            numbers,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.alignments
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.alignments == 0
     }
 }
 
