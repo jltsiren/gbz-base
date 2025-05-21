@@ -56,8 +56,8 @@ pub struct Alignment {
     pub score: Option<isize>,
     /// Base quality values for the query sequence.
     pub base_quality: Option<Vec<u8>>,
-    /// Difference string.
-    pub difference: Option<Vec<Difference>>,
+    /// Difference string, or an empty vector if not present.
+    pub difference: Vec<Difference>,
     /// Information about the paired alignment.
     pub pair: Option<PairedRead>,
     /// Optional typed fields that have not been interpreted.
@@ -218,7 +218,7 @@ impl Alignment {
         // Optional fields.
         let mut score = None;
         let mut base_quality = None;
-        let mut difference = None;
+        let mut difference = Vec::new();
         let mut pair = None;
         let mut properly_paired = None;
         let mut optional = Vec::new();
@@ -238,11 +238,10 @@ impl Alignment {
                     base_quality = Some(value.to_vec());
                 },
                 TypedField::String([b'c', b's'], value) => {
-                    if difference.is_some() {
+                    if !difference.is_empty() {
                         return Err(String::from("Multiple difference fields"));
                     }
-                    let ops = Difference::parse_normalized(&value)?;
-                    difference = Some(ops);
+                    difference = Difference::parse_normalized(&value)?;
                 },
                 TypedField::Bool([b'p', b'd'], value) => {
                     if properly_paired.is_some() {
@@ -267,7 +266,7 @@ impl Alignment {
         let mut path_interval = match path_interval {
             Ok(interval) => interval,
             Err(_) => {
-                if difference.is_some() {
+                if !difference.is_empty() {
                     let target_start = Self::parse_usize(fields[7], "target interval start")?;
                     target_start..target_start
                 } else {
@@ -277,8 +276,8 @@ impl Alignment {
         };
 
         // If we have a difference string, recalculate the redundant numerical fields.
-        if let Some(ops) = difference.as_ref() {
-            let (query_len, target_len, num_matches, num_edits) = Difference::stats(ops);
+        if !difference.is_empty() {
+            let (query_len, target_len, num_matches, num_edits) = Difference::stats(&difference);
             seq_interval.end = seq_interval.start + query_len;
             path_interval.end = path_interval.start + target_len;
             matches = num_matches;
@@ -325,32 +324,22 @@ impl Alignment {
         encoder.write(value);
     }
 
-    /// Encodes numerical fields as a blob.
-    ///
-    /// This includes the following fields:
-    ///
-    /// * Query sequence: `seq_len`, `seq_interval.start`, (`seq_interval.end`).
-    /// * Target path: offset in the start node, `path_len`, `path_interval.start`, (`path_interval.end`).
-    /// * Alignment statistics: (`matches`), (`edits`), `mapq`, `score`.
-    ///
-    /// The coordinates are normalized so that `start <= end <= len`.
-    /// If a difference string is present, the numbers in parentheses are not stored, as they can be derived from it.
-    ///
-    /// # Panics
-    ///
-    /// Will panic if the target path is not stored relative to a GBWT index.
-    pub fn encode_numbers(&self) -> Vec<u8> {
-        let mut encoder = ByteCode::new();
-        let include_redundant = self.difference.is_none();
+    // Encodes numerical fields as a blob.
+    //
+    // This includes the following fields:
+    //
+    // * Query sequence: `seq_len`, `seq_interval.start`, (`seq_interval.end`).
+    // * Target path: `path_len`, `path_interval.start`, (`path_interval.end`).
+    // * Alignment statistics: (`matches`), (`edits`), `mapq`, `score`.
+    //
+    // The coordinates are normalized so that `start <= end <= len`.
+    // If a difference string is present, the numbers in parentheses are not stored, as they can be derived from it.
+    fn encode_numbers_into(&self, encoder: &mut ByteCode) {
+        let include_redundant = self.difference.is_empty();
 
         // Coordinates.
-        Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, &mut encoder);
-/*        if let TargetPath::StartPosition(pos) = self.path {
-            encoder.write(pos.offset);
-        } else {
-            panic!("Target path is not stored relative to a GBWT index");
-        }*/
-        Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, &mut encoder);
+        Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, encoder);
+        Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, encoder);
 
         // Alignment statistics.
         if include_redundant {
@@ -360,20 +349,17 @@ impl Alignment {
         if let Some(mapq) = self.mapq {
             encoder.write(mapq);
         }
-//        encoder.write(self.mapq.unwrap_or(Self::MISSING_MAPQ));
         if let Some(score) = self.score {
-            Self::encode_signed(score, &mut encoder);
+            Self::encode_signed(score, encoder);
         };
-
-        Vec::from(encoder)
     }
 
-    /// Encodes the difference string into the given encoder.
-    ///
-    /// [`Difference::End`] values are not included in the encoding, but one is always added at the end.
-    pub fn encode_difference_into(&self, encoder: &mut RLE) {
-        if let Some(difference) = self.difference.as_ref() {
-            for diff in difference.iter() {
+    // Encodes the difference string into the given encoder.
+    //
+    // [`Difference::End`] values are not included in the encoding, but one is always added at the end.
+    fn encode_difference_into(&self, encoder: &mut RLE) {
+        if !self.difference.is_empty() {
+            for diff in self.difference.iter() {
                 match diff {
                     Difference::Match(len) => encoder.write(Run::new(0, *len)),
                     Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
@@ -391,42 +377,6 @@ impl Alignment {
             }
         }
         encoder.write(Run::new(4, 1));
-    }
-
-    const FLAG_PAIR_SAME_NAME: u8 = 0x01;
-    const FLAG_PAIR_IS_NEXT: u8 = 0x02;
-    const FLAG_PAIR_IS_PROPER: u8 = 0x04;
-
-    /// Encodes the pair information as a blob.
-    ///
-    /// Returns [`None`] if the pair information is missing.
-    /// The first byte in the encoding contains flags.
-    /// The remaining bytes contain the name of the pair without the common prefix, if necessary.
-    pub fn encode_pair(&self, prefix_len: usize) -> Option<Vec<u8>> {
-        let pair = self.pair.as_ref()?;
-
-        let mut flags = 0;
-        let name_len = if pair.name == self.name {
-            flags |= Self::FLAG_PAIR_SAME_NAME;
-            0
-        } else if pair.name.len() >= prefix_len {
-            pair.name.len() - prefix_len
-        } else {
-            0
-        };
-        let mut result = Vec::with_capacity(1 + name_len);
-        if pair.is_next {
-            flags |= Self::FLAG_PAIR_IS_NEXT;
-        }
-        if pair.is_proper {
-            flags |= Self::FLAG_PAIR_IS_PROPER;
-        }
-        result.push(flags);
-        if flags & Self::FLAG_PAIR_SAME_NAME == 0 {
-            result.extend_from_slice(&pair.name.as_bytes()[prefix_len..]);
-        }
-
-        Some(result)
     }
 
     // TODO: encode optional fields
@@ -449,30 +399,32 @@ impl Alignment {
         }
     }
 
-    // FIXME: Move to AlignmentBlock?
-    // Decodes difference strings.
-    fn decode_difference(difference: &[u8]) -> Result<Vec<Difference>, String> {
-        let mut difference_decoder = RLEIter::with_sigma(difference, Difference::NUM_TYPES);
+    // Decodes a difference string from the iterator until an End value.
+    // Also needs the underlying slice for decoding insertions.
+    // Returns an error if the if there is no End value.
+    fn decode_difference_from(encoded: &[u8], decoder: &mut RLEIter) -> Result<Vec<Difference>, String> {
         let mut result: Vec<Difference> = Vec::new();
-        while let Some(run) = difference_decoder.next() {
+        while let Some(run) = decoder.next() {
             match run.value {
                 0 => result.push(Difference::Match(run.len)),
                 1 => result.push(Difference::Mismatch(utils::decode_base(run.len))),
                 2 => {
-                    let offset = difference_decoder.offset();
+                    let offset = decoder.offset();
                     for _ in 0..run.len {
-                        let _ = difference_decoder.byte().ok_or(String::from("Missing insertion base"))?;
+                        let _ = decoder.byte().ok_or(String::from("Missing insertion base"))?;
                     }
-                    let encoded = &difference[offset..offset + run.len];
+                    let encoded = &encoded[offset..offset + run.len];
                     let seq = utils::decode_sequence(encoded);
                     result.push(Difference::Insertion(seq));
                 },
                 3 => result.push(Difference::Deletion(run.len)),
-                4 => result.push(Difference::End),
+                4 => {
+                    return Ok(result);
+                },
                 _ => return Err(format!("Invalid difference string operation: {}", run.value)),
             }
         }
-        Ok(result)
+        Err(String::from("Encoded difference string ended without an End value"))
     }
 }
 
@@ -501,6 +453,22 @@ impl Alignment {
             TargetPath::Path(ref path) => path.iter().copied().max(),
             TargetPath::StartPosition(_) => None,
         }
+    }
+
+    // FIXME: This should also work with GAF-base.
+    // FIXME: error handling
+    /// Sets the target path from the GBWT index if it is not already present.
+    pub fn set_target_path(&mut self, index: &GBWT) {
+        let mut pos = match self.path {
+            TargetPath::Path(_) => return,
+            TargetPath::StartPosition(pos) => Some(pos),
+        };
+        let mut path = Vec::new();
+        while let Some(p) = pos {
+            path.push(p.node);
+            pos = index.forward(p);
+        }
+        self.path = TargetPath::Path(path);
     }
 }
 
@@ -897,8 +865,77 @@ impl Display for TypedField {
 
 //-----------------------------------------------------------------------------
 
+/// An ad hoc bitvector for flags in [`AlignmentBlock`].
+#[derive(Debug, Clone)]
+pub struct Flags {
+    bits: Vec<u8>,
+}
+
+impl Flags {
+    /// Number of flags per alignment.
+    pub const NUM_FLAGS: usize = 4;
+
+    // Flags expressed as a bit offset.
+    pub const FLAG_PAIR_IS_NEXT: usize = 0;
+    pub const FLAG_PAIR_IS_PROPER: usize = 1;
+    pub const FLAG_HAS_MAPQ: usize = 2;
+    pub const FLAG_HAS_SCORE: usize = 3;
+
+    /// Creates a new flags object with the given number of alignments.
+    /// The flags are initialized to zero (false).
+    pub fn new(num_alignments: usize) -> Self {
+        let bits = vec![0; (num_alignments * Self::NUM_FLAGS + 7) / 8];
+        Self { bits }
+    }
+
+    /// Sets the given flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `index`: The index of the alignment.
+    /// * `flag`: The flag to set.
+    /// * `value`: The value to set the flag to.
+    pub fn set(&mut self, index: usize, flag: usize, value: bool) {
+        let bit = index * Self::NUM_FLAGS + flag;
+        if value {
+            self.bits[bit / 8] |= 1 << (bit % 8);
+        } else {
+            self.bits[bit / 8] &= !(1 << (bit % 8));
+        }
+    }
+
+    /// Gets the value of the given flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `index`: The index of the alignment.
+    /// * `flag`: The flag to get.
+    pub fn get(&self, index: usize, flag: usize) -> bool {
+        let bit = index * Self::NUM_FLAGS + flag;
+        (self.bits[bit / 8] >> (bit % 8)) & 0x01 != 0
+    }
+
+    /// Returns the number of bytes used to store the flags.
+    pub fn bytes(&self) -> usize {
+        self.bits.len()
+    }
+}
+
+impl From<Vec<u8>> for Flags {
+    fn from(bits: Vec<u8>) -> Self {
+        Self { bits }
+    }
+}
+
+impl AsRef<[u8]> for Flags {
+    fn as_ref(&self) -> &[u8] {
+        &self.bits
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 // FIXME: document, example, tests
-// FIXME: decompress the entire block
 // An encoded block of alignments.
 #[derive(Debug, Clone)]
 pub struct AlignmentBlock {
@@ -909,24 +946,16 @@ pub struct AlignmentBlock {
     pub names: Vec<u8>,
     pub quality_strings: Vec<u8>,
     pub difference_strings: Vec<u8>,
-    pub flags: Vec<u8>,
+    pub flags: Flags,
     pub numbers: Vec<u8>,
 }
 
 impl AlignmentBlock {
-    /// Number of flags per alignment.
-    pub const NUM_FLAGS: usize = 4;
-
-    // Flags expressed as a bit offset.
-    pub const FLAG_PAIR_IS_NEXT: usize = 0;
-    pub const FLAG_PAIR_IS_PROPER: usize = 1;
-    pub const FLAG_HAS_MAPQ: usize = 2;
-    pub const FLAG_HAS_SCORE: usize = 3;
-
     // TODO: Make this a parameter?
     /// Compression level for Zstandard.
     pub const COMPRESSION_LEVEL: i32 = 7;
 
+    // FIXME: Error handling. Especially if there is a mix of aligned and unaligned reads.
     pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Self {
         let min_node = alignments.iter().map(|aln| aln.min_node()).min().flatten();
         let max_node = alignments.iter().map(|aln| aln.max_node()).max().flatten();
@@ -935,12 +964,11 @@ impl AlignmentBlock {
         let mut names: Vec<u8> = Vec::new();
         let mut quality_strings: Vec<u8> = Vec::new();
         let mut difference_strings = RLE::with_sigma(Difference::NUM_TYPES);
-        let flag_bits = alignments.len() * Self::NUM_FLAGS;
-        let mut flags: Vec<u8> = vec![0; (flag_bits + 7) / 8];
-        let mut numbers: Vec<u8> = Vec::new();
+        let mut flags = Flags::new(alignments.len());
+        let mut numbers = ByteCode::new();
 
         let base_node = min_node.unwrap_or(0);
-         for (i, aln) in alignments.iter().enumerate() {
+        for (i, aln) in alignments.iter().enumerate() {
             // GBWT start as (node - min_node, offset).
             if let Some(start) = index.start(support::encode_path(first_id + i, Orientation::Forward)) {
                 gbwt_starts.write(start.node - base_node);
@@ -967,30 +995,23 @@ impl AlignmentBlock {
             aln.encode_difference_into(&mut difference_strings);
 
             // Flags as an ad hoc bitvector.
-            let flag_offset = i * Self::NUM_FLAGS;
             if let Some(pair) = &aln.pair {
                 if pair.is_next {
-                    let bit = flag_offset + Self::FLAG_PAIR_IS_NEXT;
-                    flags[bit / 8] |= 1 << (bit % 8);
+                    flags.set(i, Flags::FLAG_PAIR_IS_NEXT, true);
                 }
                 if pair.is_proper {
-                    let bit = flag_offset + Self::FLAG_PAIR_IS_PROPER;
-                    flags[bit / 8] |= 1 << (bit % 8);
+                    flags.set(i, Flags::FLAG_PAIR_IS_PROPER, true);
                 }
             }
             if aln.mapq.is_some() {
-                let bit = flag_offset + Self::FLAG_HAS_MAPQ;
-                flags[bit / 8] |= 1 << (bit % 8);
+                flags.set(i, Flags::FLAG_HAS_MAPQ, true);
             }
             if aln.score.is_some() {
-                let bit = flag_offset + Self::FLAG_HAS_SCORE;
-                flags[bit / 8] |= 1 << (bit % 8);
+                flags.set(i, Flags::FLAG_HAS_SCORE, true);
             }
 
-            // FIXME: refactor
             // Numbers with a custom encoder.
-            let encoded = aln.encode_numbers();
-            numbers.extend_from_slice(&encoded);
+            aln.encode_numbers_into(&mut numbers);
         }
 
         // FIXME: error handling
@@ -1011,7 +1032,7 @@ impl AlignmentBlock {
             quality_strings,
             difference_strings: Vec::from(difference_strings),
             flags,
-            numbers,
+            numbers: Vec::from(numbers),
         }
     }
 
@@ -1023,22 +1044,18 @@ impl AlignmentBlock {
         self.alignments == 0
     }
 
-    fn flag(&self, i: usize, flag: usize) -> bool {
-        let bit = i * Self::NUM_FLAGS + flag;
-        (self.flags[bit / 8] >> (bit % 8)) & 0x01 != 0
-    }
-
     fn decode_gbwt_starts(&self) -> Result<Vec<Pos>, String> {
         let mut result = Vec::new();
         if self.min_node.is_none() {
             return Ok(result);
         }
         let base_node = self.min_node.unwrap();
+        let mut decoder = ByteCodeIter::new(&self.gbwt_starts[..]);
         for i in 0..self.len() {
-            let start = ByteCodeIter::new(&self.gbwt_starts[..]).next().ok_or(
+            let start = decoder.next().ok_or(
                 format!("Missing GBWT start for alignment {}", i)
             )?;
-            let offset = ByteCodeIter::new(&self.gbwt_starts[..]).next().ok_or(
+            let offset = decoder.next().ok_or(
                 format!("Missing GBWT offset for alignment {}", i)
             )?;
             result.push(Pos::new(start + base_node, offset));
@@ -1058,8 +1075,8 @@ impl AlignmentBlock {
             return None;
         }
         let name = String::from_utf8_lossy(names[2 * i]).to_string();
-        let is_next = self.flag(i, Self::FLAG_PAIR_IS_NEXT);
-        let is_proper = self.flag(i, Self::FLAG_PAIR_IS_PROPER);
+        let is_next = self.flags.get(i, Flags::FLAG_PAIR_IS_NEXT);
+        let is_proper = self.flags.get(i, Flags::FLAG_PAIR_IS_PROPER);
         Some(PairedRead { name, is_next, is_proper })
     } 
 
@@ -1087,13 +1104,8 @@ impl AlignmentBlock {
             return Err(format!("Split the quality strings into {} slices in a block of {} alignments", quality_strings.len(), self.len()));
         }
 
-        // Decompress the difference strings.
-        let difference_buffer = Alignment::decode_difference(&self.difference_strings[..])?;
-        let difference_strings = difference_buffer.split(|c| *c == Difference::End).collect::<Vec<_>>();
-        if difference_strings.len() != self.len() + 1 {
-            // We have an empty slice at the end, as the buffer is End-terminated.
-            return Err(format!("Split the difference strings into {} slices in a block of {} alignments", difference_strings.len(), self.len()));
-        }
+        // Decompress the difference strings on the fly.
+        let mut difference_decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
 
         // We decode the numbers on the fly, as there are too many special cases.
         let mut number_decoder = ByteCodeIter::new(&self.numbers[..]);
@@ -1115,12 +1127,8 @@ impl AlignmentBlock {
                 Some(Vec::from(quality_strings[i]))
             };
 
-            let difference = if difference_strings[i].is_empty() {
-                None
-            } else {
-                Some(Vec::from(difference_strings[i]))
-            };
-            let include_redundant = difference.is_none();
+            let difference = Alignment::decode_difference_from(&self.difference_strings, &mut difference_decoder)?;
+            let include_redundant = difference.is_empty();
 
             // Now we can decode the numbers.
             let (mut seq_interval, mut seq_len) = Alignment::decode_coordinates(&mut number_decoder, include_redundant).ok_or(
@@ -1135,16 +1143,16 @@ impl AlignmentBlock {
             let mut edits = if include_redundant {
                 number_decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?
             } else { 0 };
-            let mapq = if self.flag(i, Self::FLAG_HAS_MAPQ) {
+            let mapq = if self.flags.get(i, Flags::FLAG_HAS_MAPQ) {
                 Some(number_decoder.next().ok_or(format!("Missing mapping quality for alignment {}", i))?)
             } else { None };
-            let score = if self.flag(i, Self::FLAG_HAS_SCORE) {
+            let score = if self.flags.get(i, Flags::FLAG_HAS_SCORE) {
                 Some(Alignment::decode_signed(&mut number_decoder).ok_or(format!("Missing alignment score for alignment {}", i))?)
             } else { None };
 
             // And update the numbers if we have a difference string.
-            if let Some(difference) = &difference {
-                let (query_len, target_len, num_matches, num_edits) = Difference::stats(difference);
+            if !difference.is_empty() {
+                let (query_len, target_len, num_matches, num_edits) = Difference::stats(&difference);
                 seq_interval.end = seq_interval.start + query_len;
                 seq_len += query_len;
                 path_interval.end = path_interval.start + target_len;

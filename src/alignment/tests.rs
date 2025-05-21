@@ -2,7 +2,6 @@ use super::*;
 
 use crate::utils;
 
-use simple_sds::ops::BitVec;
 use simple_sds::serialize;
 
 use std::io::BufRead;
@@ -24,7 +23,7 @@ fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
     let mapq = None;
     let score = None;
     let base_quality = None;
-    let difference = None;
+    let difference = Vec::new();
     let pair = None;
     let optional = Vec::new();
     Alignment {
@@ -113,7 +112,7 @@ fn alignment_known_good() {
     let mapq = Some(60);
     let score = Some(57);
     let base_quality = Some(vec![b'?'; 100]);
-    let difference = Some(vec![
+    let difference = vec![
         Difference::Match(20),
         Difference::Mismatch(b'C'), Difference::Mismatch(b'T'),
         Difference::Match(20),
@@ -121,7 +120,7 @@ fn alignment_known_good() {
         Difference::Match(20),
         Difference::Insertion(b"CAT".to_vec()),
         Difference::Match(20)
-    ]);
+    ];
     let pair = None;
     let optional = vec![
         TypedField::String([b'x', b'x'], b"unknown".to_vec()),
@@ -191,60 +190,80 @@ fn alignment_known_bad() {
 
 //-----------------------------------------------------------------------------
 
+// Returns an appropriate end for the block, ensuring that it does not mix unaligned and aligned reads.
+fn block_end(alignments: &[Alignment], start: usize, block_size: usize) -> usize {
+    if start >= alignments.len() {
+        return start;
+    }
+
+    let mut end = start + 1;
+    let unaligned = alignments[start].is_unaligned();
+    while end < alignments.len() && end < start + block_size && unaligned == alignments[end].is_unaligned() {
+        end += 1;
+    }
+    end
+}
+
+fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
+    let range = first_id..(first_id + block.len());
+    let encoded = AlignmentBlock::new(block, index, first_id);
+    assert_eq!(encoded.len(), block.len(), "Wrong number of alignments in the encoded block {}..{}", range.start, range.end);
+
+    let decoded = encoded.decode();
+    assert!(decoded.is_ok(), "Failed to decode the alignment block {}..{}: {}", range.start, range.end, decoded.err().unwrap());
+    let mut decoded = decoded.unwrap();
+    assert_eq!(decoded.len(), block.len(), "Wrong number of alignments in the decoded block {}..{}", range.start, range.end);
+
+    for (i, aln) in decoded.iter_mut().enumerate() {
+        aln.set_target_path(index);
+        assert_eq!(*aln, block[i], "Wrong alignment {} in the decoded block {}..{}", range.start + i, range.start, range.end);
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 // FIXME: In blocks.
 // Tests for `Alignment`: encoding and decoding.
 
 //-----------------------------------------------------------------------------
 
-// FIXME: Use blocks.
 // Tests for `Alignment`: integration.
 // This is the haplotype sampling test case from vg.
-/*
-fn integration_test(gaf_file: &'static str, gbwt_file: &'static str) {
+
+fn integration_test(gaf_file: &'static str, gbwt_file: &'static str, block_size: usize) {
     // Parse the alignments.
     let gaf_file = utils::get_test_data(gaf_file);
     let mut alignments = parse_alignments(&gaf_file, false);
     assert_eq!(alignments.len(), 12439, "Unexpected number of parsed alignments");
 
-    // Load the GBWT index and prepare the structures.
-    let gbwt_file = utils::get_test_data(gbwt_file);
-    let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
-    let metadata = index.metadata().unwrap();
-    let result = Alignment::paths_by_sample(&metadata);
-    assert!(result.is_ok(), "Failed to get a list of paths by sample: {}", result.err().unwrap());
-    let paths_by_sample = result.unwrap();
-    let mut used_paths = RawVector::with_len(metadata.paths(), false);
-
-    // Set relative information for all alignments.
-    let prefix = "A00744:46:HV3C3DSXX:2:";
-    for (i, alignment) in alignments.iter_mut().enumerate() {
-        let result = alignment.set_relative_information(
-            &index, prefix.len(), &paths_by_sample, Some(&mut used_paths)
-        );
-        assert!(result.is_ok(), "Failed to set relative information for alignment {}: {}", i + 1, result.err().unwrap());
+    // Remove the optional fields as we do not encode them for now.
+    for aln in &mut alignments {
+        aln.optional.clear();
     }
 
-    // Check that we managed to match each alignment to a different path.
-    assert_eq!(used_paths.count_ones(), used_paths.len(), "Not all paths were used");
+    // Load the GBWT index.
+    let gbwt_file = utils::get_test_data(gbwt_file);
+    let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
 
     // Encode and decode the alignments.
-    let alphabet = b"F:#,";
-    let dictionary = [(1, 1), (2, 1), (3, 2)];
-    let quality_encoder = QualityEncoder::new(alphabet, &dictionary).unwrap();
-    for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, prefix, &quality_encoder, i + 1);
+    let mut start = 0;
+    while start < alignments.len() {
+        let end = block_end(&alignments, start, block_size);
+        let block = &alignments[start..end];
+        check_encode_decode(block, &index, start);
+        start = end;
     }
 }
 
 #[test]
 fn alignment_real() {
-    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt");
+    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt", 1234);
 }
 
 #[test]
 fn alignment_real_gzipped() {
-    integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt");
-}*/
+    integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt", 789);
+}
 
 //-----------------------------------------------------------------------------
 

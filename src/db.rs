@@ -767,13 +767,13 @@ impl GAFBase {
                         statistics.name_bytes += block.names.len();
                         statistics.quality_bytes += block.quality_strings.len();
                         statistics.difference_bytes += block.difference_strings.len();
-                        statistics.flag_bytes += block.flags.len();
+                        statistics.flag_bytes += block.flags.bytes();
                         statistics.number_bytes += block.numbers.len();
                         let result = insert.execute((
                             block.min_node, block.max_node, block.alignments,
                             block.gbwt_starts, block.names,
                             block.quality_strings, block.difference_strings,
-                            block.flags, block.numbers
+                            block.flags.as_ref(), block.numbers
                         )).map_err(|x| x.to_string());
                         if let Err(message) = result {
                             let _ = to_report.send(Err(message));
