@@ -6,6 +6,144 @@ use simple_sds::serialize;
 
 //-----------------------------------------------------------------------------
 
+// Tests for `TypedField`.
+
+#[test]
+fn typed_field_empty() {
+    let field = TypedField::parse(b"");
+    assert!(field.is_err(), "Empty string was parsed as a typed field");
+}
+
+// This assumes that the sequence is a valid typed field.
+fn check_typed_field(seq: &[u8], name: &str) {
+    let field = TypedField::parse(seq);
+    assert!(field.is_ok(), "Failed to parse the typed field for {}", name);
+    let field = field.unwrap();
+    assert_eq!(field.tag(), seq[0..2], "Wrong tag for {}", name);
+
+    match field {
+        TypedField::Char(_, value) => {
+            assert_eq!(seq[3], b'A', "Parsed the type as a char for {}", name);
+            assert_eq!(value, seq[5], "Wrong value for {}", name);
+        }
+        TypedField::String(_, value) => {
+            assert_eq!(seq[3], b'Z', "Parsed the type as a string for {}", name);
+            assert_eq!(value, &seq[5..], "Wrong value for {}", name);
+        },
+        TypedField::Int(_, value) => {
+            assert_eq!(seq[3], b'i', "Parsed the type as an integer for {}", name);
+            let value_seq = str::from_utf8(&seq[5..]).unwrap();
+            let truth = value_seq.parse::<isize>().unwrap();
+            assert_eq!(value, truth, "Wrong value for {}", name);
+        },
+        TypedField::Float(_, value) => {
+            assert_eq!(seq[3], b'f', "Parsed the type as a float for {}", name);
+            let value_seq = str::from_utf8(&seq[5..]).unwrap();
+            let truth = value_seq.parse::<f64>().unwrap();
+            assert_eq!(value, truth, "Wrong value for {}", name);
+        },
+        TypedField::Bool(_, value) => {
+            assert_eq!(seq[3], b'b', "Parsed the type as a boolean for {}", name);
+            let truth = match seq[5] {
+                b'0' => false,
+                b'1' => true,
+                _ => panic!("Invalid boolean value for {}", name),
+            };
+            assert_eq!(value, truth, "Wrong value for {}", name);
+        },
+    }
+}
+
+#[test]
+fn typed_field_char() {
+    check_typed_field(b"tp:A:P", "char");
+}
+
+#[test]
+fn typed_field_string() {
+    check_typed_field(b"cg:Z:6M", "string");
+    check_typed_field(b"ab:Z:", "empty string");
+}
+
+#[test]
+fn typed_field_int() {
+    check_typed_field(b"AS:i:150", "positive integer");
+    check_typed_field(b"cd:i:-3", "negative integer");
+    check_typed_field(b"ef:i:0", "zero");
+}
+
+#[test]
+fn typed_field_float() {
+    check_typed_field(b"gh:f:22", "positive whole number");
+    check_typed_field(b"ij:f:-10", "negative whole number");
+    check_typed_field(b"dv:f:0", "zero whole number");
+    check_typed_field(b"kl:f:3.0", "positive whole number with decimal point");
+    check_typed_field(b"mn:f:-2.0", "negative whole number with decimal point");
+
+    check_typed_field(b"kl:f:3.14", "positive decimal number");
+    check_typed_field(b"mn:f:-2.718", "negative decimal number");
+    check_typed_field(b"op:f:0.0", "zero decimal number");
+    check_typed_field(b"qr:f:.5", "positive decimal number without zero");
+    check_typed_field(b"st:f:-.25", "negative decimal number without zero");
+}
+
+#[test]
+fn typed_field_bool() {
+    check_typed_field(b"pd:b:0", "false");
+    check_typed_field(b"qr:b:1", "true");
+}
+
+fn invalid_typed_field(seq: &[u8], name: &str) {
+    let field = TypedField::parse(seq);
+    assert!(field.is_err(), "Parsed an invalid typed field for {}", name);
+}
+
+#[test]
+fn typed_field_invalid() {
+    // Invalid format.
+    invalid_typed_field(b"AS::150", "missing type");
+    invalid_typed_field(b"AS:i150", "missing separator");
+    invalid_typed_field(b"ASi150", "missing separators");
+    invalid_typed_field(b":i:150", "missing tag");
+    invalid_typed_field(b"A:i:150", "too short tag");
+    invalid_typed_field(b"ASC:i:150", "too long tag");
+
+    // Invalid type.
+    invalid_typed_field(b"AS:J:150", "JSON type (not supported)");
+    invalid_typed_field(b"AS:H:150", "hexadecimal type (not supported)");
+    invalid_typed_field(b"AS:B:150", "array type (not supported)");
+    invalid_typed_field(b"AS:?:150", "unknown type");
+
+    // Invalid value for char.
+    invalid_typed_field(b"tp:A:", "empty char value");
+    invalid_typed_field(b"tp:A:AC", "too long char value");
+    invalid_typed_field(b"tp:A: A", "char value with leading space");
+    invalid_typed_field(b"tp:A:A ", "char value with trailing space");
+
+    // Invalid value for integer.
+    invalid_typed_field(b"AS:i:", "empty integer value");
+    invalid_typed_field(b"AS:i: 150", "integer value with leading space");
+    invalid_typed_field(b"AS:i:150 ", "integer value with trailing space");
+    invalid_typed_field(b"AS:i:3.14", "decimal number as integer value");
+    invalid_typed_field(b"AS:i:3A", "invalid character in integer value");
+
+    // Invalid value for float.
+    invalid_typed_field(b"AS:f:", "empty float value");
+    invalid_typed_field(b"AS:f: 3.14", "float value with leading space");
+    invalid_typed_field(b"AS:f:3.14 ", "float value with trailing space");
+    invalid_typed_field(b"AS:f:3.14A", "invalid character in float value");
+
+    // Invalid value for boolean.
+    invalid_typed_field(b"pd:b:", "empty boolean value");
+    invalid_typed_field(b"pd:b:01", "too long boolean value");
+    invalid_typed_field(b"pd:b:2", "wrong number in boolean value");
+    invalid_typed_field(b"pd:b:?", "invalid character in boolean value");
+    invalid_typed_field(b"pd:b: 0", "boolean value with leading space");
+    invalid_typed_field(b"pd:b:0 ", "boolean value with trailing space");
+}
+
+//-----------------------------------------------------------------------------
+
 // Tests for `WalkMetadata`.
 
 #[test]

@@ -5,8 +5,9 @@ use crate::Alignment;
 use crate::alignment::AlignmentBlock;
 use crate::utils;
 
-use std::path::Path;
+use std::collections::BTreeMap;
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::{mpsc, Arc};
 use std::{fs, thread};
 
@@ -1289,6 +1290,25 @@ impl<'a> GraphInterface<'a> {
         ).optional().map_err(|x| x.to_string())
     }
 }
+
+//-----------------------------------------------------------------------------
+
+// FIXME: document, examples, tests
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadSet {
+    nodes: BTreeMap<usize, GBZRecord>,
+    reads: Vec<Alignment>,
+}
+
+// FIXME: construction from a GAFBase and a set of node identifiers
+// Basic idea: extract GAF-base node records for the given node identifiers, if they exist.
+// determine the min/max node identifiers
+// Query the database for blocks where the intervals overlap.
+// Iterate over the blocks and extract the reads with paths fully within the subgraph.
+
+// FIXME: statistics
+// FIXME: iterator over the reads
+// FIXME: serialize as GAF
 
 //-----------------------------------------------------------------------------
 

@@ -7,9 +7,9 @@
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
 
+use crate::formats::{self, TypedField};
 use crate::utils;
 
-use std::fmt::Display;
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::str;
@@ -18,6 +18,7 @@ use zstd::stream::Encoder as ZstdEncoder;
 use zstd::stream::Decoder as ZstdDecoder;
 
 use gbwt::{GBWT, Orientation, Pos};
+use gbwt::bwt::Record;
 use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 #[cfg(test)]
@@ -64,7 +65,7 @@ pub struct Alignment {
     pub optional: Vec<TypedField>,
 }
 
-/// Construction from a GAF line and matching the alignment with a GBWT path.
+/// Conversions between GAF lines and `Alignment` objects.
 impl Alignment {
     // Number of mandatory fields in a GAF line.
     const MANDATORY_FIELDS: usize = 12;
@@ -300,7 +301,82 @@ impl Alignment {
         })
     }
 
-    // TODO: back to a GAF line
+    // FIXME: needs access to GBWT records
+    // FIXME: document, tests, examples
+    pub fn to_gaf<'a>(&self, get_record: impl Fn(usize) -> Record<'a>) -> Result<Vec<u8>, String> {
+        let mut result = Vec::new();
+
+        result.extend_from_slice(self.name.as_bytes());
+
+        // Coordinates in the query sequence.
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.seq_len);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.seq_interval.start);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.seq_interval.end);
+
+        // Target path; always in the forward orientation.
+        result.push(b'\t');
+        result.push(b'+');
+        result.push(b'\t');
+        match &self.path {
+            TargetPath::Path(path) => {
+                formats::append_walk(&mut result, path);
+            },
+            TargetPath::StartPosition(pos) => {
+                // FIXME: Maybe create a copy of the alignment.
+                // Then set target path.
+            },
+        }
+
+        // Coordinates in the target path.
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.path_len);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.path_interval.start);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.path_interval.end);
+
+        // Alignment statistics.
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.matches);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.matches + self.edits);
+        result.push(b'\t');
+        let mapq = self.mapq.unwrap_or(Self::MISSING_MAPQ);
+        utils::append_usize(&mut result, mapq);
+
+        // Known optional fields.
+        if let Some(score) = self.score {
+            let field = TypedField::Int([b'A', b'S'], score);
+            field.append_to(&mut result, true);
+        }
+        if let Some(base_quality) = &self.base_quality {
+            TypedField::append_string(&mut result, [b'b', b'q'], base_quality, true);
+        }
+        if !self.difference.is_empty() {
+            // TODO: Can we write the difference string directly?
+            let field = TypedField::String([b'c', b's'], Difference::to_bytes(&self.difference));
+            field.append_to(&mut result, true);
+        }
+        if let Some(pair) = &self.pair {
+            if pair.is_next {
+                TypedField::append_string(&mut result, [b'f', b'n'], pair.name.as_bytes(), true);
+            } else {
+                TypedField::append_string(&mut result, [b'f', b'p'], pair.name.as_bytes(), true);
+            }
+            let field = TypedField::Bool([b'p', b'd'], pair.is_proper);
+            field.append_to(&mut result, true);
+        }
+
+        // Other optional fields.
+        for field in self.optional.iter() {
+            field.append_to(&mut result, true);
+        }
+
+        Ok(result)
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -747,119 +823,33 @@ impl Difference {
         result.truncate(tail);
         result
     }
-}
 
-//-----------------------------------------------------------------------------
-
-/// A typed optional field used in formats such as SAM, GFA, and GAF.
-///
-/// The field corresponds to a TAG:TYPE:VALUE string.
-/// Supported types include A (single character), Z (string), i (integer), f (float), and b (boolean).
-/// The field is stored as a tag and a value.
-/// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
-///
-/// # Examples
-///
-/// ```
-/// use gbz_base::alignment::TypedField;
-///
-/// let alignment_score = "AS:i:160";
-/// let field = TypedField::parse(alignment_score.as_bytes());
-/// assert_eq!(field, Ok(TypedField::Int([b'A', b'S'], 160)));
-/// assert_eq!(field.unwrap().to_string(), alignment_score);
-/// ```
-#[derive(Clone, Debug, PartialEq)]
-pub enum TypedField {
-    /// A single character.
-    Char([u8; 2], u8),
-    /// A string.
-    String([u8; 2], Vec<u8>),
-    /// An integer.
-    Int([u8; 2], isize),
-    /// A float.
-    Float([u8; 2], f64),
-    /// A boolean value.
-    Bool([u8; 2], bool),
-}
-
-impl TypedField {
-    /// Parses the field from a TAG:TYPE:VALUE string.
-    ///
-    /// Returns [`None`] if the field cannot be parsed or the type is unsupported.
-    pub fn parse(field: &[u8]) -> Result<Self, String> {
-        if field.len() < 5 || field[2] != b':' || field[4] != b':' {
-            return Err(format!("Invalid typed field: {}", String::from_utf8_lossy(field)));
+    // FIXME test, example
+    /// Writes a difference string as a `Vec<u8>` string.
+    pub fn to_bytes(ops: &[Difference]) -> Vec<u8> {
+        let mut result = Vec::new();
+        for op in ops.iter() {
+            match op {
+                Self::Match(len) => {
+                    result.push(b':');
+                    utils::append_usize(&mut result, *len);
+                },
+                Self::Mismatch(base) => {
+                    result.push(b'*');
+                    result.push(*base);
+                },
+                Self::Insertion(seq) => {
+                    result.push(b'+');
+                    result.extend_from_slice(seq);
+                },
+                Self::Deletion(len) => {
+                    result.push(b'-');
+                    utils::append_usize(&mut result, *len);
+                },
+                Self::End => {},
+            }
         }
-        let tag = [field[0], field[1]];
-        match field[3] {
-            b'A' => {
-                if field.len() != 6 {
-                    return Err(format!("Invalid char field {}", String::from_utf8_lossy(field)));
-                }
-                Ok(TypedField::Char(tag, field[5]))
-            },
-            b'Z' => Ok(TypedField::String(tag, field[5..].to_vec())),
-            b'i' => {
-                let value = String::from_utf8_lossy(&field[5..]);
-                let value = value.parse::<isize>().map_err(|err| {
-                    format!("Invalid int field {}: {}", value, err)
-                })?;
-                Ok(TypedField::Int(tag, value))
-            },
-            b'f' => {
-                let value = String::from_utf8_lossy(&field[5..]);
-                let value = value.parse::<f64>().map_err(|err| {
-                    format!("Invalid float field {}: {}", value, err)
-                })?;
-                Ok(TypedField::Float(tag, value))
-            },
-            b'b' => {
-                if field.len() != 6 {
-                    return Err(format!("Invalid bool field {}", String::from_utf8_lossy(field)));
-                }
-                match field[5] {
-                    b'0' => Ok(TypedField::Bool(tag, false)),
-                    b'1' => Ok(TypedField::Bool(tag, true)),
-                    _ => Err(format!("Invalid bool field {}", String::from_utf8_lossy(field))),
-                }
-            },
-            _ => Err(format!("Unsupported field type: {}", field[3] as char)),
-        }
-    }
-
-    /// Returns the tag of the field.
-    pub fn tag(&self) -> [u8; 2] {
-        match self {
-            TypedField::Char(tag, _) => *tag,
-            TypedField::String(tag, _) => *tag,
-            TypedField::Int(tag, _) => *tag,
-            TypedField::Float(tag, _) => *tag,
-            TypedField::Bool(tag, _) => *tag,
-        }
-    }
-}
-
-impl Display for TypedField {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TypedField::Char(tag, value) => {
-                write!(f, "{}{}:A:{}", tag[0] as char, tag[1] as char, *value as char)
-            },
-            TypedField::String(tag, value) => {
-                let value = String::from_utf8_lossy(value);
-                write!(f, "{}{}:Z:{}", tag[0] as char, tag[1] as char, value)
-            },
-            TypedField::Int(tag, value) => {
-                write!(f, "{}{}:i:{}", tag[0] as char, tag[1] as char, value)
-            },
-            TypedField::Float(tag, value) => {
-                // TODO: Precision?
-                write!(f, "{}{}:f:{}", tag[0] as char, tag[1] as char, value)
-            },
-            TypedField::Bool(tag, value) => {
-                write!(f, "{}{}:b:{}", tag[0] as char, tag[1] as char, if *value { '1' } else { '0' })
-            },
-        }
+        result
     }
 }
 

@@ -28,6 +28,8 @@
 //!
 //! FIXME: details
 
+use crate::utils;
+
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::ops::Range;
@@ -38,6 +40,160 @@ use gbwt::support;
 
 #[cfg(test)]
 mod tests;
+
+//-----------------------------------------------------------------------------
+
+/// Appends a GFA walk / GAF path to a string represented as `Vec<u8>`.
+pub fn append_walk(buffer: &mut Vec<u8>, walk: &[usize]) {
+    for handle in walk {
+        match support::node_orientation(*handle) {
+            Orientation::Forward => buffer.push(b'>'),
+            Orientation::Reverse => buffer.push(b'<'),
+        }
+        utils::append_usize(buffer, support::node_id(*handle));
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+/// A typed optional field used in formats such as SAM, GFA, and GAF.
+///
+/// The field corresponds to a TAG:TYPE:VALUE string.
+/// Supported types include A (single character), Z (string), i (integer), f (float), and b (boolean).
+/// The field is stored as a tag and a value.
+/// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::formats::TypedField;
+///
+/// let alignment_score = "AS:i:160";
+/// let field = TypedField::parse(alignment_score.as_bytes());
+/// assert_eq!(field, Ok(TypedField::Int([b'A', b'S'], 160)));
+/// let field = field.unwrap();
+/// assert_eq!(field.to_string(), alignment_score);
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypedField {
+    /// A single character.
+    Char([u8; 2], u8),
+    /// A string.
+    String([u8; 2], Vec<u8>),
+    /// An integer.
+    Int([u8; 2], isize),
+    /// A float.
+    Float([u8; 2], f64),
+    /// A boolean value.
+    Bool([u8; 2], bool),
+}
+
+impl TypedField {
+    /// Parses the field from a TAG:TYPE:VALUE string.
+    ///
+    /// Returns an error if the field cannot be parsed or the type is unsupported.
+    pub fn parse(field: &[u8]) -> Result<Self, String> {
+        if field.len() < 5 || field[2] != b':' || field[4] != b':' {
+            return Err(format!("Invalid typed field: {}", String::from_utf8_lossy(field)));
+        }
+        let tag = [field[0], field[1]];
+        match field[3] {
+            b'A' => {
+                if field.len() != 6 {
+                    return Err(format!("Invalid char field {}", String::from_utf8_lossy(field)));
+                }
+                Ok(TypedField::Char(tag, field[5]))
+            },
+            b'Z' => Ok(TypedField::String(tag, field[5..].to_vec())),
+            b'i' => {
+                let value = String::from_utf8_lossy(&field[5..]);
+                let value = value.parse::<isize>().map_err(|err| {
+                    format!("Invalid int field {}: {}", value, err)
+                })?;
+                Ok(TypedField::Int(tag, value))
+            },
+            b'f' => {
+                let value = String::from_utf8_lossy(&field[5..]);
+                let value = value.parse::<f64>().map_err(|err| {
+                    format!("Invalid float field {}: {}", value, err)
+                })?;
+                Ok(TypedField::Float(tag, value))
+            },
+            b'b' => {
+                if field.len() != 6 {
+                    return Err(format!("Invalid bool field {}", String::from_utf8_lossy(field)));
+                }
+                match field[5] {
+                    b'0' => Ok(TypedField::Bool(tag, false)),
+                    b'1' => Ok(TypedField::Bool(tag, true)),
+                    _ => Err(format!("Invalid bool field {}", String::from_utf8_lossy(field))),
+                }
+            },
+            _ => Err(format!("Unsupported field type: {}", field[3] as char)),
+        }
+    }
+
+    /// Returns the tag of the field.
+    pub fn tag(&self) -> [u8; 2] {
+        match self {
+            TypedField::Char(tag, _) => *tag,
+            TypedField::String(tag, _) => *tag,
+            TypedField::Int(tag, _) => *tag,
+            TypedField::Float(tag, _) => *tag,
+            TypedField::Bool(tag, _) => *tag,
+        }
+    }
+
+    /// Appends the field to the given buffer.
+    ///
+    /// If `as_new_field` is `true`, a tab character is added before the field.
+    pub fn append_to(&self, buffer: &mut Vec<u8>, as_new_field: bool) {
+        if as_new_field {
+            buffer.push(b'\t');
+        }
+        let _ = write!(buffer, "{}", self);
+    }
+
+    // FIXME: examples, tests
+    /// Appends a string field to the given buffer without creating the field.
+    ///
+    /// If `as_new_field` is `true`, a tab character is added before the field.
+    pub fn append_string(buffer: &mut Vec<u8>, tag: [u8; 2], value: &[u8], as_new_field: bool) {
+        if as_new_field {
+            buffer.push(b'\t');
+        }
+        buffer.push(tag[0]);
+        buffer.push(tag[1]);
+        buffer.push(b':');
+        buffer.push(b'Z');
+        buffer.push(b':');
+        buffer.extend_from_slice(value);
+    }
+}
+
+impl Display for TypedField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypedField::Char(tag, value) => {
+                write!(f, "{}{}:A:{}", tag[0] as char, tag[1] as char, *value as char)
+            },
+            TypedField::String(tag, value) => {
+                let value = String::from_utf8_lossy(value);
+                write!(f, "{}{}:Z:{}", tag[0] as char, tag[1] as char, value)
+            },
+            TypedField::Int(tag, value) => {
+                write!(f, "{}{}:i:{}", tag[0] as char, tag[1] as char, value)
+            },
+            TypedField::Float(tag, value) => {
+                // TODO: Precision?
+                write!(f, "{}{}:f:{}", tag[0] as char, tag[1] as char, value)
+            },
+            TypedField::Bool(tag, value) => {
+                write!(f, "{}{}:b:{}", tag[0] as char, tag[1] as char, if *value { '1' } else { '0' })
+            },
+        }
+    }
+}
 
 //-----------------------------------------------------------------------------
 
@@ -187,28 +343,22 @@ pub fn write_gfa_walk<T: Write>(path: &[usize], metadata: &WalkMetadata, output:
     buffer.extend_from_slice(b"W\t");
     buffer.extend_from_slice(metadata.name.sample.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.name.haplotype.to_string().as_bytes());
+    utils::append_usize(&mut buffer, metadata.name.haplotype);
     buffer.push(b'\t');
     buffer.extend_from_slice(metadata.name.contig.as_bytes());
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.name.fragment.to_string().as_bytes());
+    utils::append_usize(&mut buffer, metadata.name.fragment);
     buffer.push(b'\t');
-    buffer.extend_from_slice(metadata.end.to_string().as_bytes());
+    utils::append_usize(&mut buffer, metadata.end);
     buffer.push(b'\t');
-    for handle in path.iter() {
-        match support::node_orientation(*handle) {
-            Orientation::Forward => buffer.push(b'>'),
-            Orientation::Reverse => buffer.push(b'<'),
-        }
-        buffer.extend_from_slice(support::node_id(*handle).to_string().as_bytes());
-    }
+    append_walk(&mut buffer, path);
     if let Some(weight) = metadata.weight {
-        buffer.extend_from_slice(b"\tWT:i:");
-        buffer.extend_from_slice(weight.to_string().as_bytes());
+        let field = TypedField::Int([b'W', b'T'], weight as isize);
+        field.append_to(&mut buffer, true);
     }
     if let Some(cigar) = &metadata.cigar {
-        buffer.extend_from_slice(b"\tCG:Z:");
-        buffer.extend_from_slice(cigar.as_bytes());
+        let field = TypedField::String([b'C', b'G'], cigar.as_bytes().to_vec());
+        field.append_to(&mut buffer, true);
     }
     buffer.push(b'\n');
 
