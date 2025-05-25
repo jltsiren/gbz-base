@@ -1232,6 +1232,13 @@ impl Subgraph {
         self.records.keys().step_by(2).map(|&handle| support::node_id(handle))
     }
 
+    /// Returns an iterator over the handles in the subgraph.
+    ///
+    /// The handles are listed in ascending order.
+    pub fn handle_iter(&'_ self) -> impl Iterator<Item = usize> + use<'_> {
+        self.records.keys().copied()
+    }
+
     /// Returns an iterator over the successors of an oriented node, or [`None`] if there is no such node.
     pub fn successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
         let handle = support::encode_node(node_id, orientation);

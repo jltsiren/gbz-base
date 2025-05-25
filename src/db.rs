@@ -1294,18 +1294,13 @@ impl<'a> GraphInterface<'a> {
 //-----------------------------------------------------------------------------
 
 // FIXME: document, examples, tests
+/// A set of reads that are fully within a subgraph defined by a set of node handles.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadSet {
     nodes: BTreeMap<usize, GBZRecord>,
     reads: Vec<Alignment>,
+    blocks: usize,
 }
-
-// FIXME: construction from a GAFBase and a set of node identifiers
-// Basic idea: extract GAF-base node records for the given node identifiers, if they exist.
-// determine the min/max node identifiers
-// Query the database for blocks where the intervals overlap.
-// Iterate over the blocks and extract the reads with paths fully within the subgraph.
-// That involves tracing the path; we can set it with `Alignment::set_target_path`.
 
 impl ReadSet{
     // Decompresses an alignment block from a row.
@@ -1362,6 +1357,7 @@ impl ReadSet{
         let mut read_set = ReadSet {
             nodes: BTreeMap::new(),
             reads: Vec::new(),
+            blocks: 0,
         };
 
         // Get the records for the nodes that are in the subgraph and used by the reads.
@@ -1405,6 +1401,7 @@ impl ReadSet{
                     read_set.reads.push(alignment);
                 }
             }
+            read_set.blocks += 1;
         }
 
         Ok(read_set)
@@ -1418,6 +1415,11 @@ impl ReadSet{
     /// Returns `true` if the set is empty.
     pub fn is_empty(&self) -> bool {
         self.reads.is_empty()
+    }
+
+    /// Returns the number of alignment blocks decomressed when creating the read set.
+    pub fn blocks(&self) -> usize {
+        self.blocks
     }
 
     /// Returns an iterator over the reads in the set.

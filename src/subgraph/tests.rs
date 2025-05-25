@@ -368,8 +368,16 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
         assert_eq!(subgraph.max_node(), true_nodes.last().copied(), "Wrong maximum node id for {}", test_case);
     }
 
-    // Node ids and sequences.
+    // Iterators.
     assert!(subgraph.node_iter().eq(true_nodes.iter().copied()), "Wrong node ids for {}", test_case);
+    let mut true_handles = Vec::new();
+    for node_id in true_nodes.iter() {
+        true_handles.push(support::encode_node(*node_id, Orientation::Forward));
+        true_handles.push(support::encode_node(*node_id, Orientation::Reverse));
+    }
+    assert!(subgraph.handle_iter().eq(true_handles.iter().copied()), "Wrong handles for {}", test_case);
+
+    // Node ids and sequences.
     for node_id in graph.node_iter() {
         if true_nodes.contains(&node_id) {
             assert!(subgraph.has_node(node_id), "Subgraph {} does not contain node {}", test_case, node_id);
