@@ -2,11 +2,11 @@
 // FIXME: also GAF-base
 
 use crate::Alignment;
-use crate::alignment::AlignmentBlock;
+use crate::alignment::{AlignmentBlock, Flags, TargetPath};
 use crate::utils;
 
 use std::collections::BTreeMap;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 use std::{fs, thread};
@@ -1305,10 +1305,138 @@ pub struct ReadSet {
 // determine the min/max node identifiers
 // Query the database for blocks where the intervals overlap.
 // Iterate over the blocks and extract the reads with paths fully within the subgraph.
+// That involves tracing the path; we can set it with `Alignment::set_target_path`.
 
-// FIXME: statistics
-// FIXME: iterator over the reads
-// FIXME: serialize as GAF
+impl ReadSet{
+    // Decompresses an alignment block from a row.
+    fn decompress_block(row: &Row) -> Result<Vec<Alignment>, String> {
+        let min_node: Option<usize> = row.get(0).map_err(|x| x.to_string())?;
+        let max_node: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
+        let alignments: usize = row.get(2).map_err(|x| x.to_string())?;
+        let gbwt_starts: Vec<u8> = row.get(3).map_err(|x| x.to_string())?;
+        let names: Vec<u8> = row.get(4).map_err(|x| x.to_string())?;
+        let quality_strings: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
+        let difference_strings: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
+        let flags: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
+        let numbers: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
+
+        let block = AlignmentBlock {
+            min_node, max_node, alignments,
+            gbwt_starts, names,
+            quality_strings, difference_strings,
+            flags: Flags::from(flags), numbers
+        };
+        block.decode()
+    }
+
+    // Replaces the GBWT starting position of the alignment with the path if it is fully within the subgraph.
+    fn set_target_path(&self, alignment: &mut Alignment) {
+        let mut pos = match alignment.path {
+            TargetPath::Path(_) => return,
+            TargetPath::StartPosition(pos) => Some(pos),
+        };
+
+        let mut path = Vec::new();
+        while let Some(p) = pos {
+            let record = self.nodes.get(&p.node);
+            if record.is_none() {
+                return;
+            }
+            let record = record.unwrap();
+            path.push(p.node);
+            pos = record.to_gbwt_record().lf(p.offset);
+        }
+
+        if !path.is_empty() {
+            alignment.set_target_path(path);
+        }
+    }
+
+    /// Creates a new read set containing all alignments that are fully within the subgraph defined by the given node handles.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any database errors.
+    /// Returns an error if an alignment cannot be decompressed.
+    pub fn new(handles: impl Iterator<Item = usize>, database: &GAFBase) -> Result<Self, String> {
+        let mut read_set = ReadSet {
+            nodes: BTreeMap::new(),
+            reads: Vec::new(),
+        };
+
+        // Get the records for the nodes that are in the subgraph and used by the reads.
+        let mut get_node = database.connection.prepare(
+            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
+        ).map_err(|x| x.to_string())?;
+        for handle in handles {
+            let record = get_node.query_row(
+                (handle,),
+                |row| {
+                    let edge_bytes: Vec<u8> = row.get(0)?;
+                    let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
+                    let bwt: Vec<u8> = row.get(1)?;
+                    unsafe {
+                        Ok(GBZRecord::from_raw_parts(handle, edges, bwt, Vec::new()))
+                    }
+                }
+            ).optional().map_err(|x| x.to_string())?;
+            if let Some(record) = record {
+                read_set.nodes.insert(handle, record);
+            }
+        }
+        if read_set.nodes.is_empty() {
+            return Ok(read_set);
+        }
+
+        // Get the reads that are fully within the subgraph.
+        let min_node = *read_set.nodes.keys().min().unwrap();
+        let max_node = *read_set.nodes.keys().max().unwrap();
+        let mut get_reads = database.connection.prepare(
+            "SELECT min_node, max_node, alignments, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            FROM Alignments
+            WHERE min_node <= ?1 AND max_node >= ?2"
+        ).map_err(|x| x.to_string())?;
+        let mut rows = get_reads.query((max_node, min_node)).map_err(|x| x.to_string())?;
+        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+            let block = Self::decompress_block(row)?;
+            for mut alignment in block {
+                read_set.set_target_path(&mut alignment);
+                if alignment.has_target_path() {
+                    read_set.reads.push(alignment);
+                }
+            }
+        }
+
+        Ok(read_set)
+    }
+
+    /// Returns the number of reads in the set.
+    pub fn len(&self) -> usize {
+        self.reads.len()
+    }
+
+    /// Returns `true` if the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.reads.is_empty()
+    }
+
+    /// Returns an iterator over the reads in the set.
+    pub fn iter(&self) -> impl Iterator<Item = &Alignment> {
+        self.reads.iter()
+    }
+
+    /// Serializes the read set in the GAF format.
+    ///
+    /// Passes through any I/O errors.
+    pub fn to_gaf<W: Write>(&self, writer: &mut W) -> Result<(), String> {
+        for alignment in &self.reads {
+            let mut line = alignment.to_gaf();
+            line.push(b'\n');
+            writer.write_all(&line).map_err(|x| x.to_string())?;
+        }
+        Ok(())
+    }
+}
 
 //-----------------------------------------------------------------------------
 

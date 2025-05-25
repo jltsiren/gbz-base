@@ -18,7 +18,6 @@ use zstd::stream::Encoder as ZstdEncoder;
 use zstd::stream::Decoder as ZstdDecoder;
 
 use gbwt::{GBWT, Orientation, Pos};
-use gbwt::bwt::Record;
 use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 #[cfg(test)]
@@ -301,9 +300,13 @@ impl Alignment {
         })
     }
 
-    // FIXME: needs access to GBWT records
-    // FIXME: document, tests, examples
-    pub fn to_gaf<'a>(&self, get_record: impl Fn(usize) -> Record<'a>) -> Result<Vec<u8>, String> {
+    // FIXME: tests, examples
+    /// Converts the alignment to a GAF line.
+    ///
+    /// If the target path is stored as a GBWT starting position, it will be missing (`*`).
+    /// The path can be set with [`Alignment::set_target_path`] or extracted from a GBWT index with [`Alignment::extract_target_path`].
+    /// The returned line does not end with an endline character.
+    pub fn to_gaf(&self) -> Vec<u8> {
         let mut result = Vec::new();
 
         result.extend_from_slice(self.name.as_bytes());
@@ -324,9 +327,8 @@ impl Alignment {
             TargetPath::Path(path) => {
                 formats::append_walk(&mut result, path);
             },
-            TargetPath::StartPosition(pos) => {
-                // FIXME: Maybe create a copy of the alignment.
-                // Then set target path.
+            TargetPath::StartPosition(_) => {
+                result.extend_from_slice(&Self::MISSING_VALUE);
             },
         }
 
@@ -375,7 +377,7 @@ impl Alignment {
             field.append_to(&mut result, true);
         }
 
-        Ok(result)
+        result
     }
 }
 
@@ -531,10 +533,13 @@ impl Alignment {
         }
     }
 
-    // FIXME: This should also work with GAF-base.
-    // FIXME: error handling
+    /// Returns true if the target path is stored explicitly.
+    pub fn has_target_path(&self) -> bool {
+        matches!(self.path, TargetPath::Path(_))
+    }
+
     /// Sets the target path from the GBWT index if it is not already present.
-    pub fn set_target_path(&mut self, index: &GBWT) {
+    pub fn extract_target_path(&mut self, index: &GBWT) {
         let mut pos = match self.path {
             TargetPath::Path(_) => return,
             TargetPath::StartPosition(pos) => Some(pos),
@@ -545,6 +550,13 @@ impl Alignment {
             pos = index.forward(p);
         }
         self.path = TargetPath::Path(path);
+    }
+
+    /// Sets the given path as the target path, if the path is currently a GBWT starting position.
+    pub fn set_target_path(&mut self, path: Vec<usize>) {
+        if let TargetPath::StartPosition(_) = self.path {
+            self.path = TargetPath::Path(path);
+        }
     }
 }
 

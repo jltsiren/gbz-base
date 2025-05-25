@@ -215,7 +215,7 @@ fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
     assert_eq!(decoded.len(), block.len(), "Wrong number of alignments in the decoded block {}..{}", range.start, range.end);
 
     for (i, aln) in decoded.iter_mut().enumerate() {
-        aln.set_target_path(index);
+        aln.extract_target_path(index);
         assert_eq!(*aln, block[i], "Wrong alignment {} in the decoded block {}..{}", range.start + i, range.start, range.end);
     }
 }
