@@ -44,7 +44,7 @@ fn main() -> Result<(), String> {
     if config.write_gaf() {
         let gaf_base_file = config.gaf_base.as_ref().unwrap();
         let gaf_base = GAFBase::open(gaf_base_file)?;
-        let read_set = ReadSet::new(subgraph.handle_iter(), &gaf_base)?;
+        let read_set = ReadSet::new(&subgraph, &gaf_base)?;
         eprintln!("Extracted {} reads in {} alignment blocks", read_set.len(), read_set.blocks());
         let gaf_output_file = config.gaf_output.as_ref().unwrap();
         let mut options = OpenOptions::new();

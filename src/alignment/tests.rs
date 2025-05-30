@@ -22,7 +22,7 @@ fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
     let edits = 0;
     let mapq = None;
     let score = None;
-    let base_quality = None;
+    let base_quality = Vec::new();
     let difference = Vec::new();
     let pair = None;
     let optional = Vec::new();
@@ -111,7 +111,7 @@ fn alignment_known_good() {
     let edits = 13;
     let mapq = Some(60);
     let score = Some(57);
-    let base_quality = Some(vec![b'?'; 100]);
+    let base_quality = vec![b'?'; 100];
     let difference = vec![
         Difference::Match(20),
         Difference::Mismatch(b'C'), Difference::Mismatch(b'T'),

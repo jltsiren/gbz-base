@@ -55,7 +55,7 @@ pub struct Alignment {
     /// Alignment score.
     pub score: Option<isize>,
     /// Base quality values for the query sequence.
-    pub base_quality: Option<Vec<u8>>,
+    pub base_quality: Vec<u8>,
     /// Difference string, or an empty vector if not present.
     pub difference: Vec<Difference>,
     /// Information about the paired alignment.
@@ -217,7 +217,7 @@ impl Alignment {
 
         // Optional fields.
         let mut score = None;
-        let mut base_quality = None;
+        let mut base_quality = Vec::new();
         let mut difference = Vec::new();
         let mut pair = None;
         let mut properly_paired = None;
@@ -232,10 +232,10 @@ impl Alignment {
                     score = Some(value);
                 },
                 TypedField::String([b'b', b'q'], value) => {
-                    if base_quality.is_some() {
+                    if !base_quality.is_empty() {
                         return Err(String::from("Multiple base quality fields"));
                     }
-                    base_quality = Some(value.to_vec());
+                    base_quality = value;
                 },
                 TypedField::String([b'c', b's'], value) => {
                     if !difference.is_empty() {
@@ -306,7 +306,7 @@ impl Alignment {
     /// If the target path is stored as a GBWT starting position, it will be missing (`*`).
     /// The path can be set with [`Alignment::set_target_path`] or extracted from a GBWT index with [`Alignment::extract_target_path`].
     /// The returned line does not end with an endline character.
-    pub fn to_gaf(&self) -> Vec<u8> {
+    pub fn to_gaf(&self, target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
 
         result.extend_from_slice(self.name.as_bytes());
@@ -325,7 +325,11 @@ impl Alignment {
         result.push(b'\t');
         match &self.path {
             TargetPath::Path(path) => {
-                formats::append_walk(&mut result, path);
+                if path.is_empty() {
+                    result.extend_from_slice(&Self::MISSING_VALUE);
+                } else {
+                    formats::append_walk(&mut result, path);
+                }
             },
             TargetPath::StartPosition(_) => {
                 result.extend_from_slice(&Self::MISSING_VALUE);
@@ -354,12 +358,12 @@ impl Alignment {
             let field = TypedField::Int([b'A', b'S'], score);
             field.append_to(&mut result, true);
         }
-        if let Some(base_quality) = &self.base_quality {
-            TypedField::append_string(&mut result, [b'b', b'q'], base_quality, true);
+        if !self.base_quality.is_empty() {
+            TypedField::append_string(&mut result, [b'b', b'q'], &self.base_quality, true);
         }
         if !self.difference.is_empty() {
             // TODO: Can we write the difference string directly?
-            let field = TypedField::String([b'c', b's'], Difference::to_bytes(&self.difference));
+            let field = TypedField::String([b'c', b's'], Difference::to_bytes(&self.difference, target_sequence));
             field.append_to(&mut result, true);
         }
         if let Some(pair) = &self.pair {
@@ -538,6 +542,14 @@ impl Alignment {
         matches!(self.path, TargetPath::Path(_))
     }
 
+    /// Returns the target path if it is stored explicitly.
+    pub fn target_path(&self) -> Option<&[usize]> {
+        match &self.path {
+            TargetPath::Path(path) => Some(path),
+            TargetPath::StartPosition(_) => None,
+        }
+    }
+
     /// Sets the target path from the GBWT index if it is not already present.
     pub fn extract_target_path(&mut self, index: &GBWT) {
         let mut pos = match self.path {
@@ -627,13 +639,16 @@ pub enum Difference {
     Insertion(Vec<u8>),
     /// Deletion from the reference represented as deletion length.
     Deletion(usize),
-    /// Marker for the end of the sequence.
+    /// Marker for the end of a sequence when concatenating multiple difference strings.
     End,
 }
 
 impl Difference {
     /// Number of supported operation types.
     pub const NUM_TYPES: usize = 5;
+
+    /// Symbol used as a substitute for an unknown base.
+    pub const UNKNOWN_BASE: u8 = b'X';
 
     // TODO: This does not support `~` (intron length and splice signal) yet.
     const OPS: &'static [u8] = b"=:*+-";
@@ -838,17 +853,21 @@ impl Difference {
 
     // FIXME test, example
     /// Writes a difference string as a `Vec<u8>` string.
-    pub fn to_bytes(ops: &[Difference]) -> Vec<u8> {
+    pub fn to_bytes(ops: &[Difference], target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
+        let mut target_offset = 0;
         for op in ops.iter() {
             match op {
                 Self::Match(len) => {
                     result.push(b':');
                     utils::append_usize(&mut result, *len);
+                    target_offset += *len;
                 },
                 Self::Mismatch(base) => {
                     result.push(b'*');
+                    result.push(target_sequence[target_offset]);
                     result.push(*base);
+                    target_offset += 1;
                 },
                 Self::Insertion(seq) => {
                     result.push(b'+');
@@ -856,7 +875,8 @@ impl Difference {
                 },
                 Self::Deletion(len) => {
                     result.push(b'-');
-                    utils::append_usize(&mut result, *len);
+                    result.extend_from_slice(&target_sequence[target_offset..target_offset + *len]);
+                    target_offset += *len;
                 },
                 Self::End => {},
             }
@@ -988,8 +1008,8 @@ impl AlignmentBlock {
             names.push(0);
 
             // Quality strings as 0-terminated strings.
-            if let Some(quality) = &aln.base_quality {
-                quality_strings.extend_from_slice(quality);
+            if !aln.base_quality.is_empty() {
+                quality_strings.extend_from_slice(&aln.base_quality);
             }
             quality_strings.push(0);
 
@@ -1082,7 +1102,6 @@ impl AlignmentBlock {
         Some(PairedRead { name, is_next, is_proper })
     } 
 
-    // FIXME: What if we have GBZ-base instead of GBWT?
     // FIXME: Maybe don't collect the slices?
     pub fn decode(&self) -> Result<Vec<Alignment>, String> {
         let mut result = Vec::with_capacity(self.len());
@@ -1124,9 +1143,9 @@ impl AlignmentBlock {
             };
 
             let base_quality = if quality_strings[i].is_empty() {
-                None
+                Vec::new()
             } else {
-                Some(Vec::from(quality_strings[i]))
+                Vec::from(quality_strings[i])
             };
 
             let difference = Alignment::decode_difference_from(&self.difference_strings, &mut difference_decoder)?;

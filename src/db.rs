@@ -1,7 +1,7 @@
 //! GBZ-base: A SQLite database storing a GBZ graph.
 // FIXME: also GAF-base
 
-use crate::Alignment;
+use crate::{Alignment, Subgraph};
 use crate::alignment::{AlignmentBlock, Flags, TargetPath};
 use crate::utils;
 
@@ -688,15 +688,11 @@ impl GAFBase {
             (),
         ).map_err(|x| x.to_string())?;
 
+        // TODO: Use rtree?
         // Create indexes for min/max nodes.
         connection.execute(
-            "CREATE INDEX AlignmentMinNode
-                ON Alignments(min_node)",
-            (),
-        ).map_err(|x| x.to_string())?;
-        connection.execute(
-            "CREATE INDEX AlignmentMaxNode
-                ON Alignments(max_node)",
+            "CREATE INDEX AlignmentNodeInterval
+                ON Alignments(min_node, max_node)",
             (),
         ).map_err(|x| x.to_string())?;
 
@@ -1297,6 +1293,7 @@ impl<'a> GraphInterface<'a> {
 /// A set of reads that are fully within a subgraph defined by a set of node handles.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadSet {
+    // GBZ records in the GAF GBWT, including sequence from the subgraph.
     nodes: BTreeMap<usize, GBZRecord>,
     reads: Vec<Alignment>,
     blocks: usize,
@@ -1347,13 +1344,13 @@ impl ReadSet{
         }
     }
 
-    /// Creates a new read set containing all alignments that are fully within the subgraph defined by the given node handles.
+    /// Creates a new read set containing all alignments in the database that are fully within the subgraph.
     ///
     /// # Errors
     ///
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
-    pub fn new(handles: impl Iterator<Item = usize>, database: &GAFBase) -> Result<Self, String> {
+    pub fn new(subgraph: &Subgraph, database: &GAFBase) -> Result<Self, String> {
         let mut read_set = ReadSet {
             nodes: BTreeMap::new(),
             reads: Vec::new(),
@@ -1364,7 +1361,8 @@ impl ReadSet{
         let mut get_node = database.connection.prepare(
             "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
-        for handle in handles {
+        for handle in subgraph.handle_iter() {
+            let sequence = subgraph.sequence_for_handle(handle).unwrap();
             let record = get_node.query_row(
                 (handle,),
                 |row| {
@@ -1372,7 +1370,7 @@ impl ReadSet{
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
                     unsafe {
-                        Ok(GBZRecord::from_raw_parts(handle, edges, bwt, Vec::new()))
+                        Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence.to_vec()))
                     }
                 }
             ).optional().map_err(|x| x.to_string())?;
@@ -1427,12 +1425,42 @@ impl ReadSet{
         self.reads.iter()
     }
 
+    // Extracts the target sequence for the given alignment.
+    fn target_sequence(&self, alignment: &Alignment) -> Result<Vec<u8>, String> {
+        let target_path = alignment.target_path();
+        if target_path.is_none() {
+            return Ok(Vec::new());
+        }
+        let target_path = target_path.unwrap();
+
+        let mut sequence = Vec::new();
+        for handle in target_path{
+            let record = self.nodes.get(&handle);
+            if record.is_none() {
+                return Err(format!("Read {}: Missing record for node handle {}", alignment.name, handle));
+            }
+            let record = record.unwrap();
+            sequence.extend_from_slice(record.sequence());
+        }
+
+        if sequence.len() != alignment.path_len {
+            return Err(format!(
+                "Read {}: Target path length {} does not match the expected length {}",
+                alignment.name, sequence.len(), alignment.path_len
+            ));
+        }
+        sequence = sequence[alignment.path_interval.clone()].to_vec();
+        return Ok(sequence);
+    }
+
     /// Serializes the read set in the GAF format.
     ///
+    /// Returns an error if the target sequence for a read is invalid or cannot be determined.
     /// Passes through any I/O errors.
     pub fn to_gaf<W: Write>(&self, writer: &mut W) -> Result<(), String> {
-        for alignment in &self.reads {
-            let mut line = alignment.to_gaf();
+        for alignment in self.reads.iter() {
+            let target_sequence = self.target_sequence(alignment)?;
+            let mut line = alignment.to_gaf(&target_sequence);
             line.push(b'\n');
             writer.write_all(&line).map_err(|x| x.to_string())?;
         }

@@ -1207,16 +1207,22 @@ impl Subgraph {
         self.records.contains_key(&handle)
     }
 
+    /// Returns the sequence for the handle in the subgraph, or [`None`] if there is no such handle.
+    #[inline]
+    pub fn sequence_for_handle(&self, handle: usize) -> Option<&[u8]> {
+        self.records.get(&handle).map(|record| record.sequence())
+    }
+
     /// Returns the sequence for the node in the subgraph, or [`None`] if there is no such node.
     #[inline]
     pub fn sequence(&self, node_id: usize) -> Option<&[u8]> {
-        self.records.get(&support::encode_node(node_id, Orientation::Forward)).map(|record| record.sequence())
+        self.sequence_for_handle(support::encode_node(node_id, Orientation::Forward))
     }
 
     /// Returns the sequence for the node in the given orientation, or [`None`] if there is no such node.
     #[inline]
     pub fn oriented_sequence(&self, node_id: usize, orientation: Orientation) -> Option<&[u8]> {
-        self.records.get(&support::encode_node(node_id, orientation)).map(|record| record.sequence())
+        self.sequence_for_handle(support::encode_node(node_id, orientation))
     }
 
     /// Returns the length of the sequence for the node in the subgraph, or [`None`] if there is no such node.
