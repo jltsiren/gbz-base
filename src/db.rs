@@ -454,6 +454,9 @@ impl GAFBase {
     // Key for alignment count.
     const KEY_ALIGNMENTS: &'static str = "alignments";
 
+    /// Default block size in alignments.
+    pub const BLOCK_SIZE: usize = 1000;
+
     /// Opens a connection to the database in the given file.
     ///
     /// Reads the header information and passes through any database errors.
@@ -538,6 +541,21 @@ impl AlignmentStats {
     }
 }
 
+/// GAF-base construction parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GAFBaseParams {
+    /// Number of alignments in a block (database row).
+    pub block_size: usize,
+}
+
+impl Default for GAFBaseParams {
+    fn default() -> Self {
+        Self {
+            block_size: GAFBase::BLOCK_SIZE,
+        }
+    }
+}
+
 //-----------------------------------------------------------------------------
 
 /// Creating the database.
@@ -549,15 +567,19 @@ impl GAFBase {
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `gbwt_file`: GBWT file storing the target paths.
     /// * `db_file`: Output database file.
+    /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
     /// Returns an error if the input files do not exist or the database already exists.
     /// Passes through any database errors.
-    pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(gaf_file: P, gbwt_file: Q, db_file: R) -> Result<(), String> {
+    pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
+        gaf_file: P, gbwt_file: Q, db_file: R,
+        params: &GAFBaseParams
+    ) -> Result<(), String> {
         eprintln!("Loading GBWT index {}", gbwt_file.as_ref().display());
         let index: Arc<GBWT> = Arc::new(serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?);
-        Self::create(gaf_file, index, db_file)
+        Self::create(gaf_file, index, db_file, params)
     }
 
     /// Creates a new database in file `filename` from the given GBWT index.
@@ -567,12 +589,16 @@ impl GAFBase {
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `index`: GBWT index storing the target paths.
     /// * `db_file`: Output database file.
+    /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
     /// Returns an error if the GAF file does not exist or if the database already exists.
     /// Passes through any database errors.
-    pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q) -> Result<(), String> {
+    pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(
+        gaf_file: P, index: Arc<GBWT>, db_file: Q,
+        params: &GAFBaseParams
+    ) -> Result<(), String> {
         eprintln!("Creating database {}", db_file.as_ref().display());
         if utils::file_exists(&db_file) {
             return Err(format!("Database {} already exists", db_file.as_ref().display()));
@@ -586,7 +612,7 @@ impl GAFBase {
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
         let gaf_file = utils::open_file(gaf_file)?;
-        Self::insert_alignments(index, gaf_file, connection)?;
+        Self::insert_alignments(index, gaf_file, connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
@@ -665,7 +691,7 @@ impl GAFBase {
         Ok(inserted / 2)
     }
 
-    fn insert_alignments(index: Arc<GBWT>, gaf_file: Box<dyn BufRead>, connection: Connection) -> Result<(), String> {
+    fn insert_alignments(index: Arc<GBWT>, gaf_file: Box<dyn BufRead>, connection: Connection, params: &GAFBaseParams) -> Result<(), String> {
         eprintln!("Inserting alignments");
         let mut gaf_file = gaf_file;
         let mut connection = connection;
@@ -793,9 +819,8 @@ impl GAFBase {
             let _ = to_report.send(Ok(statistics));
         });
 
-        // FIXME: We should start a new block when the min node changes and the block is large enough.
+        // TODO: Maybe we should start a new block when the min node changes and the block is large enough.
         // Main thread that parses the alignments.
-        const BLOCK_SIZE: usize = 1000;
         let mut line_num: usize = 0;
         let mut unaligned_block = false;
         let mut block: Vec<Alignment> = Vec::new();
@@ -830,7 +855,7 @@ impl GAFBase {
                         unaligned_block = aln.is_unaligned();
                     }
                     block.push(aln);
-                    if block.len() >= BLOCK_SIZE {
+                    if block.len() >= params.block_size {
                         let _ = to_encoder.send(Ok(block));
                         block = Vec::new();
                     }

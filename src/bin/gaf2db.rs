@@ -1,7 +1,7 @@
 use std::time::Instant;
 use std::{env, fs, process};
 
-use gbz_base::GAFBase;
+use gbz_base::{GAFBase, GAFBaseParams};
 use gbz_base::utils;
 
 use getopts::Options;
@@ -25,7 +25,7 @@ fn main() -> Result<(), String> {
     }
 
     // Create the database.
-    GAFBase::create_from_files(&config.gaf_file, &config.gbwt_file, &config.db_file)?;
+    GAFBase::create_from_files(&config.gaf_file, &config.gbwt_file, &config.db_file, &config.params)?;
 
     // Statistics.
     let database = GAFBase::open(&config.db_file)?;
@@ -50,10 +50,13 @@ struct Config {
     pub gbwt_file: String,
     pub db_file: String,
     pub overwrite: bool,
+    pub params: GAFBaseParams,
 }
 
 impl Config {
     pub fn new() -> Config {
+        let mut params = GAFBaseParams::default();
+
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
         let header = format!("Usage: {} [options] alignments.gaf[.gz]", program);
@@ -61,6 +64,8 @@ impl Config {
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");
         opts.optopt("g", "gbwt", "GBWT file name (required)", "FILE");
+        let block_desc = format!("number of alignments per block (default: {})", params.block_size);
+        opts.optopt("b", "block-size", &block_desc, "INT");
         opts.optopt("o", "output", "output file name (default: <input>.db)", "FILE");
         opts.optflag("", "overwrite", "overwrite the database file if it exists");
         let matches = match opts.parse(&args[1..]) {
@@ -96,12 +101,24 @@ impl Config {
             db_file = Some(format!("{}.db", gaf_file));
         }
 
+        // Parameters.
+        if let Some(s) = matches.opt_str("b") {
+            match s.parse::<usize>() {
+                Ok(size) => params.block_size = size,
+                Err(_) => {
+                    eprintln!("Invalid block size: {}", s);
+                    process::exit(1);
+                }
+            }
+        }
+
         let overwrite = matches.opt_present("overwrite");
 
         Config {
             gaf_file, gbwt_file,
             db_file: db_file.unwrap(),
             overwrite,
+            params,
         }
     }
 }
