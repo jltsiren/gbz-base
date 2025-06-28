@@ -438,6 +438,7 @@ pub struct GAFBase {
     version: String,
     nodes: usize,
     alignments: usize,
+    bidirectional_gbwt: bool,
 }
 
 /// Using the database.
@@ -453,6 +454,9 @@ impl GAFBase {
 
     // Key for alignment count.
     const KEY_ALIGNMENTS: &'static str = "alignments";
+
+    // Key for bidirectional GBWT flag.
+    const KEY_BIDIRECTIONAL_GBWT: &'static str = "bidirectional_gbwt";
 
     /// Default block size in alignments.
     pub const BLOCK_SIZE: usize = 1000;
@@ -474,12 +478,13 @@ impl GAFBase {
         }
         let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
         let alignments = get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
+        let bidirectional_gbwt = get_boolean_value(&mut get_tag, Self::KEY_BIDIRECTIONAL_GBWT)?;
 
         drop(get_tag);
         Ok(GAFBase {
             connection,
             version,
-            nodes, alignments,
+            nodes, alignments, bidirectional_gbwt,
         })
     }
 
@@ -510,6 +515,11 @@ impl GAFBase {
     /// Returns the number of alignments in the database.
     pub fn alignments(&self) -> usize {
         self.alignments
+    }
+
+    /// Returns `true` if the paths are stored in a bidirectional GBWT.
+    pub fn bidirectional_gbwt(&self) -> bool {
+        self.bidirectional_gbwt
     }
 }
 
@@ -618,6 +628,11 @@ impl GAFBase {
         Ok(())
     }
 
+    // Returns the number of paths / alignments in the GBWT index.
+    fn gbwt_paths(index: &GBWT) -> usize {
+        if index.is_bidirectional() { index.sequences() / 2 } else { index.sequences() }
+    }
+
     // Returns (prefix, quality encoder).
     fn insert_tags(index: &GBWT, nodes: usize, connection: &mut Connection) -> Result<(), String> {
         eprintln!("Inserting header and tags");
@@ -640,11 +655,13 @@ impl GAFBase {
                 "INSERT INTO Tags(key, value) VALUES (?1, ?2)"
             ).map_err(|x| x.to_string())?;
 
-            let alignments = index.sequences() / 2;
+            let alignments = Self::gbwt_paths(index);
             insert.execute((Self::KEY_VERSION, Self::VERSION)).map_err(|x| x.to_string())?;
             insert.execute((Self::KEY_NODES, nodes)).map_err(|x| x.to_string())?;
             insert.execute((Self::KEY_ALIGNMENTS, alignments)).map_err(|x| x.to_string())?;
-            inserted += 3;
+            let bidirectional: usize = if index.is_bidirectional() { 1 } else { 0 };
+            insert.execute((Self::KEY_BIDIRECTIONAL_GBWT, bidirectional)).map_err(|x| x.to_string())?;
+            inserted += 4;
         }
         transaction.commit().map_err(|x| x.to_string())?;
 
@@ -882,8 +899,9 @@ impl GAFBase {
         let statistics = from_insert.recv().unwrap()?;
 
         eprintln!("Inserted information on {} alignments", statistics.alignments);
-        if statistics.alignments != index.sequences() / 2 {
-            eprintln!("Warning: Expected {} alignments", index.sequences() / 2);
+        let expected_alignments = Self::gbwt_paths(&index);
+        if statistics.alignments != expected_alignments {
+            eprintln!("Warning: Expected {} alignments", expected_alignments);
         }
         eprintln!(
             "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}",
@@ -1566,6 +1584,17 @@ fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, Stri
 fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
     let value = get_string_value(statement, key)?;
     value.parse::<usize>().map_err(|x| x.to_string())
+}
+
+// Executes the statement, which is expected to return a single string value.
+// Then returns the value as a boolen flag.
+fn get_boolean_value(statement: &mut Statement, key: &str) -> Result<bool, String> {
+    let value = get_string_value(statement, key)?;
+    match value.as_str() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(format!("Invalid boolean value for {}: {}", key, value))
+    }
 }
 
 //-----------------------------------------------------------------------------

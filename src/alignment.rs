@@ -978,6 +978,20 @@ impl AlignmentBlock {
     pub const COMPRESSION_LEVEL: i32 = 7;
 
     // FIXME: Error handling. Especially if there is a mix of aligned and unaligned reads.
+    /// Creates a new alignment block from the given read alignments and GBWT index.
+    ///
+    /// If the reads are aligned, they correspond to paths `first_id` to `first_id + alignments.len() - 1` in the GBWT index.
+    /// The GBWT index may be bidirectional or unidirectional.
+    ///
+    /// # Arguments
+    ///
+    /// * `alignments`: The alignments to include in the block.
+    /// * `index`: The GBWT index to use for encoding the GBWT starts.
+    /// * `first_id`: Path identifier of the first alignment in the block.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the block contains a mix of aligned and unaligned reads.
     pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Self {
         let min_node = alignments.iter().map(|aln| aln.min_node()).min().flatten();
         let max_node = alignments.iter().map(|aln| aln.max_node()).max().flatten();
@@ -992,7 +1006,10 @@ impl AlignmentBlock {
         let base_node = min_node.unwrap_or(0);
         for (i, aln) in alignments.iter().enumerate() {
             // GBWT start as (node - min_node, offset).
-            if let Some(start) = index.start(support::encode_path(first_id + i, Orientation::Forward)) {
+            let gbwt_sequence_id = if index.is_bidirectional() {
+                support::encode_path(first_id + i, Orientation::Forward)
+            } else { first_id + i };
+            if let Some(start) = index.start(gbwt_sequence_id) {
                 gbwt_starts.write(start.node - base_node);
                 gbwt_starts.write(start.offset);
             } else {
@@ -1013,6 +1030,10 @@ impl AlignmentBlock {
             }
             quality_strings.push(0);
 
+            // FIXME: We could have a flag for a perfect match and skip the difference string.
+            // FIXME: But we can only use it if we know the match length.
+            // FIXME: For short reads, we could store the most common read length in the block.
+            // FIXME: We could also avoid storing read coordinates for such reads.
             // Difference strings using a custom encoder.
             aln.encode_difference_into(&mut difference_strings);
 
