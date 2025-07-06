@@ -13,26 +13,10 @@ use std::path::PathBuf;
 
 // Creates an alignment object for an unaligned sequence with no optional fields.
 fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
-    let name = String::from(name);
-    let seq_interval = 0..0;
-    let path = TargetPath::Path(Vec::new());
-    let path_len = 0;
-    let path_interval = 0..0;
-    let matches = 0;
-    let edits = 0;
-    let mapq = None;
-    let score = None;
-    let base_quality = Vec::new();
-    let difference = Vec::new();
-    let pair = None;
-    let optional = Vec::new();
-    Alignment {
-        name, seq_len, seq_interval,
-        path, path_len, path_interval,
-        matches, edits, mapq, score,
-        base_quality, difference, pair,
-        optional
-    }
+    let mut result = Alignment::default();
+    result.name = String::from(name);
+    result.seq_len = seq_len;
+    result
 }
 
 // Parses the alignments from the test file.

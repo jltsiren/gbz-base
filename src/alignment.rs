@@ -64,7 +64,30 @@ pub struct Alignment {
     pub optional: Vec<TypedField>,
 }
 
-/// Conversions between GAF lines and `Alignment` objects.
+impl Default for Alignment {
+    fn default() -> Self {
+        Alignment {
+            name: String::new(),
+            seq_len: 0,
+            seq_interval: 0..0,
+            path: TargetPath::Path(Vec::new()),
+            path_len: 0,
+            path_interval: 0..0,
+            matches: 0,
+            edits: 0,
+            mapq: None,
+            score: None,
+            base_quality: Vec::new(),
+            difference: Vec::new(),
+            pair: None,
+            optional: Vec::new(),
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+/// Construction; conversions between GAF lines and `Alignment` objects.
 impl Alignment {
     // Number of mandatory fields in a GAF line.
     const MANDATORY_FIELDS: usize = 12;
@@ -74,6 +97,11 @@ impl Alignment {
 
     // The field is empty and the value is missing; typically used with unaligned sequences.
     const MISSING_VALUE: [u8; 1] = [b'*'];
+
+    /// Creates an empty alignment.
+    pub fn new() -> Self {
+        Alignment::default()
+    }
 
     // Parses a string field from a GAF field.
     fn parse_string(field: &[u8], field_name: &str) -> Result<String, String> {
@@ -513,8 +541,7 @@ impl Alignment {
 //-----------------------------------------------------------------------------
 
 // FIXME test these
-// Operations on the Alignment object.
-
+/// Operations on the Alignment object.
 impl Alignment {
     /// Returns `true` if the read is unaligned.
     pub fn is_unaligned(&self) -> bool {
@@ -957,6 +984,7 @@ impl AsRef<[u8]> for Flags {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: add read_len; also to database
 // FIXME: document, example, tests
 // An encoded block of alignments.
 #[derive(Debug, Clone)]
@@ -1087,139 +1115,116 @@ impl AlignmentBlock {
         self.alignments == 0
     }
 
-    fn decode_gbwt_starts(&self) -> Result<Vec<Pos>, String> {
-        let mut result = Vec::new();
+    fn decompress_gbwt_starts(&self, result: &mut [Alignment]) -> Result<(), String> {
         if self.min_node.is_none() {
-            return Ok(result);
+            return Ok(());
         }
         let base_node = self.min_node.unwrap();
         let mut decoder = ByteCodeIter::new(&self.gbwt_starts[..]);
-        for i in 0..self.len() {
+        for (i, aln) in result.iter_mut().enumerate() {
             let start = decoder.next().ok_or(
                 format!("Missing GBWT start for alignment {}", i)
             )?;
             let offset = decoder.next().ok_or(
                 format!("Missing GBWT offset for alignment {}", i)
             )?;
-            result.push(Pos::new(start + base_node, offset));
+            aln.path = TargetPath::StartPosition(Pos::new(start + base_node, offset));
         }
-        Ok(result)
+        Ok(())
     }
 
-    fn zstd_decompress(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+    // TODO: Somewhere else?
+    fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
         let mut decoder = ZstdDecoder::new(data).map_err(|err| format!("Zstd decompression error: {}", err))?;
         let mut buffer = Vec::new();
         decoder.read_to_end(&mut buffer).map_err(|err| format!("Zstd decompression error: {}", err))?;
         Ok(buffer)
     }
 
-    fn decode_pair(&self, i: usize, names: &[&[u8]]) -> Option<PairedRead> {
-        if names[2 * i + 1].is_empty() {
-            return None;
+    fn decompress_names_pairs(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let buffer = Self::zstd_decompress(&self.names[..])?;
+        let mut iter = buffer.split(|&c| c == 0);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let name = iter.next().ok_or(format!("Missing name for alignment {}", i))?;
+            aln.name = String::from_utf8_lossy(name).to_string();
+            let pair_name = iter.next().ok_or(format!("Missing pair name for alignment {}", i))?;
+            if !pair_name.is_empty() {
+                aln.pair = Some(PairedRead {
+                    name: String::from_utf8_lossy(pair_name).to_string(),
+                    is_next: self.flags.get(i, Flags::FLAG_PAIR_IS_NEXT),
+                    is_proper: self.flags.get(i, Flags::FLAG_PAIR_IS_PROPER),
+                });
+            }
         }
-        let name = String::from_utf8_lossy(names[2 * i]).to_string();
-        let is_next = self.flags.get(i, Flags::FLAG_PAIR_IS_NEXT);
-        let is_proper = self.flags.get(i, Flags::FLAG_PAIR_IS_PROPER);
-        Some(PairedRead { name, is_next, is_proper })
-    } 
+        // There should be an empty slice at the end, as the buffer is 0-terminated.
+        // TODO: Should we check this?
+        Ok(())
+    }
 
-    // FIXME: Maybe don't collect the slices?
-    pub fn decode(&self) -> Result<Vec<Alignment>, String> {
-        let mut result = Vec::with_capacity(self.len());
-
-        // Decompress the GBWT starting positions.
-        let gbwt_starts = self.decode_gbwt_starts()?;
-
-        // Decompress the names.
-        let name_buffer = self.zstd_decompress(&self.names[..])?;
-        let names = name_buffer.split(|&c| c == 0).collect::<Vec<_>>();
-        if names.len() != 2 * self.len() + 1 {
-            // We have an empty slice at the end, as the buffer is 0-terminated.
-            return Err(format!("Split the names into {} slices in a block of {} alignments", names.len(), self.len()));
+    fn decompress_quality_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let buffer = Self::zstd_decompress(&self.quality_strings[..])?;
+        let mut iter = buffer.split(|&c| c == 0);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let quality = iter.next().ok_or(format!("Missing quality string for alignment {}", i))?;
+            aln.base_quality = quality.to_vec();
         }
+        // There should be an empty slice at the end, as the buffer is 0-terminated.
+        // TODO: Should we check this?
+        Ok(())
+    }
 
-        // Decompress the quality strings.
-        let quality_buffer = self.zstd_decompress(&self.quality_strings[..])?;
-        let quality_strings = quality_buffer.split(|&c| c == 0).collect::<Vec<_>>();
-        if quality_strings.len() != self.len() + 1 {
-            // We have an empty slice at the end, as the buffer is 0-terminated.
-            return Err(format!("Split the quality strings into {} slices in a block of {} alignments", quality_strings.len(), self.len()));
+    fn decompress_difference_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let mut decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let res = Alignment::decode_difference_from(&self.difference_strings, &mut decoder);
+            aln.difference = res.map_err(|err| format!("Missing difference string for alignment {}: {}", i, err))?;
         }
+        Ok(())
+    }
 
-        // Decompress the difference strings on the fly.
-        let mut difference_decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
-
-        // We decode the numbers on the fly, as there are too many special cases.
-        let mut number_decoder = ByteCodeIter::new(&self.numbers[..]);
-
-        // TODO: Refactor this. Maybe a function for decoding the numbers?
-        // Build the alignments.
-        for i in 0..self.len() {
-            let name = String::from_utf8_lossy(names[2 * i]).to_string();
-
-            let path = if gbwt_starts.is_empty() {
-                TargetPath::Path(Vec::new())
-            } else {
-                TargetPath::StartPosition(gbwt_starts[i])
-            };
-
-            let base_quality = if quality_strings[i].is_empty() {
-                Vec::new()
-            } else {
-                Vec::from(quality_strings[i])
-            };
-
-            let difference = Alignment::decode_difference_from(&self.difference_strings, &mut difference_decoder)?;
-            let include_redundant = difference.is_empty();
-
-            // Now we can decode the numbers.
-            let (mut seq_interval, mut seq_len) = Alignment::decode_coordinates(&mut number_decoder, include_redundant).ok_or(
-                format!("Missing query sequence coordinates for alignment {}", i)
-            )?;
-            let (mut path_interval, mut path_len) = Alignment::decode_coordinates(&mut number_decoder, include_redundant).ok_or(
-                format!("Missing target path coordinates for alignment {}", i)
-            )?;
-            let mut matches = if include_redundant {
-                number_decoder.next().ok_or(format!("Missing number of matches for alignment {}", i))?
-            } else { 0 };
-            let mut edits = if include_redundant {
-                number_decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?
-            } else { 0 };
-            let mapq = if self.flags.get(i, Flags::FLAG_HAS_MAPQ) {
-                Some(number_decoder.next().ok_or(format!("Missing mapping quality for alignment {}", i))?)
-            } else { None };
-            let score = if self.flags.get(i, Flags::FLAG_HAS_SCORE) {
-                Some(Alignment::decode_signed(&mut number_decoder).ok_or(format!("Missing alignment score for alignment {}", i))?)
-            } else { None };
-
-            // And update the numbers if we have a difference string.
-            if !difference.is_empty() {
-                let (query_len, target_len, num_matches, num_edits) = Difference::stats(&difference);
-                seq_interval.end = seq_interval.start + query_len;
-                seq_len += query_len;
-                path_interval.end = path_interval.start + target_len;
-                path_len += target_len;
-                matches = num_matches;
-                edits = num_edits;
+    fn decompress_numbers(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let mut decoder = ByteCodeIter::new(&self.numbers[..]);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let include_redundant = aln.difference.is_empty(); // TODO: More special cases with the perfect alignment flag.
+            (aln.seq_interval, aln.seq_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
+                .ok_or(format!("Missing query sequence coordinates for alignment {}", i))?;
+            (aln.path_interval, aln.path_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
+                .ok_or(format!("Missing target path coordinates for alignment {}", i))?;
+            if include_redundant {
+                aln.matches = decoder.next().ok_or(format!("Missing number of matches for alignment {}", i))?;
+                aln.edits = decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?;
+            }
+            if self.flags.get(i, Flags::FLAG_HAS_MAPQ) {
+                aln.mapq = Some(decoder.next().ok_or(format!("Missing mapping quality for alignment {}", i))?);
+            }
+            if self.flags.get(i, Flags::FLAG_HAS_SCORE) {
+                aln.score = Some(Alignment::decode_signed(&mut decoder).ok_or(
+                    format!("Missing alignment score for alignment {}", i)
+                )?);
             }
 
-            let pair = self.decode_pair(i, &names);
-            let optional = Vec::new();
-
-            result.push(Alignment {
-                name,
-                seq_len, seq_interval,
-                path,
-                path_len, path_interval,
-                matches, edits,
-                mapq, score,
-                base_quality,
-                difference,
-                pair,
-                optional,
-            });
+            // Derive redundant numbers from the difference string.
+            if !include_redundant {
+                let (query_len, target_len, num_matches, num_edits) = Difference::stats(&aln.difference);
+                aln.seq_interval.end = aln.seq_interval.start + query_len;
+                aln.seq_len += query_len;
+                aln.path_interval.end = aln.path_interval.start + target_len;
+                aln.path_len += target_len;
+                aln.matches = num_matches;
+                aln.edits = num_edits;
+            }
         }
 
+        Ok(())
+    }
+
+    pub fn decode(&self) -> Result<Vec<Alignment>, String> {
+        let mut result = vec![Alignment::default(); self.len()];
+        self.decompress_gbwt_starts(&mut result)?;
+        self.decompress_names_pairs(&mut result)?;
+        self.decompress_quality_strings(&mut result)?;
+        self.decompress_difference_strings(&mut result)?;
+        self.decompress_numbers(&mut result)?;
         Ok(result)
     }
 }
