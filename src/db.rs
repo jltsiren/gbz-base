@@ -721,6 +721,7 @@ impl GAFBase {
                 min_node INTEGER,
                 max_node INTEGER CHECK (min_node <= max_node),
                 alignments INTEGER NOT NULL,
+                read_length INTEGER,
                 gbwt_starts BLOB,
                 names BLOB,
                 quality_strings BLOB,
@@ -783,8 +784,8 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(min_node, max_node, alignments, gbwt_starts, names, quality_strings, difference_strings, flags, numbers)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+                    Alignments(min_node, max_node, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
                 let _ = to_report.send(Err(message));
@@ -810,7 +811,7 @@ impl GAFBase {
                         statistics.flag_bytes += block.flags.bytes();
                         statistics.number_bytes += block.numbers.len();
                         let result = insert.execute((
-                            block.min_node, block.max_node, block.alignments,
+                            block.min_node, block.max_node, block.alignments, block.read_length,
                             block.gbwt_starts, block.names,
                             block.quality_strings, block.difference_strings,
                             block.flags.as_ref(), block.numbers
@@ -1348,15 +1349,16 @@ impl ReadSet{
         let min_node: Option<usize> = row.get(0).map_err(|x| x.to_string())?;
         let max_node: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
         let alignments: usize = row.get(2).map_err(|x| x.to_string())?;
-        let gbwt_starts: Vec<u8> = row.get(3).map_err(|x| x.to_string())?;
-        let names: Vec<u8> = row.get(4).map_err(|x| x.to_string())?;
-        let quality_strings: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
-        let difference_strings: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
-        let flags: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
-        let numbers: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
+        let read_length: Option<usize> = row.get(3).map_err(|x| x.to_string())?;
+        let gbwt_starts: Vec<u8> = row.get(4).map_err(|x| x.to_string())?;
+        let names: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
+        let quality_strings: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
+        let difference_strings: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
+        let flags: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
+        let numbers: Vec<u8> = row.get(9).map_err(|x| x.to_string())?;
 
         let block = AlignmentBlock {
-            min_node, max_node, alignments,
+            min_node, max_node, alignments, read_length,
             gbwt_starts, names,
             quality_strings, difference_strings,
             flags: Flags::from(flags), numbers
@@ -1429,7 +1431,7 @@ impl ReadSet{
         let min_node = *read_set.nodes.keys().min().unwrap();
         let max_node = *read_set.nodes.keys().max().unwrap();
         let mut get_reads = database.connection.prepare(
-            "SELECT min_node, max_node, alignments, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT min_node, max_node, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
             FROM Alignments
             WHERE min_node <= ?1 AND max_node >= ?2"
         ).map_err(|x| x.to_string())?;

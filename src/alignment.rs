@@ -438,18 +438,28 @@ impl Alignment {
     //
     // This includes the following fields:
     //
-    // * Query sequence: `seq_len`, `seq_interval.start`, (`seq_interval.end`).
-    // * Target path: `path_len`, `path_interval.start`, (`path_interval.end`).
-    // * Alignment statistics: (`matches`), (`edits`), `mapq`, `score`.
+    // * Query sequence: `seq_len`, `seq_interval.start`, `seq_interval.end`.
+    // * Target path: `path_len`, `path_interval.start`, `path_interval.end`.
+    // * Alignment statistics: `matches`, `edits`, `mapq`, `score`.
     //
     // The coordinates are normalized so that `start <= end <= len`.
-    // If a difference string is present, the numbers in parentheses are not stored, as they can be derived from it.
-    fn encode_numbers_into(&self, encoder: &mut ByteCode) {
+    // If `perfect_alignment` is set, this is assumed to be a perfect alignment of the expected length.
+    // In that case, numbers that can be derived from the length are not stored.
+    // If a difference string is present, numbers that can be derived from it are not stored.
+    //
+    // Mapping quality and alignment score are stored if they are present.
+    // Their presence should be stored separately.
+    fn encode_numbers_into(&self, encoder: &mut ByteCode, perfect_alignment: bool) {
         let include_redundant = self.difference.is_empty();
 
         // Coordinates.
-        Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, encoder);
-        Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, encoder);
+        if perfect_alignment {
+            // We can also derive target interval length from the sequence length.
+            Self::encode_coordinates(self.path_interval.clone(), self.path_len, false, encoder);
+        } else {
+            Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, encoder);
+            Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, encoder);
+        }
 
         // Alignment statistics.
         if include_redundant {
@@ -546,6 +556,16 @@ impl Alignment {
     /// Returns `true` if the read is unaligned.
     pub fn is_unaligned(&self) -> bool {
         self.seq_interval.is_empty()
+    }
+
+    /// Returns `true` if this is a perfect alignment of the entire read.
+    ///
+    /// NOTE: An empty sequence is by definition unaligned.
+    pub fn is_perfect(&self) -> bool {
+        self.seq_len > 0 &&
+            self.seq_interval.start == 0 &&
+            self.seq_interval.end == self.seq_len &&
+            self.edits == 0
     }
 
     /// Returns the minimum GBWT node identifier in the target path, or [`None`] if there is no path.
@@ -922,13 +942,25 @@ pub struct Flags {
 
 impl Flags {
     /// Number of flags per alignment.
-    pub const NUM_FLAGS: usize = 4;
+    pub const NUM_FLAGS: usize = 5;
 
     // Flags expressed as a bit offset.
+    // TODO: As enum?
+
+    /// Flag: Pair is the next fragment in the read pair.
     pub const FLAG_PAIR_IS_NEXT: usize = 0;
+
+    /// Flag: The the alignment is properly paired.
     pub const FLAG_PAIR_IS_PROPER: usize = 1;
+
+    /// Flag: A mapping quality score is present.
     pub const FLAG_HAS_MAPQ: usize = 2;
+
+    /// Flag: An alignment score is present.
     pub const FLAG_HAS_SCORE: usize = 3;
+
+    /// Flag: This is a perfect alignment of the entire read, and read length is as expected.
+    pub const FLAG_PERFECT_ALIGNMENT: usize = 4;
 
     /// Creates a new flags object with the given number of alignments.
     /// The flags are initialized to zero (false).
@@ -984,19 +1016,30 @@ impl AsRef<[u8]> for Flags {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: add read_len; also to database
+// TODO: expected alignment score for perfect alignments? Or just a scoring model?
 // FIXME: document, example, tests
 // An encoded block of alignments.
 #[derive(Debug, Clone)]
 pub struct AlignmentBlock {
+    /// Minimum node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
     pub min_node: Option<usize>,
+    /// Maximum node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
     pub max_node: Option<usize>,
+    /// Number of alignments in the block.
     pub alignments: usize,
+    /// Expected read length in the block, or [`None`] if the lengths vary.
+    pub read_length: Option<usize>,
+    /// GBWT starting positions for the target paths.
     pub gbwt_starts: Vec<u8>,
+    /// Read and pair names.
     pub names: Vec<u8>,
+    /// Quality strings.
     pub quality_strings: Vec<u8>,
+    /// Difference strings.
     pub difference_strings: Vec<u8>,
+    /// Binary flags for each alignment.
     pub flags: Flags,
+    /// Encoded numerical information that cannot be derived from the other fields.
     pub numbers: Vec<u8>,
 }
 
@@ -1004,6 +1047,78 @@ impl AlignmentBlock {
     // TODO: Make this a parameter?
     /// Compression level for Zstandard.
     pub const COMPRESSION_LEVEL: i32 = 7;
+
+    // TODO: Allow outliers instead of requiring the same length from every read.
+    fn expected_read_length(alignments: &[Alignment]) -> Option<usize> {
+        let mut read_length = None;
+        for aln in alignments.iter() {
+            if let Some(len) = read_length {
+                if aln.seq_len != len {
+                    read_length = None;
+                    break;
+                }
+            } else {
+                if aln.seq_len == 0 {
+                    break;
+                }
+                read_length = Some(aln.seq_len);
+            }
+        }
+        read_length
+    }
+
+    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_node: Option<usize>) -> Vec<u8> {
+        let base_node = min_node.unwrap_or(0);
+        let mut encoder = ByteCode::new();
+        for i in 0..alignments.len() {
+            // GBWT start as (node - min_node, offset).
+            let gbwt_sequence_id = if index.is_bidirectional() {
+                support::encode_path(first_id + i, Orientation::Forward)
+            } else { first_id + i };
+            if let Some(start) = index.start(gbwt_sequence_id) {
+                encoder.write(start.node - base_node);
+                encoder.write(start.offset);
+            } else {
+                assert!(encoder.is_empty(), "Line {}: Unaligned read in a block with aligned reads", first_id + i);
+            }
+        }
+        Vec::from(encoder)
+    }
+
+    // FIXME: Error handling.
+    fn compress_names_pairs(alignments: &[Alignment]) -> Vec<u8> {
+        let mut names: Vec<u8> = Vec::new();
+        for aln in alignments.iter() {
+            // Read name as a 0-terminated string.
+            names.extend_from_slice(aln.name.as_bytes());
+            names.push(0);
+            // Pair name as a 0-terminated string, if present.
+            if let Some(pair) = &aln.pair {
+                names.extend_from_slice(pair.name.as_bytes());
+            }
+            names.push(0);
+        }
+
+        let mut encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
+        encoder.write_all(&names).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    // FIXME: Error handling.
+    fn compress_quality_strings(alignments: &[Alignment]) -> Vec<u8> {
+        let mut quality_strings: Vec<u8> = Vec::new();
+        for aln in alignments.iter() {
+            // Quality strings as 0-terminated strings.
+            if !aln.base_quality.is_empty() {
+                quality_strings.extend_from_slice(&aln.base_quality);
+            }
+            quality_strings.push(0);
+        }
+
+        let mut encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
+        encoder.write_all(&quality_strings).unwrap();
+        encoder.finish().unwrap()
+    }
 
     // FIXME: Error handling. Especially if there is a mix of aligned and unaligned reads.
     /// Creates a new alignment block from the given read alignments and GBWT index.
@@ -1023,49 +1138,22 @@ impl AlignmentBlock {
     pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Self {
         let min_node = alignments.iter().map(|aln| aln.min_node()).min().flatten();
         let max_node = alignments.iter().map(|aln| aln.max_node()).max().flatten();
+        let read_length = Self::expected_read_length(alignments);
+        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_node);
+        let names = Self::compress_names_pairs(alignments);
+        let quality_strings = Self::compress_quality_strings(alignments);
 
-        let mut gbwt_starts = ByteCode::new();
-        let mut names: Vec<u8> = Vec::new();
-        let mut quality_strings: Vec<u8> = Vec::new();
+        // We encode the remaining fields together, as they depend on each other.
         let mut difference_strings = RLE::with_sigma(Difference::NUM_TYPES);
         let mut flags = Flags::new(alignments.len());
         let mut numbers = ByteCode::new();
 
-        let base_node = min_node.unwrap_or(0);
         for (i, aln) in alignments.iter().enumerate() {
-            // GBWT start as (node - min_node, offset).
-            let gbwt_sequence_id = if index.is_bidirectional() {
-                support::encode_path(first_id + i, Orientation::Forward)
-            } else { first_id + i };
-            if let Some(start) = index.start(gbwt_sequence_id) {
-                gbwt_starts.write(start.node - base_node);
-                gbwt_starts.write(start.offset);
-            } else {
-                assert!(gbwt_starts.is_empty(), "Line {}: Unaligned read in a block with aligned reads", first_id + i);
+            let perfect_alignment = aln.is_perfect() && Some(aln.seq_len) == read_length;
+            if !perfect_alignment {
+                aln.encode_difference_into(&mut difference_strings);
             }
 
-            // Read/pair names as 0-terminated strings.
-            names.extend_from_slice(aln.name.as_bytes());
-            names.push(0);
-            if let Some(pair) = &aln.pair {
-                names.extend_from_slice(pair.name.as_bytes());
-            }
-            names.push(0);
-
-            // Quality strings as 0-terminated strings.
-            if !aln.base_quality.is_empty() {
-                quality_strings.extend_from_slice(&aln.base_quality);
-            }
-            quality_strings.push(0);
-
-            // FIXME: We could have a flag for a perfect match and skip the difference string.
-            // FIXME: But we can only use it if we know the match length.
-            // FIXME: For short reads, we could store the most common read length in the block.
-            // FIXME: We could also avoid storing read coordinates for such reads.
-            // Difference strings using a custom encoder.
-            aln.encode_difference_into(&mut difference_strings);
-
-            // Flags as an ad hoc bitvector.
             if let Some(pair) = &aln.pair {
                 if pair.is_next {
                     flags.set(i, Flags::FLAG_PAIR_IS_NEXT, true);
@@ -1080,25 +1168,17 @@ impl AlignmentBlock {
             if aln.score.is_some() {
                 flags.set(i, Flags::FLAG_HAS_SCORE, true);
             }
+            flags.set(i, Flags::FLAG_PERFECT_ALIGNMENT, perfect_alignment);
 
-            // Numbers with a custom encoder.
-            aln.encode_numbers_into(&mut numbers);
+            aln.encode_numbers_into(&mut numbers, perfect_alignment);
         }
-
-        // FIXME: error handling
-        // Compress the names and quality strings.
-        let mut name_encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
-        name_encoder.write_all(&names).unwrap();
-        names = name_encoder.finish().unwrap();
-        let mut quality_encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
-        quality_encoder.write_all(&quality_strings).unwrap();
-        quality_strings = quality_encoder.finish().unwrap();
 
         Self {
             min_node,
             max_node,
             alignments: alignments.len(),
-            gbwt_starts: Vec::from(gbwt_starts),
+            read_length,
+            gbwt_starts,
             names,
             quality_strings,
             difference_strings: Vec::from(difference_strings),
@@ -1176,8 +1256,13 @@ impl AlignmentBlock {
     fn decompress_difference_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
         let mut decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
         for (i, aln) in result.iter_mut().enumerate() {
-            let res = Alignment::decode_difference_from(&self.difference_strings, &mut decoder);
-            aln.difference = res.map_err(|err| format!("Missing difference string for alignment {}: {}", i, err))?;
+            if self.flags.get(i, Flags::FLAG_PERFECT_ALIGNMENT) {
+                let len = self.read_length.ok_or(format!("Missing read length for perfect alignment {}", i))?;
+                aln.difference = vec![Difference::Match(len)];
+            } else {
+                let res = Alignment::decode_difference_from(&self.difference_strings, &mut decoder);
+                aln.difference = res.map_err(|err| format!("Missing difference string for alignment {}: {}", i, err))?;
+            }
         }
         Ok(())
     }
@@ -1185,9 +1270,12 @@ impl AlignmentBlock {
     fn decompress_numbers(&self, result: &mut [Alignment]) -> Result<(), String> {
         let mut decoder = ByteCodeIter::new(&self.numbers[..]);
         for (i, aln) in result.iter_mut().enumerate() {
-            let include_redundant = aln.difference.is_empty(); // TODO: More special cases with the perfect alignment flag.
-            (aln.seq_interval, aln.seq_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
-                .ok_or(format!("Missing query sequence coordinates for alignment {}", i))?;
+            // If this is a perfect alignment, we created a difference string even if the original alignment did not have one.
+            let include_redundant = aln.difference.is_empty();
+            if !self.flags.get(i, Flags::FLAG_PERFECT_ALIGNMENT) {
+                (aln.seq_interval, aln.seq_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
+                    .ok_or(format!("Missing query sequence coordinates for alignment {}", i))?;
+            }
             (aln.path_interval, aln.path_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
                 .ok_or(format!("Missing target path coordinates for alignment {}", i))?;
             if include_redundant {
@@ -1204,6 +1292,7 @@ impl AlignmentBlock {
             }
 
             // Derive redundant numbers from the difference string.
+            // This also handles numbers derived from a perfect alignment.
             if !include_redundant {
                 let (query_len, target_len, num_matches, num_edits) = Difference::stats(&aln.difference);
                 aln.seq_interval.end = aln.seq_interval.start + query_len;
@@ -1224,6 +1313,7 @@ impl AlignmentBlock {
         self.decompress_names_pairs(&mut result)?;
         self.decompress_quality_strings(&mut result)?;
         self.decompress_difference_strings(&mut result)?;
+        // We decompress the numbers last, as their presence may depend on the other fields.
         self.decompress_numbers(&mut result)?;
         Ok(result)
     }
