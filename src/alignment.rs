@@ -1067,7 +1067,7 @@ impl AlignmentBlock {
         read_length
     }
 
-    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_node: Option<usize>) -> Vec<u8> {
+    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_node: Option<usize>) -> Result<Vec<u8>, String> {
         let base_node = min_node.unwrap_or(0);
         let mut encoder = ByteCode::new();
         for i in 0..alignments.len() {
@@ -1078,15 +1078,21 @@ impl AlignmentBlock {
             if let Some(start) = index.start(gbwt_sequence_id) {
                 encoder.write(start.node - base_node);
                 encoder.write(start.offset);
-            } else {
-                assert!(encoder.is_empty(), "Line {}: Unaligned read in a block with aligned reads", first_id + i);
+            } else if !encoder.is_empty() {
+                return Err(format!("Line {}: Unaligned read in a block with aligned reads", first_id + i));
             }
         }
-        Vec::from(encoder)
+        Ok(Vec::from(encoder))
     }
 
-    // FIXME: Error handling.
-    fn compress_names_pairs(alignments: &[Alignment]) -> Vec<u8> {
+    // TODO: Somewhere else?
+    fn zstd_compress(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
+        encoder.write_all(data).map_err(|err| format!("Zstd compression error: {}", err))?;
+        encoder.finish().map_err(|err| format!("Zstd compression error: {}", err))
+    }
+
+    fn compress_names_pairs(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
         let mut names: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
             // Read name as a 0-terminated string.
@@ -1098,14 +1104,10 @@ impl AlignmentBlock {
             }
             names.push(0);
         }
-
-        let mut encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
-        encoder.write_all(&names).unwrap();
-        encoder.finish().unwrap()
+        Self::zstd_compress(&names)
     }
 
-    // FIXME: Error handling.
-    fn compress_quality_strings(alignments: &[Alignment]) -> Vec<u8> {
+    fn compress_quality_strings(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
         let mut quality_strings: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
             // Quality strings as 0-terminated strings.
@@ -1114,13 +1116,9 @@ impl AlignmentBlock {
             }
             quality_strings.push(0);
         }
-
-        let mut encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
-        encoder.write_all(&quality_strings).unwrap();
-        encoder.finish().unwrap()
+        Self::zstd_compress(&quality_strings)
     }
 
-    // FIXME: Error handling. Especially if there is a mix of aligned and unaligned reads.
     /// Creates a new alignment block from the given read alignments and GBWT index.
     ///
     /// If the reads are aligned, they correspond to paths `first_id` to `first_id + alignments.len() - 1` in the GBWT index.
@@ -1132,16 +1130,17 @@ impl AlignmentBlock {
     /// * `index`: The GBWT index to use for encoding the GBWT starts.
     /// * `first_id`: Path identifier of the first alignment in the block.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Will panic if the block contains a mix of aligned and unaligned reads.
-    pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Self {
+    /// Returns an error if the block contains a mix of aligned and unaligned reads.
+    /// Returns an error if compression fails.
+    pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Result<Self, String> {
         let min_node = alignments.iter().map(|aln| aln.min_node()).min().flatten();
         let max_node = alignments.iter().map(|aln| aln.max_node()).max().flatten();
         let read_length = Self::expected_read_length(alignments);
-        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_node);
-        let names = Self::compress_names_pairs(alignments);
-        let quality_strings = Self::compress_quality_strings(alignments);
+        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_node)?;
+        let names = Self::compress_names_pairs(alignments)?;
+        let quality_strings = Self::compress_quality_strings(alignments)?;
 
         // We encode the remaining fields together, as they depend on each other.
         let mut difference_strings = RLE::with_sigma(Difference::NUM_TYPES);
@@ -1173,7 +1172,7 @@ impl AlignmentBlock {
             aln.encode_numbers_into(&mut numbers, perfect_alignment);
         }
 
-        Self {
+        Ok(Self {
             min_node,
             max_node,
             alignments: alignments.len(),
@@ -1184,7 +1183,7 @@ impl AlignmentBlock {
             difference_strings: Vec::from(difference_strings),
             flags,
             numbers: Vec::from(numbers),
-        }
+        })
     }
 
     pub fn len(&self) -> usize {

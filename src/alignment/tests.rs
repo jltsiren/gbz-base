@@ -191,6 +191,10 @@ fn block_end(alignments: &[Alignment], start: usize, block_size: usize) -> usize
 fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
     let range = first_id..(first_id + block.len());
     let encoded = AlignmentBlock::new(block, index, first_id);
+    if let Err(message) = encoded {
+        panic!("Failed to encode the alignment block {}..{}: {}", range.start, range.end, message);
+    }
+    let encoded = encoded.unwrap();
     assert_eq!(encoded.len(), block.len(), "Wrong number of alignments in the encoded block {}..{}", range.start, range.end);
 
     let decoded = encoded.decode();

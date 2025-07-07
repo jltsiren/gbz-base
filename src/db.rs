@@ -758,8 +758,16 @@ impl GAFBase {
                 match block {
                     Ok(block) => {
                         let encoded = AlignmentBlock::new(&block, &gbwt_index, alignment_id);
+                        match encoded {
+                            Ok(data) => {
+                                let _ = to_insert.send(Ok(data));
+                            },
+                            Err(message) => {
+                                let _ = to_insert.send(Err(message));
+                                return;
+                            }
+                        }
                         alignment_id += block.len();
-                        let _ = to_insert.send(Ok(encoded));
                         if block.is_empty() {
                             // An empty block indicates that we are done.
                             return;
