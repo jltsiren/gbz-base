@@ -718,8 +718,8 @@ impl GAFBase {
         // `start_node` is a foreign key to `Nodes`, but we do not enforce that for performance reasons.
         connection.execute(
             "CREATE TABLE Alignments (
-                min_node INTEGER,
-                max_node INTEGER CHECK (min_node <= max_node),
+                min_handle INTEGER,
+                max_handle INTEGER CHECK (min_handle <= max_handle),
                 alignments INTEGER NOT NULL,
                 read_length INTEGER,
                 gbwt_starts BLOB,
@@ -736,7 +736,7 @@ impl GAFBase {
         // Create indexes for min/max nodes.
         connection.execute(
             "CREATE INDEX AlignmentNodeInterval
-                ON Alignments(min_node, max_node)",
+                ON Alignments(min_handle, max_handle)",
             (),
         ).map_err(|x| x.to_string())?;
 
@@ -792,7 +792,7 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(min_node, max_node, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers)
+                    Alignments(min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers)
                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
@@ -819,7 +819,7 @@ impl GAFBase {
                         statistics.flag_bytes += block.flags.bytes();
                         statistics.number_bytes += block.numbers.len();
                         let result = insert.execute((
-                            block.min_node, block.max_node, block.alignments, block.read_length,
+                            block.min_handle, block.max_handle, block.alignments, block.read_length,
                             block.gbwt_starts, block.names,
                             block.quality_strings, block.difference_strings,
                             block.flags.as_ref(), block.numbers
@@ -1342,7 +1342,7 @@ impl<'a> GraphInterface<'a> {
 //-----------------------------------------------------------------------------
 
 // FIXME: document, examples, tests
-/// A set of reads that are fully within a subgraph defined by a set of node handles.
+/// A set of reads extracted from [`GAFBase`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadSet {
     // GBZ records in the GAF GBWT, including sequence from the subgraph.
@@ -1351,11 +1351,11 @@ pub struct ReadSet {
     blocks: usize,
 }
 
-impl ReadSet{
+impl ReadSet {
     // Decompresses an alignment block from a row.
     fn decompress_block(row: &Row) -> Result<Vec<Alignment>, String> {
-        let min_node: Option<usize> = row.get(0).map_err(|x| x.to_string())?;
-        let max_node: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
+        let min_handle: Option<usize> = row.get(0).map_err(|x| x.to_string())?;
+        let max_handle: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
         let alignments: usize = row.get(2).map_err(|x| x.to_string())?;
         let read_length: Option<usize> = row.get(3).map_err(|x| x.to_string())?;
         let gbwt_starts: Vec<u8> = row.get(4).map_err(|x| x.to_string())?;
@@ -1366,7 +1366,7 @@ impl ReadSet{
         let numbers: Vec<u8> = row.get(9).map_err(|x| x.to_string())?;
 
         let block = AlignmentBlock {
-            min_node, max_node, alignments, read_length,
+            min_handle, max_handle, alignments, read_length,
             gbwt_starts, names,
             quality_strings, difference_strings,
             flags: Flags::from(flags), numbers
@@ -1374,82 +1374,128 @@ impl ReadSet{
         block.decode()
     }
 
-    // FIXME: or overlapping, depending on the query
-    // Replaces the GBWT starting position of the alignment with the path if it is fully within the subgraph.
-    fn set_target_path(&self, alignment: &mut Alignment) {
+    // Replaces the GBWT starting position of the alignment with the path.
+    // Requires that the path overlaps with / is fully contained in the subgraph.
+    // If the path is valid, inserts all missing node records into the read set.
+    fn set_target_path(
+        &mut self, alignment: &mut Alignment, subgraph: &Subgraph,
+        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>,
+        contained: bool
+    ) -> Result<(), String> {
         let mut pos = match alignment.path {
-            TargetPath::Path(_) => return,
+            TargetPath::Path(_) => return Ok(()),
             TargetPath::StartPosition(pos) => Some(pos),
         };
 
         let mut path = Vec::new();
+        let mut to_insert: BTreeMap<usize, GBZRecord> = BTreeMap::new();
+        let mut overlap = false;
         while let Some(p) = pos {
-            let record = self.nodes.get(&p.node);
-            if record.is_none() {
-                return;
+            if subgraph.has_handle(p.node) {
+                overlap = true;
+            } else if contained {
+                return Ok(()); // Not fully contained in the subgraph.
             }
-            let record = record.unwrap();
+
+            // Now try to get the record for the node.
+            // First attempt: In this read set.
+            let mut record = self.nodes.get(&p.node);
+            if record.is_none() {
+                // Second attempt: Already visited on this path.
+                record = to_insert.get(&p.node);
+            }
+            if record.is_none() {
+                // Third attempt: Get the record from the graph and the GAF-base.
+                let result = get_record(p.node)?;
+                to_insert.insert(p.node, result);
+                record = to_insert.get(&p.node);
+            }
+
+            // Navigate to the next position.
             path.push(p.node);
+            let record = record.unwrap();
             pos = record.to_gbwt_record().lf(p.offset);
         }
 
-        if !path.is_empty() {
+        // Set the path and insert the new records.
+        if overlap {
             alignment.set_target_path(path);
+            for (key, value) in to_insert {
+                self.nodes.insert(key, value);
+            }
         }
+        Ok(())
     }
 
-    // FIXME: option for reads overlapping the subgraph
-    /// Creates a new read set containing all alignments in the database that are fully within the subgraph.
+    /// Creates a set of reads overlapping with the subgraph.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: A GBZ-compatible graph.
+    /// * `subgraph`: The subgraph used as the query region.
+    /// * `database`: A database storing reads aligned to the graph.
+    /// * `contained`: If `true`, only reads that are fully within the subgraph are returned.
     ///
     /// # Errors
     ///
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
-    pub fn new(subgraph: &Subgraph, database: &GAFBase) -> Result<Self, String> {
+    pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, contained: bool) -> Result<Self, String> {
         let mut read_set = ReadSet {
             nodes: BTreeMap::new(),
             reads: Vec::new(),
             blocks: 0,
         };
 
-        // Get the records for the nodes that are in the subgraph and used by the reads.
+        // Build a record from the databases.
         let mut get_node = database.connection.prepare(
             "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
-        for handle in subgraph.handle_iter() {
-            let sequence = subgraph.sequence_for_handle(handle).unwrap();
-            let record = get_node.query_row(
+        let mut graph = graph;
+        let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
+            // Get the edges and the BWT fragment from the GAF-base.
+            let gaf_result = get_node.query_row(
                 (handle,),
-                |row| {
+                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
                     let edge_bytes: Vec<u8> = row.get(0)?;
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
-                    unsafe {
-                        Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence.to_vec()))
-                    }
+                    Ok((edges, bwt))
                 }
             ).optional().map_err(|x| x.to_string())?;
-            if let Some(record) = record {
-                read_set.nodes.insert(handle, record);
+            if gaf_result.is_none() {
+                return Err(format!("Could not find the record for handle {} in GAF-base", handle));
             }
-        }
-        if read_set.nodes.is_empty() {
-            return Ok(read_set);
-        }
+            let (edges, bwt) = gaf_result.unwrap();
 
-        // Get the reads that are fully within the subgraph.
-        let min_node = *read_set.nodes.keys().min().unwrap();
-        let max_node = *read_set.nodes.keys().max().unwrap();
+            // Get the sequence from the subgraph or from the GBZ-base.
+            let sequence = subgraph.sequence(handle);
+            let sequence = match sequence {
+                Some(seq) => seq.to_vec(),
+                None => {
+                    let gbz_record = graph.gbz_record(handle)?;
+                    gbz_record.sequence().to_vec()
+                }
+            };
+
+            unsafe {
+                Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence))
+            }
+        };
+
+        // Get the reads that may overlap with the subgraph.
+        let min_handle = subgraph.min_handle();
+        let max_handle = subgraph.max_handle();
         let mut get_reads = database.connection.prepare(
-            "SELECT min_node, max_node, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
             FROM Alignments
-            WHERE min_node <= ?1 AND max_node >= ?2"
+            WHERE min_handle <= ?1 AND max_handle >= ?2"
         ).map_err(|x| x.to_string())?;
-        let mut rows = get_reads.query((max_node, min_node)).map_err(|x| x.to_string())?;
+        let mut rows = get_reads.query((max_handle, min_handle)).map_err(|x| x.to_string())?;
         while let Some(row) = rows.next().map_err(|x| x.to_string())? {
             let block = Self::decompress_block(row)?;
             for mut alignment in block {
-                read_set.set_target_path(&mut alignment);
+                read_set.set_target_path(&mut alignment, subgraph, &mut get_record, contained)?;
                 if alignment.has_target_path() {
                     read_set.reads.push(alignment);
                 }
@@ -1490,7 +1536,7 @@ impl ReadSet{
 
         let mut sequence = Vec::new();
         for handle in target_path{
-            let record = self.nodes.get(&handle);
+            let record = self.nodes.get(handle);
             if record.is_none() {
                 return Err(format!("Read {}: Missing record for node handle {}", alignment.name, handle));
             }
@@ -1505,7 +1551,7 @@ impl ReadSet{
             ));
         }
         sequence = sequence[alignment.path_interval.clone()].to_vec();
-        return Ok(sequence);
+        Ok(sequence)
     }
 
     /// Serializes the read set in the GAF format.

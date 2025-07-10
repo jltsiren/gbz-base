@@ -573,7 +573,7 @@ impl Alignment {
     }
 
     /// Returns the minimum GBWT node identifier in the target path, or [`None`] if there is no path.
-    pub fn min_node(&self) -> Option<usize> {
+    pub fn min_handle(&self) -> Option<usize> {
         match self.path {
             TargetPath::Path(ref path) => path.iter().copied().min(),
             TargetPath::StartPosition(_) => None,
@@ -581,7 +581,7 @@ impl Alignment {
     }
 
     /// Returns the maximum GBWT node identifier in the target path, or [`None`] if there is no path.
-    pub fn max_node(&self) -> Option<usize> {
+    pub fn max_handle(&self) -> Option<usize> {
         match self.path {
             TargetPath::Path(ref path) => path.iter().copied().max(),
             TargetPath::StartPosition(_) => None,
@@ -1025,10 +1025,10 @@ impl AsRef<[u8]> for Flags {
 // An encoded block of alignments.
 #[derive(Debug, Clone)]
 pub struct AlignmentBlock {
-    /// Minimum node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
-    pub min_node: Option<usize>,
-    /// Maximum node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
-    pub max_node: Option<usize>,
+    /// Minimum GBWT node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
+    pub min_handle: Option<usize>,
+    /// Maximum GBWT node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
+    pub max_handle: Option<usize>,
     /// Number of alignments in the block.
     pub alignments: usize,
     /// Expected read length in the block, or [`None`] if the lengths vary.
@@ -1071,11 +1071,11 @@ impl AlignmentBlock {
         read_length
     }
 
-    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_node: Option<usize>) -> Result<Vec<u8>, String> {
-        let base_node = min_node.unwrap_or(0);
+    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_handle: Option<usize>) -> Result<Vec<u8>, String> {
+        let base_node = min_handle.unwrap_or(0);
         let mut encoder = ByteCode::new();
         for i in 0..alignments.len() {
-            // GBWT start as (node - min_node, offset).
+            // GBWT start as (node - min_handle, offset).
             let gbwt_sequence_id = if index.is_bidirectional() {
                 support::encode_path(first_id + i, Orientation::Forward)
             } else { first_id + i };
@@ -1139,10 +1139,10 @@ impl AlignmentBlock {
     /// Returns an error if the block contains a mix of aligned and unaligned reads.
     /// Returns an error if compression fails.
     pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Result<Self, String> {
-        let min_node = alignments.iter().map(|aln| aln.min_node()).min().flatten();
-        let max_node = alignments.iter().map(|aln| aln.max_node()).max().flatten();
+        let min_handle = alignments.iter().map(|aln| aln.min_handle()).min().flatten();
+        let max_handle = alignments.iter().map(|aln| aln.max_handle()).max().flatten();
         let read_length = Self::expected_read_length(alignments);
-        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_node)?;
+        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_handle)?;
         let names = Self::compress_names_pairs(alignments)?;
         let quality_strings = Self::compress_quality_strings(alignments)?;
 
@@ -1177,8 +1177,8 @@ impl AlignmentBlock {
         }
 
         Ok(Self {
-            min_node,
-            max_node,
+            min_handle,
+            max_handle,
             alignments: alignments.len(),
             read_length,
             gbwt_starts,
@@ -1199,11 +1199,11 @@ impl AlignmentBlock {
     }
 
     fn decompress_gbwt_starts(&self, result: &mut [Alignment]) -> Result<(), String> {
-        if self.min_node.is_none() {
+        if self.min_handle.is_none() {
             return Ok(());
         }
-        let base_node = self.min_node.unwrap();
-        let mut decoder = ByteCodeIter::new(&self.gbwt_starts[..]);
+        let base_node = self.min_handle.unwrap();
+        let mut decoder: ByteCodeIter<'_> = ByteCodeIter::new(&self.gbwt_starts[..]);
         for (i, aln) in result.iter_mut().enumerate() {
             let start = decoder.next().ok_or(
                 format!("Missing GBWT start for alignment {}", i)

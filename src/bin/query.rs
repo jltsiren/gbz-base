@@ -1,4 +1,4 @@
-use gbz_base::{GBZBase, GraphInterface, PathIndex, Subgraph, SubgraphQuery, HaplotypeOutput};
+use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Subgraph, SubgraphQuery, HaplotypeOutput};
 use gbz_base::{GAFBase, ReadSet};
 
 use gbwt::{FullPathName, GBZ, REF_SAMPLE};
@@ -27,32 +27,14 @@ fn main() -> Result<(), String> {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
         subgraph.from_gbz(&graph, Some(&path_index), &config.query)?;
+        write_subgraph(&subgraph, &config)?;
+        extract_gaf(GraphReference::Gbz(&graph), &subgraph, &config)?;
     } else {
         let database = GBZBase::open(&config.filename)?;
         let mut graph = GraphInterface::new(&database)?;
         subgraph.from_db(&mut graph, &config.query)?;
-    }
-
-    // Write the output.
-    let mut output = io::stdout();
-    match config.format {
-        OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string())?,
-        OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string())?,
-    }
-
-    // Extract GAF if requested.
-    if config.write_gaf() {
-        let gaf_base_file = config.gaf_base.as_ref().unwrap();
-        let gaf_base = GAFBase::open(gaf_base_file)?;
-        let read_set = ReadSet::new(&subgraph, &gaf_base)?;
-        eprintln!("Extracted {} reads in {} alignment blocks", read_set.len(), read_set.blocks());
-        let gaf_output_file = config.gaf_output.as_ref().unwrap();
-        let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        let mut gaf_output = options.open(gaf_output_file).map_err(|x| x.to_string())?;
-        read_set.to_gaf(&mut gaf_output).map_err(
-            |x| format!("Failed to write GAF to {}: {}", gaf_output_file, x)
-        )?;
+        write_subgraph(&subgraph, &config)?;
+        extract_gaf(GraphReference::Db(&mut graph), &subgraph, &config)?;
     }
 
     let end_time = Instant::now();
@@ -60,6 +42,35 @@ fn main() -> Result<(), String> {
     eprintln!("Used {:.3} seconds", seconds);
 
     Ok(())
+}
+
+//-----------------------------------------------------------------------------
+
+fn write_subgraph(subgraph: &Subgraph, config: &Config) -> Result<(), String> {
+    let mut output = io::stdout();
+    match config.format {
+        OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string()),
+        OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string()),
+    }
+}
+
+fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Config) -> Result<(), String> {
+    if !config.write_gaf() {
+        return Ok(());
+    }
+
+    let gaf_base_file = config.gaf_base.as_ref().unwrap();
+    let gaf_base = GAFBase::open(gaf_base_file)?;
+    let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.contained)?;
+    eprintln!("Extracted {} reads in {} alignment blocks", read_set.len(), read_set.blocks());
+
+    let gaf_output_file = config.gaf_output.as_ref().unwrap();
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    let mut gaf_output = options.open(gaf_output_file).map_err(|x| x.to_string())?;
+    read_set.to_gaf(&mut gaf_output).map_err(
+        |x| format!("Failed to write GAF to {}: {}", gaf_output_file, x)
+    )
 }
 
 //-----------------------------------------------------------------------------
@@ -77,6 +88,7 @@ struct Config {
     format: OutputFormat,
     gaf_base: Option<String>,
     gaf_output: Option<String>,
+    contained: bool,
 }
 
 impl Config {
@@ -102,6 +114,7 @@ impl Config {
         opts.optopt("", "format", "output format (gfa or json, default: gfa)", "STR");
         opts.optopt("", "gaf-base", "GAF-base file (for GAF output)", "FILE");
         opts.optopt("", "gaf-output", "GAF output file (for GAF output)", "FILE");
+        opts.optflag("", "contained", "output only reads that are fully within the subgraph");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let header = format!("Usage: {} [options] graph.gbz[.db]\n\nQuery type must be speficied using one of -o, -i, and -n.", program);
@@ -129,8 +142,9 @@ impl Config {
 
         let gaf_base = matches.opt_str("gaf-base");
         let gaf_output = matches.opt_str("gaf-output");
+        let contained = matches.opt_present("contained");
 
-        Ok(Config { filename, query, cigar, format, gaf_base, gaf_output })
+        Ok(Config { filename, query, cigar, format, gaf_base, gaf_output, contained })
     }
 
     fn write_gaf(&self) -> bool {

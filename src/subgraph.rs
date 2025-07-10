@@ -854,7 +854,7 @@ impl Subgraph {
     /// drop(database);
     /// fs::remove_file(&db_file).unwrap();
     /// ```
-    pub fn from_db<'a, 'b>(&mut self, graph: &'a mut GraphInterface<'b>, query: &SubgraphQuery) -> Result<(), String> {
+    pub fn from_db<'reference, 'graph>(&mut self, graph: &'reference mut GraphInterface<'graph>, query: &SubgraphQuery) -> Result<(), String> {
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
@@ -1180,6 +1180,20 @@ impl Subgraph {
     #[inline]
     pub fn max_node(&self) -> Option<usize> {
         self.records.keys().next_back().map(|&handle| support::node_id(handle))
+    }
+
+    // FIXME: test
+    /// Returns the smallest handle in the subgraph.
+    #[inline]
+    pub fn min_handle(&self) -> Option<usize> {
+        self.records.keys().next().copied()
+    }
+
+    // FIXME: test
+    /// Returns the largest handle in the subgraph.
+    #[inline]
+    pub fn max_handle(&self) -> Option<usize> {
+        self.records.keys().next_back().copied()
     }
 
     /// Returns `true` if the subgraph contains the given node.
