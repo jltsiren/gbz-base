@@ -13,7 +13,7 @@ use std::{fs, thread};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
-use gbwt::{GBWT, GBZ, Orientation, Pos, FullPathName};
+use gbwt::{FullPathName, Orientation, Pos, GBWT, GBZ};
 use gbwt::bwt::{BWT, Record};
 use gbwt::support;
 
@@ -1374,6 +1374,7 @@ impl ReadSet{
         block.decode()
     }
 
+    // FIXME: or overlapping, depending on the query
     // Replaces the GBWT starting position of the alignment with the path if it is fully within the subgraph.
     fn set_target_path(&self, alignment: &mut Alignment) {
         let mut pos = match alignment.path {
@@ -1397,6 +1398,7 @@ impl ReadSet{
         }
     }
 
+    // FIXME: option for reads overlapping the subgraph
     /// Creates a new read set containing all alignments in the database that are fully within the subgraph.
     ///
     /// # Errors
@@ -1468,7 +1470,7 @@ impl ReadSet{
         self.reads.is_empty()
     }
 
-    /// Returns the number of alignment blocks decomressed when creating the read set.
+    /// Returns the number of alignment blocks decompressed when creating the read set.
     pub fn blocks(&self) -> usize {
         self.blocks
     }
@@ -1523,7 +1525,38 @@ impl ReadSet{
 
 //-----------------------------------------------------------------------------
 
-// Helper functions for using the databases.
+// Helper types and functions for using the databases.
+
+/// A reference to a GBZ-compatible graph.
+///
+/// Graph operations with a [`GBZ`] graph take an immutable reference to the graph.
+/// The corresponding operations with GBZ-base using [`GraphInterface`] take a mutable reference instead.
+/// This wrapper can be created on demand to encapsulate a reference to either type of graph.
+pub enum GraphReference<'reference, 'graph> {
+    /// A [`GBZ`] graph.
+    Gbz(&'reference GBZ),
+    /// A [`GraphInterface`].
+    Db(&'reference mut GraphInterface<'graph>),
+}
+
+impl<'reference, 'graph> GraphReference<'reference, 'graph> {
+    /// Returns the record for the oriented node corresponding to the given handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handle does not exist in the graph.
+    /// Passes through any errors from the graph implementation.
+    pub fn gbz_record(&mut self, handle: usize) -> Result<GBZRecord, String> {
+        match self {
+            GraphReference::Gbz(gbz) => {
+                GBZRecord::from_gbz(gbz, handle).ok_or_else(|| format!("The graph does not contain handle {}", handle))
+            },
+            GraphReference::Db(db) => {
+                db.get_record(handle)?.ok_or_else(|| format!("The graph does not contain handle {}", handle))
+            },
+        }
+    }
+}
 
 /// Returns the starting position of the given path in the given orientation.
 ///

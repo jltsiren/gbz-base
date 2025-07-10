@@ -33,7 +33,7 @@ pub mod subgraph;
 pub mod utils;
 
 pub use alignment::Alignment;
-pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface};
+pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface, GraphReference};
 pub use db::{GAFBase, GAFBaseParams, ReadSet};
 pub use path_index::PathIndex;
 pub use subgraph::{Subgraph, SubgraphQuery, HaplotypeOutput};

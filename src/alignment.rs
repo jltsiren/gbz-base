@@ -7,6 +7,10 @@
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
 
+// FIXME: document assumptions
+// - softclips are included either in both query interval and difference string or in neither
+// - if a difference string is present, it overrides query/target interval ends and match/edit counts
+
 use crate::formats::{self, TypedField};
 use crate::utils;
 
