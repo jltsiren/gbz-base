@@ -27,12 +27,14 @@ fn main() -> Result<(), String> {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
         subgraph.from_gbz(&graph, Some(&path_index), &config.query)?;
+        subgraph_statistics(&subgraph);
         write_subgraph(&subgraph, &config)?;
         extract_gaf(GraphReference::Gbz(&graph), &subgraph, &config)?;
     } else {
         let database = GBZBase::open(&config.filename)?;
         let mut graph = GraphInterface::new(&database)?;
         subgraph.from_db(&mut graph, &config.query)?;
+        subgraph_statistics(&subgraph);
         write_subgraph(&subgraph, &config)?;
         extract_gaf(GraphReference::Db(&mut graph), &subgraph, &config)?;
     }
@@ -45,6 +47,10 @@ fn main() -> Result<(), String> {
 }
 
 //-----------------------------------------------------------------------------
+
+fn subgraph_statistics(subgraph: &Subgraph) {
+    eprintln!("Subgraph contains {} nodes and {} paths", subgraph.nodes(), subgraph.paths());
+}
 
 fn write_subgraph(subgraph: &Subgraph, config: &Config) -> Result<(), String> {
     let mut output = io::stdout();
@@ -62,7 +68,7 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
     let gaf_base_file = config.gaf_base.as_ref().unwrap();
     let gaf_base = GAFBase::open(gaf_base_file)?;
     let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.contained)?;
-    eprintln!("Extracted {} reads in {} alignment blocks", read_set.len(), read_set.blocks());
+    eprintln!("Extracted {} reads in {} alignment blocks with {} node records", read_set.len(), read_set.blocks(), read_set.node_records());
 
     let gaf_output_file = config.gaf_output.as_ref().unwrap();
     let mut options = OpenOptions::new();

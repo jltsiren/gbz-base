@@ -1388,7 +1388,6 @@ impl ReadSet {
         };
 
         let mut path = Vec::new();
-        let mut to_insert: BTreeMap<usize, GBZRecord> = BTreeMap::new();
         let mut overlap = false;
         while let Some(p) = pos {
             if subgraph.has_handle(p.node) {
@@ -1397,18 +1396,12 @@ impl ReadSet {
                 return Ok(()); // Not fully contained in the subgraph.
             }
 
-            // Now try to get the record for the node.
-            // First attempt: In this read set.
+            // Now get the record for the node.
             let mut record = self.nodes.get(&p.node);
             if record.is_none() {
-                // Second attempt: Already visited on this path.
-                record = to_insert.get(&p.node);
-            }
-            if record.is_none() {
-                // Third attempt: Get the record from the graph and the GAF-base.
                 let result = get_record(p.node)?;
-                to_insert.insert(p.node, result);
-                record = to_insert.get(&p.node);
+                self.nodes.insert(p.node, result);
+                record = self.nodes.get(&p.node);
             }
 
             // Navigate to the next position.
@@ -1417,17 +1410,15 @@ impl ReadSet {
             pos = record.to_gbwt_record().lf(p.offset);
         }
 
-        // Set the path and insert the new records.
+        // Set the target path in the alignment.
         if overlap {
             alignment.set_target_path(path);
-            for (key, value) in to_insert {
-                self.nodes.insert(key, value);
-            }
         }
         Ok(())
     }
 
-    /// Creates a set of reads overlapping with the subgraph.
+    // TODO: Better long read algorithm for the overlapping case: extend paths in a bidirectional GBWT.
+    /// Extracts a set of reads overlapping with the subgraph.
     ///
     /// # Arguments
     ///
@@ -1519,6 +1510,14 @@ impl ReadSet {
     /// Returns the number of alignment blocks decompressed when creating the read set.
     pub fn blocks(&self) -> usize {
         self.blocks
+    }
+
+    /// Returns the number of node records in the read set.
+    ///
+    /// Each record corresponds to an oriented node, and the opposite orientation may not be present.
+    /// This includes all node records encountered while tracing the alignments, even when the alignment was not included in the read set.
+    pub fn node_records(&self) -> usize {
+        self.nodes.len()
     }
 
     /// Returns an iterator over the reads in the set.
