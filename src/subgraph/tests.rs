@@ -363,10 +363,18 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
     assert_eq!(subgraph.paths(), path_count, "Wrong number of paths for {}", test_case);
 
     // Minimum and maximum node ids, assuming that `true_nodes` is sorted.
-    if !true_nodes.is_empty() {
-        assert_eq!(subgraph.min_node(), true_nodes.first().copied(), "Wrong minimum node id for {}", test_case);
-        assert_eq!(subgraph.max_node(), true_nodes.last().copied(), "Wrong maximum node id for {}", test_case);
-    }
+    assert_eq!(subgraph.min_node(), true_nodes.first().copied(), "Wrong minimum node id for {}", test_case);
+    let min_handle = match true_nodes.first() {
+        Some(&node) => Some(support::encode_node(node, Orientation::Forward)),
+        None => None,
+    };
+    assert_eq!(subgraph.min_handle(), min_handle, "Wrong minimum handle for {}", test_case);
+    assert_eq!(subgraph.max_node(), true_nodes.last().copied(), "Wrong maximum node id for {}", test_case);
+    let max_handle = match true_nodes.last() {
+        Some(&node) => Some(support::encode_node(node, Orientation::Reverse)),
+        None => None,
+    };
+    assert_eq!(subgraph.max_handle(), max_handle, "Wrong maximum handle for {}", test_case);
 
     // Iterators.
     assert!(subgraph.node_iter().eq(true_nodes.iter().copied()), "Wrong node ids for {}", test_case);

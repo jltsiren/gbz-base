@@ -1,5 +1,4 @@
-//! GBZ-base: A SQLite database storing a GBZ graph.
-// FIXME: also GAF-base
+//! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
 use crate::{Alignment, Subgraph};
 use crate::alignment::{AlignmentBlock, Flags, TargetPath};
@@ -429,9 +428,13 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME document (requirements for GBWT, GAF), examples, test, query interface
+// FIXME examples, tests
 // FIXME remember to test with empty paths
 /// A database connection to a GAF-base database.
+///
+/// This structure stores a database connection and some header information.
+/// In multi-threaded applications, each thread should have its own connection.
+/// A set of alignments overlapping with a subgraph can be extracted using the [`ReadSet`] structure.
 #[derive(Debug)]
 pub struct GAFBase {
     connection: Connection,
@@ -570,7 +573,10 @@ impl Default for GAFBaseParams {
 
 /// Creating the database.
 impl GAFBase {
-    /// Creates a new database from the GBWT index in file `gbwt_file` and stores the database in file `db_file`.
+    /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
+    ///
+    /// The GBWT index can be forward-only or bidirectional.
+    /// Path `i` in the GBWT index corresponds to line `i` in the GAF file.
     ///
     /// # Arguments
     ///
@@ -592,7 +598,10 @@ impl GAFBase {
         Self::create(gaf_file, index, db_file, params)
     }
 
-    /// Creates a new database in file `filename` from the given GBWT index.
+    /// Creates a new database in file `filename` from the given [`GBWT`] index.
+    ///
+    /// The GBWT index can be forward-only or bidirectional.
+    /// Path `i` in the GBWT index corresponds to line `i` in the GAF file.
     ///
     /// # Arguments
     ///

@@ -1182,14 +1182,12 @@ impl Subgraph {
         self.records.keys().next_back().map(|&handle| support::node_id(handle))
     }
 
-    // FIXME: test
     /// Returns the smallest handle in the subgraph.
     #[inline]
     pub fn min_handle(&self) -> Option<usize> {
         self.records.keys().next().copied()
     }
 
-    // FIXME: test
     /// Returns the largest handle in the subgraph.
     #[inline]
     pub fn max_handle(&self) -> Option<usize> {

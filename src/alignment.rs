@@ -6,10 +6,26 @@
 //! The GAF format is a text-based format for representing sequence alignments to a graph.
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
-
-// FIXME: document assumptions
-// - softclips are included either in both query interval and difference string or in neither
-// - if a difference string is present, it overrides query/target interval ends and match/edit counts
+//!
+//! # Assumptions
+//!
+//! Some details of the GAF format are not well documented, and this implementation makes some assumptions.
+//!
+//! * Softclips are included either in both the query interval and the difference string or in neither.
+//! * If a difference string is present, it overrides query/path interval ends, the number of matches, and alignment block length.
+//! * Alignment block length is the sum of matches, mismatches, insertions, and deletions.
+//!
+//! # Supported optional fields
+//!
+//! * `AS:i`: Alignment score.
+//! * `bq:Z`: Base quality values for the query sequence.
+//! * `cs:Z`: Difference string for the alignment.
+//! * `pd:B`: Properly paired flag.
+//! * `fn:Z`: Name of the next read in the pair.
+//! * `fp:Z`: Name of the previous read in the pair.
+//!
+//! Only matches, mismatches, insertions, and deletions are supported in the difference string.
+//! Matches are represented as a match length rather than as the matching sequence.
 
 use crate::formats::{self, TypedField};
 use crate::utils;
@@ -29,7 +45,7 @@ mod tests;
 
 //-----------------------------------------------------------------------------
 
-// FIXME examples
+// FIXME examples: empty, from_gaf, to_gaf
 /// An alignment between a query sequence and a target path in a graph.
 ///
 /// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
@@ -902,7 +918,7 @@ impl Difference {
         result
     }
 
-    // FIXME test, example
+    // FIXME test
     /// Writes a difference string as a `Vec<u8>` string.
     pub fn to_bytes(ops: &[Difference], target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
@@ -1021,8 +1037,22 @@ impl AsRef<[u8]> for Flags {
 //-----------------------------------------------------------------------------
 
 // TODO: expected alignment score for perfect alignments? Or just a scoring model?
-// FIXME: document, example, tests
-// An encoded block of alignments.
+// FIXME: example, tests
+/// An encoded block of [`Alignment`] objects.
+///
+/// This is a compressed representation of multiple sequences aligned to the same graph.
+/// With short reads, a properly chosen block size enables both column-based compression and random access to the alignments.
+/// Long reads do not benefit from column-based compression, as the amount of metadata is insignificant.
+/// Reasonable block sizes could be 1000 alignments for short reads and 10 for long reads.
+///
+/// For best results, node identifiers should approximate a topological order in the graph.
+/// The range of node identifiers in a path is typically proportional to the length of the path.
+/// If the alignments are sorted by (min id, max id), a block will then consist of alignments that are close to each other in the graph.
+///
+/// # Notes
+///
+/// * Target paths must be stored separately (e.g. using a GBWT-based encoding).
+/// * A block must contain either aligned reads or unaligned reads, but not both.
 #[derive(Debug, Clone)]
 pub struct AlignmentBlock {
     /// Minimum GBWT node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
