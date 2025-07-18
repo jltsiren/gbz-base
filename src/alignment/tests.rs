@@ -210,6 +210,7 @@ fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: Also with bidirectional.gbwt
 // Tests for `Alignment`: integration.
 // This is the haplotype sampling test case from vg.
 
