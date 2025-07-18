@@ -1,7 +1,10 @@
 //! Structures for representing sequence to graph alignments.
 //!
 //! An [`Alignment`] object represents the alignment of a query sequence to a target path in a graph.
-//! It corresponds to a single line in a GAF file or a row in table `Alignments` in a [`crate::GAFBase`].
+//! It corresponds to a single line in a GAF file.
+//!
+//! An [`AlignmentBlock`] object represents an ordered collection of alignments, using column-based compression.
+//! It corresponds to a row in table `Alignments` in a [`crate::GAFBase`].
 //!
 //! The GAF format is a text-based format for representing sequence alignments to a graph.
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
@@ -26,6 +29,9 @@
 //!
 //! Only matches, mismatches, insertions, and deletions are supported in the difference string.
 //! Matches are represented as a match length rather than as the matching sequence.
+//!
+//! The order of optional fields is not preserved.
+//! Compression with [`AlignmentBlock`] discards unsupported optional fields.
 
 use crate::formats::{self, TypedField};
 use crate::utils;
@@ -52,6 +58,10 @@ mod tests;
 /// When the alignment is built from a GAF line, the target path is stored explicitly.
 /// For alignments stored in a database, only the GBWT starting position is stored.
 /// See [`TargetPath`] for details.
+///
+/// A GAF line can be converted to an `Alignment` object with [`Alignment::from_gaf`].
+/// An `Alignment` object can be serialized as a GAF line with [`Alignment::to_gaf`].
+/// The conversion can be lossy (see [`crate::alignment`] for details).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alignment {
     /// Name of the query sequence.

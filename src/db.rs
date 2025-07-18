@@ -1,7 +1,7 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
-use crate::{Alignment, Subgraph};
-use crate::alignment::{AlignmentBlock, Flags, TargetPath};
+use crate::{Alignment, AlignmentBlock, Subgraph};
+use crate::alignment::{Flags, TargetPath};
 use crate::utils;
 
 use std::collections::BTreeMap;
@@ -1350,8 +1350,12 @@ impl<'a> GraphInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: document, examples, tests
+// FIXME: examples, tests
 /// A set of reads extracted from [`GAFBase`].
+///
+/// This is a counterpart to [`Subgraph`].
+/// Sets of reads fully contained in a subgraph or overlapping with it can be created using [`ReadSet::new`].
+/// The reads can be iterated over with [`ReadSet::iter`] and converted to GAF lines with [`ReadSet::to_gaf`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadSet {
     // GBZ records in the GAF GBWT, including sequence from the subgraph.
@@ -1428,6 +1432,9 @@ impl ReadSet {
 
     // TODO: Better long read algorithm for the overlapping case: extend paths in a bidirectional GBWT.
     /// Extracts a set of reads overlapping with the subgraph.
+    ///
+    /// The extracted reads will be in the same order as in the database.
+    /// That corresponds to the order in the original GAF file.
     ///
     /// # Arguments
     ///

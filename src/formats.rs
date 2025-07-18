@@ -20,13 +20,13 @@
 //! The support for it is based on building a [`JSONValue`] object recursively and then writing it using the [`Display`] trait.
 //! There is also a helper function [`json_path`] for building a JSON object for a path with metadata.
 //!
-//! ### GAF (reading)
+//! ### GAF (reading and writing)
 //!
 //! The GAF format is a text-based format for representing sequence alignments to a graph.
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
 //!
-//! FIXME: details
+//! GAF I/O is currently implemented in [`crate::Alignment`].
 
 use crate::utils;
 
