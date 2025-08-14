@@ -21,7 +21,8 @@ fn check_typed_field(seq: &[u8], name: &str) {
     let field = field.unwrap();
     assert_eq!(field.tag(), seq[0..2], "Wrong tag for {}", name);
 
-    match field {
+    // Check the type and the value.
+    match field.clone() {
         TypedField::Char(_, value) => {
             assert_eq!(seq[3], b'A', "Parsed the type as a char for {}", name);
             assert_eq!(value, seq[5], "Wrong value for {}", name);
@@ -52,6 +53,27 @@ fn check_typed_field(seq: &[u8], name: &str) {
             assert_eq!(value, truth, "Wrong value for {}", name);
         },
     }
+
+    if let TypedField::Float(_, _) = field {
+        // We skip floats, as they can have multiple representations for the same value.
+        return;
+    }
+
+    // Conversion to a string.
+    let truth_str = String::from_utf8_lossy(seq);
+    assert_eq!(field.to_string(), truth_str, "Wrong string representation for {}", name);
+
+    // Conversion to bytes.
+    let mut buffer = Vec::new();
+    let mut truth_bytes = seq.to_vec();
+    field.append_to(&mut buffer, false);
+    assert_eq!(buffer, truth_bytes, "Wrong bytes for {}", name);
+
+    // Append as a new field.
+    truth_bytes.push(b'\t');
+    truth_bytes.extend_from_slice(seq);
+    field.append_to(&mut buffer, true);
+    assert_eq!(buffer, truth_bytes, "Wrong bytes for {} when appended as a new field", name);
 }
 
 #[test]

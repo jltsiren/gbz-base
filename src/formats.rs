@@ -154,10 +154,10 @@ impl TypedField {
         let _ = write!(buffer, "{}", self);
     }
 
-    // FIXME: examples, tests
-    /// Appends a string field to the given buffer without creating the field.
+    /// Appends a typed string field to the given buffer.
     ///
     /// If `as_new_field` is `true`, a tab character is added before the field.
+    /// This bypasses the creation of a `TypedField` object and therefore avoids copying the value.
     pub fn append_string(buffer: &mut Vec<u8>, tag: [u8; 2], value: &[u8], as_new_field: bool) {
         if as_new_field {
             buffer.push(b'\t');

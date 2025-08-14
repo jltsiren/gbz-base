@@ -113,6 +113,9 @@ query --sample GRCh38 --contig chr12 --offset 1234567 \
 By default, this extracts all alignments overlapping with the subgraph.
 Use option `--contained` to extract only alignments fully within the subgraph.
 
+The GBZ-base can be for the graph the reads were aligned to, or for any supergraph.
+For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be used with reads aligned to a corresponding frequency-filtered or personalized (haplotype-sampled) graph.
+
 ## Interface
 
 See `cargo doc --open`.
