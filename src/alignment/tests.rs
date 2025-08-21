@@ -19,9 +19,8 @@ fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
     result
 }
 
-// Parses the alignments from the test file.
-// Returns them as a vector, unless told to expect a parse error.
-fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
+// Returns the GAF lines from the given file.
+fn read_gaf_lines(filename: &PathBuf) -> Vec<Vec<u8>> {
     let reader = utils::open_file(filename);
     assert!(reader.is_ok(), "Failed to open the test file: {}", reader.err().unwrap());
     let mut reader = reader.unwrap();
@@ -32,17 +31,33 @@ fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
         let mut buf: Vec<u8> = Vec::new();
         let len = reader.read_until(b'\n', &mut buf);
         assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
-        if len.unwrap() == 0 {
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        if buf.is_empty() {
             break;
         }
-        let alignment = Alignment::from_gaf(&buf);
+        result.push(buf);
+        line_num += 1;
+    };
+
+    result
+}
+
+// Parses the alignments from the test file.
+// Returns them as a vector, unless told to expect a parse error.
+fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
+    let lines = read_gaf_lines(filename);
+
+    let mut result = Vec::new();
+    for (line_num, line) in lines.iter().enumerate() {
+        let alignment = Alignment::from_gaf(line);
         if expect_error {
-            assert!(alignment.is_err(), "Expected a parse error on line {}", line_num);
+            assert!(alignment.is_err(), "Expected a parse error on line {}", line_num + 1);
         } else {
-            assert!(alignment.is_ok(), "Failed to parse line {}: {}", line_num, alignment.err().unwrap());
+            assert!(alignment.is_ok(), "Failed to parse line {}: {}", line_num + 1, alignment.err().unwrap());
             result.push(alignment.unwrap());
         }
-        line_num += 1;
     }
 
     result
@@ -163,6 +178,18 @@ fn alignment_known_good() {
     for i in 0..truth.len() {
         check_alignment(&alignments[i], &truth[i], i + 1, false, false);
     }
+
+    // These alignments will survive the round-trip from/to GAF intact.
+    // 1 is on the reverse strand, while 7 has non-canonical empty fields.
+    let round_trip = vec![
+        0, 2, 3, 4, 5, 6,
+    ];
+    let gaf_lines = read_gaf_lines(&filename);
+    let target_sequence = b"CCCCCCCCCCCCCCCCCCCCAGAAAAAAAAAAAAAAAAAAAAGATTACATGGGGGGGGGGGGGGGGGGGGTTTTTTTTTTTTTTTTTTTT".to_vec();
+    for index in round_trip {
+        let line = alignments[index].to_gaf(&target_sequence);
+        assert_eq!(line, gaf_lines[index], "Line {} did not survive the round trip", index + 1);
+    }
 }
 
 #[test]
@@ -210,7 +237,6 @@ fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: Also with bidirectional.gbwt
 // Tests for `Alignment`: integration.
 // This is the haplotype sampling test case from vg.
 
@@ -245,6 +271,11 @@ fn alignment_real() {
 }
 
 #[test]
+fn alignment_bidirectional() {
+    integration_test("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt", 1001);
+}
+
+#[test]
 fn alignment_real_gzipped() {
     integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt", 789);
 }
@@ -266,51 +297,72 @@ fn check_difference(seq: &[u8], truth: &[Difference], name: &str, normalize: boo
     }
 }
 
+fn check_to_bytes(ops: &[Difference], truth: &[u8], target_sequence: &[u8], name: &str) {
+    let result = Difference::to_bytes(ops, target_sequence);
+    assert_eq!(result, truth, "Wrong byte representation for {}", name);
+}
+
 #[test]
 fn difference_empty() {
+    let name = "empty";
     let seq = b"";
     let truth = [];
-    check_difference(seq, &truth, "empty", false);
+    check_difference(seq, &truth, name, false);
+    let target_sequence = b"";
+    check_to_bytes(&truth, seq, target_sequence, name);
 }
 
 #[test]
 fn difference_single() {
     {
-        // Matching sequence.
+        let name = "matching sequence";
         let seq = b"=ACGT";
         let truth = [ Difference::Match(4) ];
-        check_difference(seq, &truth, "matching sequence", false);
+        check_difference(seq, &truth, name, false);
+        let expected = b":4"; // Converted to match length.
+        let target_sequence = b"ACGT";
+        check_to_bytes(&truth, expected, target_sequence, name);
     }
     {
-        // Match length.
+        let name = "match length";
         let seq = b":5";
         let truth = [ Difference::Match(5) ];
-        check_difference(seq, &truth, "match length", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"GATTA";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
     {
-        // Mismatch.
+        let name = "mismatch";
         let seq = b"*AC";
         let truth = [ Difference::Mismatch(b'C') ];
-        check_difference(seq, &truth, "mismatch", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"A";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
     {
-        // Insertion.
+        let name = "insertion";
         let seq = b"+ACGT";
         let truth = [ Difference::Insertion(b"ACGT".to_vec()) ];
-        check_difference(seq, &truth, "insertion", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
     {
-        // Deletion.
+        let name = "deletion";
         let seq = b"-ACGT";
         let truth = [ Difference::Deletion(4) ];
-        check_difference(seq, &truth, "deletion", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"ACGT";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
 }
 
 #[test]
 fn difference_multi() {
     // All of these are from real reads mapped with Giraffe.
+    // Target sequences only contain the relevant bases.
     {
+        let name = "ERR3239454.129477191 fragment 2";
         let seq = b":24*CG:78-C:35*TG:2*TG:1*TG:6";
         let truth = [
             Difference::Match(24),
@@ -325,17 +377,28 @@ fn difference_multi() {
             Difference::Mismatch(b'G'),
             Difference::Match(6)
         ];
-        check_difference(seq, &truth, "ERR3239454.129477191 fragment 2", false);
+        check_difference(seq, &truth, name, false);
+        let mut target_sequence = vec![b'-'; 151];
+        target_sequence[24] = b'C';
+        target_sequence[103] = b'C';
+        target_sequence[139] = b'T';
+        target_sequence[142] = b'T';
+        target_sequence[144] = b'T';
+        check_to_bytes(&truth, seq, &target_sequence, name);
     }
     {
+        let name = "ERR3239454.11251898 fragment 1";
         let seq = b":129+TTGAGGGGGTATAAGAGGTCG";
         let truth = [
             Difference::Match(129),
             Difference::Insertion(b"TTGAGGGGGTATAAGAGGTCG".to_vec())
         ];
-        check_difference(seq, &truth, "ERR3239454.11251898 fragment 1", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = vec![b'-', 129];
+        check_to_bytes(&truth, seq, &target_sequence, name);
     }
     {
+        let name = "ERR3239454.97848632 fragment 1";
         let seq = b":111*GT:20*CA:6*GT:2*GT:3*GT:3";
         let truth = [
             Difference::Match(111),
@@ -350,7 +413,14 @@ fn difference_multi() {
             Difference::Mismatch(b'T'),
             Difference::Match(3)
         ];
-        check_difference(seq, &truth, "ERR3239454.97848632 fragment 1", false);
+        check_difference(seq, &truth, name, false);
+        let mut target_sequence = vec![b'-'; 150];
+        target_sequence[111] = b'G';
+        target_sequence[132] = b'C';
+        target_sequence[139] = b'G';
+        target_sequence[142] = b'G';
+        target_sequence[146] = b'G';
+        check_to_bytes(&truth, seq, &target_sequence, name);
     }
 }
 

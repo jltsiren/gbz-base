@@ -51,7 +51,6 @@ mod tests;
 
 //-----------------------------------------------------------------------------
 
-// FIXME examples: empty, from_gaf, to_gaf
 /// An alignment between a query sequence and a target path in a graph.
 ///
 /// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
@@ -62,6 +61,69 @@ mod tests;
 /// A GAF line can be converted to an `Alignment` object with [`Alignment::from_gaf`].
 /// An `Alignment` object can be serialized as a GAF line with [`Alignment::to_gaf`].
 /// The conversion can be lossy (see [`crate::alignment`] for details).
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::Alignment;
+/// use gbwt::Orientation;
+/// use gbwt::support;
+///
+/// // Unnamed empty sequence.
+/// let empty = Alignment::new();
+/// assert!(empty.name.is_empty());
+/// assert_eq!(empty.seq_len, 0);
+/// assert!(empty.is_unaligned());
+///
+/// // Construct a GAF line.
+/// let name = "query";
+/// let seq_len = 7;
+/// let seq_interval = 0..6;
+/// let path = ">1<2>3";
+/// let path_len = 8;
+/// let path_interval = 2..8;
+/// let matches = 5;
+/// let edits = 1;
+/// let mapq = 60;
+/// let line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+///     name,
+///     seq_len, seq_interval.start, seq_interval.end,
+///     '+', path,
+///     path_len, path_interval.start, path_interval.end,
+///     matches, matches + edits, mapq
+/// );
+///
+/// // Create an alignment from the line.
+/// let aln = Alignment::from_gaf(line.as_bytes()).unwrap();
+/// assert_eq!(aln.name, name);
+/// assert_eq!(aln.seq_len, seq_len);
+/// assert_eq!(aln.seq_interval, seq_interval);
+/// assert!(aln.has_target_path());
+/// let path = vec!(
+///     support::encode_node(1, Orientation::Forward),
+///     support::encode_node(2, Orientation::Reverse),
+///     support::encode_node(3, Orientation::Forward)
+/// );
+/// assert_eq!(aln.target_path(), Some(path.as_ref()));
+/// assert_eq!(aln.path_len, path_len);
+/// assert_eq!(aln.path_interval, path_interval);
+/// assert_eq!(aln.matches, matches);
+/// assert_eq!(aln.edits, edits);
+/// assert_eq!(aln.mapq, Some(mapq));
+///
+/// // All optional fields are missing.
+/// assert!(aln.score.is_none());
+/// assert!(aln.base_quality.is_empty());
+/// assert!(aln.difference.is_empty());
+/// assert!(aln.pair.is_none());
+/// assert!(aln.optional.is_empty());
+///
+/// // Convert back to GAF.
+/// let _query_sequence =   b"GATTACA"; // Not used yet.
+/// let target_sequence = b"GAGATCAC".to_vec();
+/// let from_aln = aln.to_gaf(&target_sequence);
+/// assert_eq!(&from_aln, line.as_bytes());
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alignment {
     /// Name of the query sequence.
@@ -358,7 +420,6 @@ impl Alignment {
         })
     }
 
-    // FIXME: tests, examples
     /// Converts the alignment to a GAF line.
     ///
     /// If the target path is stored as a GBWT starting position, it will be missing (`*`).
@@ -581,16 +642,17 @@ impl Alignment {
 //-----------------------------------------------------------------------------
 
 // FIXME test these
+// TODO: Add an operation for reconstructing the query sequence.
 /// Operations on the Alignment object.
 impl Alignment {
     /// Returns `true` if the read is unaligned.
+    ///
+    /// NOTE: An empty sequence is by definition unaligned.
     pub fn is_unaligned(&self) -> bool {
         self.seq_interval.is_empty()
     }
 
     /// Returns `true` if this is a perfect alignment of the entire read.
-    ///
-    /// NOTE: An empty sequence is by definition unaligned.
     pub fn is_perfect(&self) -> bool {
         self.seq_len > 0 &&
             self.seq_interval.start == 0 &&
@@ -928,7 +990,6 @@ impl Difference {
         result
     }
 
-    // FIXME test
     /// Writes a difference string as a `Vec<u8>` string.
     pub fn to_bytes(ops: &[Difference], target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
