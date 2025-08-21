@@ -1108,7 +1108,6 @@ impl AsRef<[u8]> for Flags {
 //-----------------------------------------------------------------------------
 
 // TODO: expected alignment score for perfect alignments? Or just a scoring model?
-// FIXME: example, tests
 /// An encoded block of [`Alignment`] objects.
 ///
 /// This is a compressed representation of multiple sequences aligned to the same graph.
@@ -1124,6 +1123,49 @@ impl AsRef<[u8]> for Flags {
 ///
 /// * Target paths must be stored separately (e.g. using a GBWT-based encoding).
 /// * A block must contain either aligned reads or unaligned reads, but not both.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{Alignment, AlignmentBlock};
+/// use gbz_base::utils;
+/// use gbwt::GBWT;
+/// use gbwt::support;
+/// use simple_sds::serialize;
+///
+/// // We need a GBWT index of the paths for compressing alignments.
+/// let gbwt_filename = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let index: GBWT = serialize::load_from(&gbwt_filename).unwrap();
+///
+/// // Read the some lines from the GAF file.
+/// let gaf_filename = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+/// let mut gaf_file = utils::open_file(&gaf_filename).unwrap();
+/// let mut alignments = Vec::new();
+/// for _ in 0..10 {
+///     let mut buf: Vec<u8> = Vec::new();
+///     let _ = gaf_file.read_until(b'\n', &mut buf).unwrap();
+///     let mut aln = Alignment::from_gaf(&buf).unwrap();
+///     // A block cannot have a mix of aligned and unaligned reads.
+///     assert!(!aln.is_unaligned());
+///     // We do not store unsupported optional fields.
+///     aln.optional.clear();
+///     alignments.push(aln);
+/// }
+///
+/// // Compress the block.
+/// let mut first_id = 0;
+/// let block = AlignmentBlock::new(&alignments, &index, first_id).unwrap();
+/// assert_eq!(block.len(), alignments.len());
+/// first_id += alignments.len(); // Next block would start there.
+///
+/// // Decompress the block and extract the paths from the GBWT.
+/// let mut decompressed = block.decode().unwrap();
+/// assert_eq!(decompressed.len(), alignments.len());
+/// for (i, aln) in decompressed.iter_mut().enumerate() {
+///     aln.extract_target_path(&index);
+///     assert_eq!(*aln, alignments[i]);
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct AlignmentBlock {
     /// Minimum GBWT node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
