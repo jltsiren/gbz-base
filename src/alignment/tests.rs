@@ -201,6 +201,98 @@ fn alignment_known_bad() {
 
 //-----------------------------------------------------------------------------
 
+// Tests for `Alignment`: operations.
+
+#[test]
+fn alignment_default() {
+    let default = Alignment::default();
+    assert!(default.is_unaligned(), "A default alignment should be unaligned");
+    assert!(!default.is_perfect(), "An empty alignment should not be perfect");
+
+    assert!(default.name.is_empty(), "A default alignment should not have a name");
+    assert_eq!(default.seq_len, 0, "A default alignment should have a sequence length of 0");
+    assert!(default.seq_interval.is_empty(), "A default alignment should have an empty sequence interval");
+    assert!(default.has_target_path(), "A default alignment should have a target path");
+    assert!(default.target_path().unwrap().is_empty(), "A default alignment should have an empty target path");
+    assert_eq!(default.path_len, 0, "A default alignment should have a target path length of 0");
+    assert!(default.path_interval.is_empty(), "A default alignment should have an empty target path interval");
+    assert_eq!(default.matches, 0, "A default alignment should have 0 matches");
+    assert_eq!(default.edits, 0, "A default alignment should have 0 edits");
+    assert!(default.mapq.is_none(), "A default alignment should not have a mapping quality");
+    assert!(default.score.is_none(), "A default alignment should not have a score");
+    assert!(default.base_quality.is_empty(), "A default alignment should not have base quality values");
+    assert!(default.difference.is_empty(), "A default alignment should not have a difference string");
+    assert!(default.pair.is_none(), "A default alignment should not have a paired read");
+    assert!(default.optional.is_empty(), "A default alignment should not have any optional fields");
+}
+
+#[test]
+fn alignment_operations() {
+    let mut aln = empty_alignment("test", 10);
+    aln.seq_interval = 0..10;
+    aln.path = TargetPath::StartPosition(Pos::new(support::encode_node(1, Orientation::Forward), 0));
+    aln.path_len = 12;
+    aln.path_interval = 1..11;
+    aln.matches = 10;
+
+    assert!(!aln.is_unaligned(), "The alignment should be aligned");
+    assert!(aln.is_perfect(), "The alignment should be perfect");
+
+    // Various ways of making the alignment imperfect.
+    {
+        let mut wrong_start = aln.clone();
+        wrong_start.seq_interval.start += 1;
+        wrong_start.path_interval.start += 1;
+        wrong_start.matches -= 1;
+        assert!(!wrong_start.is_perfect(), "An alignment starting after query start should not be perfect");
+    }
+    {
+        let mut wrong_end = aln.clone();
+        wrong_end.seq_interval.end -= 1;
+        wrong_end.path_interval.end -= 1;
+        wrong_end.matches -= 1;
+        assert!(!wrong_end.is_perfect(), "An alignment ending before query end should not be perfect");
+    }
+    {
+        let mut has_edits = aln.clone();
+        has_edits.matches -= 1;
+        has_edits.edits += 1;
+        assert!(!has_edits.is_perfect(), "An alignment with edits should not be perfect");
+    }
+
+    // We have a GBWT start position.
+    assert!(!aln.has_target_path(), "GBWT start position should not be a target path");
+    assert!(aln.target_path().is_none(), "GBWT start position should not be returned as a target path");
+    assert!(aln.min_handle().is_none(), "GBWT start position should not have a minimum handle");
+    assert!(aln.max_handle().is_none(), "GBWT start position should not have a maximum handle");
+
+    // Set the target path manually.
+    let correct_path = vec![
+        support::encode_node(1, Orientation::Forward),
+        support::encode_node(2, Orientation::Forward),
+    ];
+    let min_handle = correct_path.iter().min().cloned();
+    let max_handle = correct_path.iter().max().cloned();
+    aln.set_target_path(correct_path.clone());
+    assert!(aln.has_target_path(), "Target path should exist after setting it");
+    assert_eq!(aln.target_path(), Some(correct_path.as_slice()), "Target path should match the set path");
+    assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the set path");
+    assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the set path");
+
+    // Setting it again should not change the existing target path.
+    let wrong_path = vec![
+        support::encode_node(1, Orientation::Forward),
+        support::encode_node(3, Orientation::Forward),
+    ];
+    aln.set_target_path(wrong_path);
+    assert!(aln.has_target_path(), "Target path should still exist after setting it again");
+    assert_eq!(aln.target_path(), Some(correct_path.as_slice()), "Target path should match the existing path");
+    assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the existing path");
+    assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the existing path");
+}
+
+//-----------------------------------------------------------------------------
+
 // Returns an appropriate end for the block, ensuring that it does not mix unaligned and aligned reads.
 fn block_end(alignments: &[Alignment], start: usize, block_size: usize) -> usize {
     if start >= alignments.len() {

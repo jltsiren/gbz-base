@@ -641,7 +641,6 @@ impl Alignment {
 
 //-----------------------------------------------------------------------------
 
-// FIXME test these
 // TODO: Add an operation for reconstructing the query sequence.
 /// Operations on the Alignment object.
 impl Alignment {
@@ -689,6 +688,7 @@ impl Alignment {
         }
     }
 
+    // TODO: Should this update an existing target path?
     /// Sets the target path from the GBWT index if it is not already present.
     pub fn extract_target_path(&mut self, index: &GBWT) {
         let mut pos = match self.path {
@@ -703,6 +703,7 @@ impl Alignment {
         self.path = TargetPath::Path(path);
     }
 
+    // TODO: Should this update an existing target path?
     /// Sets the given path as the target path, if the path is currently a GBWT starting position.
     pub fn set_target_path(&mut self, path: Vec<usize>) {
         if let TargetPath::StartPosition(_) = self.path {
