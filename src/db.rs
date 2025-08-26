@@ -428,13 +428,41 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME examples, tests
+// FIXME tests
 // FIXME remember to test with empty paths
 /// A database connection to a GAF-base database.
 ///
 /// This structure stores a database connection and some header information.
 /// In multi-threaded applications, each thread should have its own connection.
 /// A set of alignments overlapping with a subgraph can be extracted using the [`ReadSet`] structure.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{GAFBase, GAFBaseParams};
+/// use gbz_base::utils;
+/// use simple_sds::serialize;
+///
+/// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf.gz");
+/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let db_file = serialize::temp_file_name("gaf-base");
+///
+/// // Create the database.
+/// let params = GAFBaseParams::default();
+/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+/// assert!(db.is_ok());
+///
+/// // Now open it and check some statistics.
+/// let db = GAFBase::open(&db_file);
+/// assert!(db.is_ok());
+/// let db = db.unwrap();
+/// assert_eq!(db.nodes(), 2291);
+/// assert_eq!(db.alignments(), 12439);
+/// assert!(!db.bidirectional_gbwt());
+///
+/// drop(db);
+/// let _ = std::fs::remove_file(&db_file);
+/// ```
 #[derive(Debug)]
 pub struct GAFBase {
     connection: Connection,
@@ -1350,12 +1378,59 @@ impl<'a> GraphInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: examples, tests
+// FIXME: tests
 /// A set of reads extracted from [`GAFBase`].
 ///
 /// This is a counterpart to [`Subgraph`].
 /// Sets of reads fully contained in a subgraph or overlapping with it can be created using [`ReadSet::new`].
 /// The reads can be iterated over with [`ReadSet::iter`] and converted to GAF lines with [`ReadSet::to_gaf`].
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
+/// use gbz_base::{GAFBase, GAFBaseParams, ReadSet, GraphReference};
+/// use gbz_base::utils;
+/// use gbwt::GBZ;
+/// use simple_sds::serialize;
+///
+/// // Get an in-memory graph.
+/// let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+/// let graph = serialize::load_from(&gbz_file).unwrap();
+///
+/// // Extract a 100 bp subgraph around node 150.
+/// let nodes = vec![150];
+/// let query = SubgraphQuery::nodes(nodes, 100, HaplotypeOutput::Distinct);
+/// let mut subgraph = Subgraph::new();
+/// let _ = subgraph.from_gbz(&graph, None, &query).unwrap();
+///
+/// // Create a database of reads aligned to the graph.
+/// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let db_file = serialize::temp_file_name("gaf-base");
+/// let params = GAFBaseParams::default();
+/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+/// assert!(db.is_ok());
+///
+/// // Extract all reads fully within the subgraph.
+/// let db = GAFBase::open(&db_file);
+/// assert!(db.is_ok());
+/// let db = db.unwrap();
+/// let read_set = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &db, true);
+/// assert!(read_set.is_ok());
+/// let read_set = read_set.unwrap();
+/// assert_eq!(read_set.len(), 148);
+///
+/// // The extracted reads are aligned and fully within the subgraph.
+/// for aln in read_set.iter() {
+///     for handle in aln.target_path().unwrap() {
+///         assert!(subgraph.has_handle(*handle));
+///     }
+/// }
+///
+/// drop(db);
+/// let _ = std::fs::remove_file(&db_file);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadSet {
     // GBZ records in the GAF GBWT, including sequence from the subgraph.
