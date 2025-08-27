@@ -1,4 +1,5 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
+// TODO: GBZ-base and GAF-base in separate files?
 
 use crate::{Alignment, AlignmentBlock, Subgraph};
 use crate::alignment::{Flags, TargetPath};
@@ -128,18 +129,15 @@ impl GBZBase {
         })
     }
 
-    /// Returns the filename of the database.
-    pub fn filename(&self) -> Result<&str, String> {
-        self.connection.path().ok_or("No filename for the database".to_string())
+    /// Returns the filename of the database or an error if there is no filename.
+    pub fn filename(&self) -> Option<&str> {
+        self.connection.path()
     }
 
     /// Returns the size of the database file in a human-readable format.
     pub fn file_size(&self) -> Option<String> {
-        let filename = self.filename();
-        if filename.is_err() {
-            return None;
-        }
-        utils::file_size(filename.unwrap())
+        let filename = self.filename()?;
+        utils::file_size(filename)
     }
 
     /// Returns the version of the database.
@@ -428,8 +426,6 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME tests
-// FIXME remember to test with empty paths
 /// A database connection to a GAF-base database.
 ///
 /// This structure stores a database connection and some header information.
@@ -519,18 +515,15 @@ impl GAFBase {
         })
     }
 
-    /// Returns the filename of the database.
-    pub fn filename(&self) -> Result<&str, String> {
-        self.connection.path().ok_or("No filename for the database".to_string())
+    /// Returns the filename of the database or an error if there is no filename.
+    pub fn filename(&self) -> Option<&str> {
+        self.connection.path()
     }
 
     /// Returns the size of the database file in a human-readable format.
     pub fn file_size(&self) -> Option<String> {
-        let filename = self.filename();
-        if filename.is_err() {
-            return None;
-        }
-        utils::file_size(filename.unwrap())
+        let filename = self.filename()?;
+        utils::file_size(filename)
     }
 
     /// Returns the version of the database.
@@ -1378,12 +1371,12 @@ impl<'a> GraphInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: tests
 /// A set of reads extracted from [`GAFBase`].
 ///
 /// This is a counterpart to [`Subgraph`].
 /// Sets of reads fully contained in a subgraph or overlapping with it can be created using [`ReadSet::new`].
 /// The reads can be iterated over with [`ReadSet::iter`] and converted to GAF lines with [`ReadSet::to_gaf`].
+/// The reads will appear in the same order as in the database.
 ///
 /// # Examples
 ///

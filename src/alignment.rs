@@ -420,11 +420,15 @@ impl Alignment {
         })
     }
 
+    // TODO: Should we take the sequence for the full target path instead?
     /// Converts the alignment to a GAF line.
     ///
     /// If the target path is stored as a GBWT starting position, it will be missing (`*`).
     /// The path can be set with [`Alignment::set_target_path`] or extracted from a GBWT index with [`Alignment::extract_target_path`].
     /// The returned line does not end with an endline character.
+    ///
+    /// A target sequence is necessary for reconstructing the difference string, if present.
+    /// It must correspond only to `path_interval` of the target path.
     pub fn to_gaf(&self, target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
 
