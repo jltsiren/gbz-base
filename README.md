@@ -1,21 +1,25 @@
-# GBZ in SQLite
+# GBZ and GAF in SQLite
 
-This is a prototype for storing a [GBZ graph](https://github.com/jltsiren/gbwtgraph/blob/master/SERIALIZATION.md) in an SQLite database.
-It is intended for interactive applications, where you want to access parts of the graph immediately without loading the entire graph into memory.
+This is a prototype for SQLite-based file formats for:
 
-Once the implementation has stabilized, it will be included as an optional feature in [GBWT-rs](https://github.com/jltsiren/gbwt-rs).
+* Pangenome graphs in [GBZ graph](https://github.com/jltsiren/gbwtgraph/blob/master/SERIALIZATION.md).
+* Sequence alignments to a pangenome graph in [GAF format](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md).
+
+The formats are intended for interactive applications, where you want to access parts of the graph immediately without loading the entire graph into memory.
+
+Both file formats are under development and can change without warning.
 
 ## Building
 
 To build the package, run:
 
-```
+```sh
 cargo build --release
 ```
 
-You will then have the `gbz2db` and `query` tool binaries in `target/release/`.
+You will then have the `gbz2db`, `gaf2db`, and `query` tool binaries in `target/release/`.
 
-## Database construction
+## GBZ-base construction
 
 You can convert a GBZ graph `graph.gbz` into a database `graph.gbz.db` using:
 
@@ -29,6 +33,41 @@ An existing database can be overwritten with option `--overwrite`.
 
 The database will be functionally equivalent to the GBZ graph, except that it will not contain a node-to-segment translation.
 Generic paths (with sample name `_gbwt_ref`) and reference paths (samples specified in GBWT tag `reference_samples`) will be indexed for querying.
+
+## GAF-base construction
+
+### Sorting the reads
+
+Before building a GAF-base, you must first sort the alignments and build a GBWT index of the target paths.
+This can be done using [vg](https://github.com/vgteam/vg):
+
+```sh
+vg gamsort --progress --threads 6 \
+    --gbwt-output sorted.gbwt \
+    --gaf-input reads.gaf.gz | bgzip --threads 4 > sorted.gaf.gz
+```
+
+`sorted.gaf.gz` now contains the sorted reads and `sorted.gbwt` the target paths in the same order.
+Six worker threads are generally enough when reading a gzip-compressed GAF file.
+Four compression threads should be sufficient when building a GBWT index.
+
+The default chunk size (1 million lines) is appropriate for short reads.
+When sorting long reads, it can be changed with `--chunk-size N` (e.g. `--chunk-size 10000` for 20 kpb reads).
+
+### Building the GAF-base
+
+GAF-base construction takes both the sorted reads and the GBWT index:
+
+```sh
+gaf2db --gbwt sorted.gbwt sorted.gaf.gz
+```
+
+The reads can be uncompressed or compressed with gzip.
+Default output file is `<input>.db`.
+Options `--output` and `--overwrite` are the same as in GBZ-base construction.
+
+The default block size (1000 alignments) is appropriate for short reads.
+When building a database of long read alignments, it can be changed with `--block-size N` (e.g. `--block-size 10` for 20 kbp reads).
 
 ## Subgraph queries
 
@@ -53,13 +92,29 @@ Offsets are 0-based and intervals are half-open.
 There will be proper metadata for the path used for an offset-based or interval-based query.
 All other paths will be listed as unknown haplotypes.
 
-Other options:
+### Other options
 
 * `--context N`: Extract `N` bp context around the query position (default: 100).
 * `--distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
 * `--reference-only`: Output the query path but no unknown haplotypes.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
 * `--format json`: Extract the subgraph in JSON format instead of GFA.
+
+### Extracting alignments
+
+If you have a GBZ-base for a graph and a GAF-base for reads aligned to the graph, you can extract the reads aligned to the subgraph:
+
+```sh
+query --sample GRCh38 --contig chr12 --offset 1234567 \
+    --gaf-base reads.db --gaf-output out.gaf \
+    graph.db > out.gfa
+```
+
+By default, this extracts all alignments overlapping with the subgraph.
+Use option `--contained` to extract only alignments fully within the subgraph.
+
+The GBZ-base can be for the graph the reads were aligned to, or for any supergraph.
+For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be used with reads aligned to a corresponding frequency-filtered or personalized (haplotype-sampled) graph.
 
 ## Interface
 
@@ -80,12 +135,14 @@ This will make sure you have the `wasm32-wasi` target installed via `rustup`, an
 After building the `.wasm` files, and increasing the version in `package.json`, you can publish to [the `gbz-base` NPM package](https://www.npmjs.com/package/gbz-base).
 
 First do a dry run and make sure that you are publishing the files you want to publish:
-```
+
+```sh
 npm publish --dry-run
 ```
 
 Then, publish for real:
-```
+
+```sh
 npm publish
 ```
 
@@ -93,7 +150,7 @@ npm publish
 
 To use the published NPM module in a project, first install it:
 
-```
+```sh
 npm install --save gbz-base
 ```
 

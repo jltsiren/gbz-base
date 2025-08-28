@@ -79,6 +79,20 @@ pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String
 
 //-----------------------------------------------------------------------------
 
+// Working with `Vec<u8>` buffers.
+
+/// Appends an unsigned integer a string represented as `Vec<u8>`.
+pub fn append_usize(buffer: &mut Vec<u8>, value: usize) {
+    buffer.extend_from_slice(value.to_string().as_bytes());
+}
+
+/// Appends a signed integer a string represented as `Vec<u8>`.
+pub fn append_isize(buffer: &mut Vec<u8>, value: isize) {
+    buffer.extend_from_slice(value.to_string().as_bytes());
+}
+
+//-----------------------------------------------------------------------------
+
 // Sequence encoding and decoding.
 
 // TODO: Precompute the decoding table for a byte.

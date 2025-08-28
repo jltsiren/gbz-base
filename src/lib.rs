@@ -1,4 +1,6 @@
-//! # GBZ-base: an immutable pangenome graph stored in a SQLite database
+//! # GBZ-base and GAF-base: pangenome file formats using SQLite databases.
+//!
+//! # GBZ-base
 //!
 //! This is a prototype for storing a GBZ graph in a SQLite database.
 //! It is intended for interactive applications that need immediate access to the graph.
@@ -7,7 +9,9 @@
 //! This assumes that the database is stored on a local SSD.
 //!
 //! The prototype builds on the [`gbwt`] crate.
-//! Once the implementation has stabilized, it will become an optional feature in the [`gbwt`] crate.
+//!
+//! See [`GBZBase`], [`GraphInterface`], and [`Subgraph`] for the database interface.
+//! See [`GBZPath`] and [`GBZRecord`] for the related structures.
 //!
 //! ### Basic concepts
 //!
@@ -24,6 +28,23 @@
 //! The indexed positions are stored in table `ReferenceIndex`.
 //! By default, only generic paths (sample name `_gbwt_ref`) and reference paths (sample name listed in GBWT tag `reference_samples`) are indexed.
 //! The database can become excessively large if all paths are indexed.
+//!
+//! # GAF-base
+//!
+//! This is a prototype for an SQLite-based file format for sequence alignments to a pangenome graph.
+//! It is mostly compatible with the GAF format.
+//! Target paths are stored as a GBWT index in table `Nodes`, which is similar to the table in GBZ-base.
+//!
+//! Alignment metadata is stored in table `Alignments`.
+//! Each row in the table corresponds to a block of alignments, which are assumed to be close in the graph.
+//! The metadata is stored space-efficiently using column-based compression.
+//!
+//! `Alignment` table is indexed by (minimum handle, maximum handle) in the target paths.
+//! Given a query subgraph, we want to find blocks where the interval overlaps with the subgraph.
+//! These blocks must then be decompressed, as they may contain alignments to the subgraph.
+//!
+//! See [`GAFBase`] and [`ReadSet`] for the database interface.
+//! See [`alignment`], [`Alignment`], and [`AlignmentBlock`] for more details.
 
 pub mod alignment;
 pub mod db;
@@ -32,7 +53,8 @@ pub mod path_index;
 pub mod subgraph;
 pub mod utils;
 
-pub use alignment::Alignment;
-pub use db::{GBZBase, GAFBase, GBZPath, GBZRecord, GraphInterface};
+pub use alignment::{Alignment, AlignmentBlock};
+pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface, GraphReference};
+pub use db::{GAFBase, GAFBaseParams, ReadSet};
 pub use path_index::PathIndex;
 pub use subgraph::{Subgraph, SubgraphQuery, HaplotypeOutput};

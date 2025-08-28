@@ -2,7 +2,6 @@ use super::*;
 
 use crate::utils;
 
-use simple_sds::ops::BitVec;
 use simple_sds::serialize;
 
 use std::io::BufRead;
@@ -14,31 +13,14 @@ use std::path::PathBuf;
 
 // Creates an alignment object for an unaligned sequence with no optional fields.
 fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
-    let name = String::from(name);
-    let seq_interval = 0..0;
-    let path = TargetPath::Path(Vec::new());
-    let path_len = 0;
-    let path_interval = 0..0;
-    let matches = 0;
-    let edits = 0;
-    let mapq = None;
-    let score = None;
-    let base_quality = None;
-    let difference = None;
-    let pair = None;
-    let optional = Vec::new();
-    Alignment {
-        name, seq_len, seq_interval,
-        path, path_len, path_interval,
-        matches, edits, mapq, score,
-        base_quality, difference, pair,
-        optional
-    }
+    let mut result = Alignment::default();
+    result.name = String::from(name);
+    result.seq_len = seq_len;
+    result
 }
 
-// Parses the alignments from the test file.
-// Returns them as a vector, unless told to expect a parse error.
-fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
+// Returns the GAF lines from the given file.
+fn read_gaf_lines(filename: &PathBuf) -> Vec<Vec<u8>> {
     let reader = utils::open_file(filename);
     assert!(reader.is_ok(), "Failed to open the test file: {}", reader.err().unwrap());
     let mut reader = reader.unwrap();
@@ -49,17 +31,33 @@ fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
         let mut buf: Vec<u8> = Vec::new();
         let len = reader.read_until(b'\n', &mut buf);
         assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
-        if len.unwrap() == 0 {
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        if buf.is_empty() {
             break;
         }
-        let alignment = Alignment::from_gaf(&buf);
+        result.push(buf);
+        line_num += 1;
+    };
+
+    result
+}
+
+// Parses the alignments from the test file.
+// Returns them as a vector, unless told to expect a parse error.
+fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
+    let lines = read_gaf_lines(filename);
+
+    let mut result = Vec::new();
+    for (line_num, line) in lines.iter().enumerate() {
+        let alignment = Alignment::from_gaf(line);
         if expect_error {
-            assert!(alignment.is_err(), "Expected a parse error on line {}", line_num);
+            assert!(alignment.is_err(), "Expected a parse error on line {}", line_num + 1);
         } else {
-            assert!(alignment.is_ok(), "Failed to parse line {}: {}", line_num, alignment.err().unwrap());
+            assert!(alignment.is_ok(), "Failed to parse line {}: {}", line_num + 1, alignment.err().unwrap());
             result.push(alignment.unwrap());
         }
-        line_num += 1;
     }
 
     result
@@ -112,8 +110,8 @@ fn alignment_known_good() {
     let edits = 13;
     let mapq = Some(60);
     let score = Some(57);
-    let base_quality = Some(vec![b'?'; 100]);
-    let difference = Some(vec![
+    let base_quality = vec![b'?'; 100];
+    let difference = vec![
         Difference::Match(20),
         Difference::Mismatch(b'C'), Difference::Mismatch(b'T'),
         Difference::Match(20),
@@ -121,7 +119,7 @@ fn alignment_known_good() {
         Difference::Match(20),
         Difference::Insertion(b"CAT".to_vec()),
         Difference::Match(20)
-    ]);
+    ];
     let pair = None;
     let optional = vec![
         TypedField::String([b'x', b'x'], b"unknown".to_vec()),
@@ -180,6 +178,18 @@ fn alignment_known_good() {
     for i in 0..truth.len() {
         check_alignment(&alignments[i], &truth[i], i + 1, false, false);
     }
+
+    // These alignments will survive the round-trip from/to GAF intact.
+    // 1 is on the reverse strand, while 7 has non-canonical empty fields.
+    let round_trip = vec![
+        0, 2, 3, 4, 5, 6,
+    ];
+    let gaf_lines = read_gaf_lines(&filename);
+    let target_sequence = b"CCCCCCCCCCCCCCCCCCCCAGAAAAAAAAAAAAAAAAAAAAGATTACATGGGGGGGGGGGGGGGGGGGGTTTTTTTTTTTTTTTTTTTT".to_vec();
+    for index in round_trip {
+        let line = alignments[index].to_gaf(&target_sequence);
+        assert_eq!(line, gaf_lines[index], "Line {} did not survive the round trip", index + 1);
+    }
 }
 
 #[test]
@@ -191,146 +201,129 @@ fn alignment_known_bad() {
 
 //-----------------------------------------------------------------------------
 
-// Tests for `Alignment`: support functions.
+// Tests for `Alignment`: operations.
 
 #[test]
-fn alignment_paths_by_sample() {
-    // This is actually a GBWT of haplotypes.
-    let filename = support::get_test_data("example.gbwt");
-    let index: GBWT = serialize::load_from(&filename).unwrap();
-    let metadata = index.metadata().unwrap();
+fn alignment_default() {
+    let default = Alignment::default();
+    assert!(default.is_unaligned(), "A default alignment should be unaligned");
+    assert!(!default.is_perfect(), "An empty alignment should not be perfect");
 
-    let true_paths: Vec<u32> = vec![0, 1, 2, 3, 4, 5];
-    let true_offsets: Vec<usize> = vec![0, 2, 6];
-
-    let result = Alignment::paths_by_sample(&metadata);
-    assert!(result.is_ok(), "Failed to get a list of paths by sample: {}", result.err().unwrap());
-    let (paths, offsets) = result.unwrap();
-
-    assert_eq!(paths, true_paths, "Wrong path identifiers");
-    assert_eq!(offsets.len(), paths.len() + 1, "Wrong universe size for the index");
-    let offsets: Vec<usize> = offsets.one_iter().map(|(_, x)| x).collect();
-    assert_eq!(offsets, true_offsets, "Wrong offsets for path id intervals by sample");
+    assert!(default.name.is_empty(), "A default alignment should not have a name");
+    assert_eq!(default.seq_len, 0, "A default alignment should have a sequence length of 0");
+    assert!(default.seq_interval.is_empty(), "A default alignment should have an empty sequence interval");
+    assert!(default.has_target_path(), "A default alignment should have a target path");
+    assert!(default.target_path().unwrap().is_empty(), "A default alignment should have an empty target path");
+    assert_eq!(default.path_len, 0, "A default alignment should have a target path length of 0");
+    assert!(default.path_interval.is_empty(), "A default alignment should have an empty target path interval");
+    assert_eq!(default.matches, 0, "A default alignment should have 0 matches");
+    assert_eq!(default.edits, 0, "A default alignment should have 0 edits");
+    assert!(default.mapq.is_none(), "A default alignment should not have a mapping quality");
+    assert!(default.score.is_none(), "A default alignment should not have a score");
+    assert!(default.base_quality.is_empty(), "A default alignment should not have base quality values");
+    assert!(default.difference.is_empty(), "A default alignment should not have a difference string");
+    assert!(default.pair.is_none(), "A default alignment should not have a paired read");
+    assert!(default.optional.is_empty(), "A default alignment should not have any optional fields");
 }
 
 #[test]
-fn alignment_set_relative_information() {
-    let filename = support::get_test_data("example.gbwt");
-    let index: GBWT = serialize::load_from(&filename).unwrap();
-    let metadata = index.metadata().unwrap();
+fn alignment_operations() {
+    let mut aln = empty_alignment("test", 10);
+    aln.seq_interval = 0..10;
+    aln.path = TargetPath::StartPosition(Pos::new(support::encode_node(1, Orientation::Forward), 0));
+    aln.path_len = 12;
+    aln.path_interval = 1..11;
+    aln.matches = 10;
 
-    let result = Alignment::paths_by_sample(&metadata);
-    assert!(result.is_ok(), "Failed to get a list of paths by sample: {}", result.err().unwrap());
-    let paths_by_sample = result.unwrap();
-    let mut used_paths = RawVector::with_len(metadata.paths(), false);
+    assert!(!aln.is_unaligned(), "The alignment should be aligned");
+    assert!(aln.is_perfect(), "The alignment should be perfect");
 
-    // The path we are interested in is id 3: (sample, A, 2, 0) with sample id 1.
-    let name = String::from("sample");
-    let seq_len = 5;
-    let seq_interval = 0..5;
-    let path = TargetPath::Path(vec![
-        support::encode_node(11, Orientation::Forward),
-        support::encode_node(13, Orientation::Forward),
-        support::encode_node(14, Orientation::Forward),
-        support::encode_node(16, Orientation::Forward),
-        support::encode_node(17, Orientation::Forward)
-    ]);
-    let path_len = 5;
-    let path_interval = 0..5;
-    let matches = 5;
-    let edits = 0;
-    let mapq = None;
-    let score = None;
-    let base_quality = None;
-    let difference = None;
-    let pair = None;
-    let optional = Vec::new();
-    let mut alignment = Alignment {
-        name, seq_len, seq_interval,
-        path, path_len, path_interval,
-        matches, edits,
-        mapq, score,
-        base_quality, difference, pair,
-        optional
-    };
+    // Various ways of making the alignment imperfect.
+    {
+        let mut wrong_start = aln.clone();
+        wrong_start.seq_interval.start += 1;
+        wrong_start.path_interval.start += 1;
+        wrong_start.matches -= 1;
+        assert!(!wrong_start.is_perfect(), "An alignment starting after query start should not be perfect");
+    }
+    {
+        let mut wrong_end = aln.clone();
+        wrong_end.seq_interval.end -= 1;
+        wrong_end.path_interval.end -= 1;
+        wrong_end.matches -= 1;
+        assert!(!wrong_end.is_perfect(), "An alignment ending before query end should not be perfect");
+    }
+    {
+        let mut has_edits = aln.clone();
+        has_edits.matches -= 1;
+        has_edits.edits += 1;
+        assert!(!has_edits.is_perfect(), "An alignment with edits should not be perfect");
+    }
 
-    let original = alignment.clone();
-    let result = alignment.set_relative_information(
-        &index, 0, &paths_by_sample, Some(&mut used_paths)
-    );
-    assert!(result.is_ok(), "Failed to set relative information: {}", result.err().unwrap());
+    // We have a GBWT start position.
+    assert!(!aln.has_target_path(), "GBWT start position should not be a target path");
+    assert!(aln.target_path().is_none(), "GBWT start position should not be returned as a target path");
+    assert!(aln.min_handle().is_none(), "GBWT start position should not have a minimum handle");
+    assert!(aln.max_handle().is_none(), "GBWT start position should not have a maximum handle");
 
-    // Only name and path fields should have changed.
-    check_alignment(&alignment, &original, 0, true, false);
+    // Set the target path manually.
+    let correct_path = vec![
+        support::encode_node(1, Orientation::Forward),
+        support::encode_node(2, Orientation::Forward),
+    ];
+    let min_handle = correct_path.iter().min().cloned();
+    let max_handle = correct_path.iter().max().cloned();
+    aln.set_target_path(correct_path.clone());
+    assert!(aln.has_target_path(), "Target path should exist after setting it");
+    assert_eq!(aln.target_path(), Some(correct_path.as_slice()), "Target path should match the set path");
+    assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the set path");
+    assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the set path");
 
-    // Check the relative fields.
-    // This is the third path that visits (starts from) node 11 forward.
-    let start_pos = Pos::new(support::encode_node(11, Orientation::Forward), 2);
-    let start_pos = TargetPath::StartPosition(start_pos);
-    assert_eq!(alignment.path, start_pos, "Wrong GBWT starting position for the target path");
-
-    // Check that the path is marked as used.
-    assert_eq!(used_paths.bit(3), true, "Path 3 was not marked as used");
-    assert_eq!(used_paths.count_ones(), 1, "Wrong number of used paths");
-
-    // Check that repeated calls do not change the alignment.
-    let original = alignment.clone();
-    let result = alignment.set_relative_information(
-        &index, 0, &paths_by_sample, Some(&mut used_paths)
-    );
-    assert!(result.is_ok(), "Failed to set relative information again: {}", result.err().unwrap());
-    assert_eq!(alignment, original, "Alignment was changed by a repeated call");
-    assert_eq!(used_paths.bit(3), true, "Used path was reset by a repeated call");
-    assert_eq!(used_paths.count_ones(), 1, "Used paths were changed by a repeated call");
+    // Setting it again should not change the existing target path.
+    let wrong_path = vec![
+        support::encode_node(1, Orientation::Forward),
+        support::encode_node(3, Orientation::Forward),
+    ];
+    aln.set_target_path(wrong_path);
+    assert!(aln.has_target_path(), "Target path should still exist after setting it again");
+    assert_eq!(aln.target_path(), Some(correct_path.as_slice()), "Target path should match the existing path");
+    assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the existing path");
+    assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the existing path");
 }
 
 //-----------------------------------------------------------------------------
 
-// Tests for `Alignment`: encoding and decoding.
-
-// This assumes that the alignment is relative to a GBWT index.
-fn check_encode_decode(alignment: &Alignment, prefix: &str, quality_encoder: &QualityEncoder, line: usize) {
-    let query = &alignment.name[prefix.len()..];
-    let target = if let TargetPath::StartPosition(pos) = alignment.path { pos } else { unreachable!() };
-    let numbers = alignment.encode_numbers();
-    let quality = alignment.encode_base_quality(quality_encoder);
-    let difference = alignment.encode_difference();
-    let pair = alignment.encode_pair(prefix.len());
-
-    let decoded = Alignment::decode(
-        prefix, query, target.node, &numbers,
-        quality.as_ref().map(Vec::as_slice),
-        quality_encoder, difference.as_ref().map(Vec::as_slice),
-        pair.as_ref().map(Vec::as_slice)
-    );
-    assert!(decoded.is_ok(), "Failed to decode alignment {}: {}", line, decoded.err().unwrap());
-    let decoded = decoded.unwrap();
-
-    // TODO: Check the optional fields.
-    check_alignment(&decoded, alignment, line, false, true);
-}
-
-#[test]
-fn alignment_encode_decode() {
-    // Parse the alignments.
-    let filename = utils::get_test_data("good.gaf");
-    let mut alignments = parse_alignments(&filename, false);
-    assert_eq!(alignments.len(), 8, "Unexpected number of parsed alignments");
-
-    // Set the relative information manually, as we do not have a GBWT index.
-    let pos = Pos::new(support::encode_node(10, Orientation::Forward), 0);
-    let empty = Pos::new(gbwt::ENDMARKER, 0);
-    for (i, alignment) in alignments.iter_mut().enumerate() {
-        alignment.path = TargetPath::StartPosition(if i < 6 { pos } else { empty });
+// Returns an appropriate end for the block, ensuring that it does not mix unaligned and aligned reads.
+fn block_end(alignments: &[Alignment], start: usize, block_size: usize) -> usize {
+    if start >= alignments.len() {
+        return start;
     }
 
-    // Encode and decode the alignments.
-    let prefix = "";
-    let alphabet = b"?";
-    let dictionary = [(0, 1)];
-    let quality_encoder = QualityEncoder::new(alphabet, &dictionary).unwrap();
-    for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, prefix, &quality_encoder, i + 1);
+    let mut end = start + 1;
+    let unaligned = alignments[start].is_unaligned();
+    while end < alignments.len() && end < start + block_size && unaligned == alignments[end].is_unaligned() {
+        end += 1;
+    }
+    end
+}
+
+fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
+    let range = first_id..(first_id + block.len());
+    let encoded = AlignmentBlock::new(block, index, first_id);
+    if let Err(message) = encoded {
+        panic!("Failed to encode the alignment block {}..{}: {}", range.start, range.end, message);
+    }
+    let encoded = encoded.unwrap();
+    assert_eq!(encoded.len(), block.len(), "Wrong number of alignments in the encoded block {}..{}", range.start, range.end);
+
+    let decoded = encoded.decode();
+    assert!(decoded.is_ok(), "Failed to decode the alignment block {}..{}: {}", range.start, range.end, decoded.err().unwrap());
+    let mut decoded = decoded.unwrap();
+    assert_eq!(decoded.len(), block.len(), "Wrong number of alignments in the decoded block {}..{}", range.start, range.end);
+
+    for (i, aln) in decoded.iter_mut().enumerate() {
+        aln.extract_target_path(index);
+        assert_eq!(*aln, block[i], "Wrong alignment {} in the decoded block {}..{}", range.start + i, range.start, range.end);
     }
 }
 
@@ -339,158 +332,44 @@ fn alignment_encode_decode() {
 // Tests for `Alignment`: integration.
 // This is the haplotype sampling test case from vg.
 
-fn integration_test(gaf_file: &'static str, gbwt_file: &'static str) {
+fn integration_test(gaf_file: &'static str, gbwt_file: &'static str, block_size: usize) {
     // Parse the alignments.
     let gaf_file = utils::get_test_data(gaf_file);
     let mut alignments = parse_alignments(&gaf_file, false);
     assert_eq!(alignments.len(), 12439, "Unexpected number of parsed alignments");
 
-    // Load the GBWT index and prepare the structures.
-    let gbwt_file = utils::get_test_data(gbwt_file);
-    let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
-    let metadata = index.metadata().unwrap();
-    let result = Alignment::paths_by_sample(&metadata);
-    assert!(result.is_ok(), "Failed to get a list of paths by sample: {}", result.err().unwrap());
-    let paths_by_sample = result.unwrap();
-    let mut used_paths = RawVector::with_len(metadata.paths(), false);
-
-    // Set relative information for all alignments.
-    let prefix = "A00744:46:HV3C3DSXX:2:";
-    for (i, alignment) in alignments.iter_mut().enumerate() {
-        let result = alignment.set_relative_information(
-            &index, prefix.len(), &paths_by_sample, Some(&mut used_paths)
-        );
-        assert!(result.is_ok(), "Failed to set relative information for alignment {}: {}", i + 1, result.err().unwrap());
+    // Remove the optional fields as we do not encode them for now.
+    for aln in &mut alignments {
+        aln.optional.clear();
     }
 
-    // Check that we managed to match each alignment to a different path.
-    assert_eq!(used_paths.count_ones(), used_paths.len(), "Not all paths were used");
+    // Load the GBWT index.
+    let gbwt_file = utils::get_test_data(gbwt_file);
+    let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
 
     // Encode and decode the alignments.
-    let alphabet = b"F:#,";
-    let dictionary = [(1, 1), (2, 1), (3, 2)];
-    let quality_encoder = QualityEncoder::new(alphabet, &dictionary).unwrap();
-    for (i, aln) in alignments.iter().enumerate() {
-        check_encode_decode(aln, prefix, &quality_encoder, i + 1);
+    let mut start = 0;
+    while start < alignments.len() {
+        let end = block_end(&alignments, start, block_size);
+        let block = &alignments[start..end];
+        check_encode_decode(block, &index, start);
+        start = end;
     }
 }
 
 #[test]
 fn alignment_real() {
-    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt");
+    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt", 1234);
+}
+
+#[test]
+fn alignment_bidirectional() {
+    integration_test("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt", 1001);
 }
 
 #[test]
 fn alignment_real_gzipped() {
-    integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt");
-}
-
-//-----------------------------------------------------------------------------
-
-// Tests for `QualityEncoder`.
-
-fn create_quality_encoder(alphabet: &[u8], dictionary: &[(usize, usize)], name: &str) -> QualityEncoder {
-    let encoder = QualityEncoder::new(alphabet, dictionary);
-    assert!(encoder.is_some(), "Failed to create a quality encoder for {}", name);
-    encoder.unwrap()
-}
-
-fn check_quality_encoder(encoder: &QualityEncoder, sequence: &[u8], is_rle: bool, name: &str) {
-    let encoded = encoder.encode(sequence);
-    assert!(encoded.is_ok(), "Failed to encode the quality string for {}: {}", name, encoded.err().unwrap());
-    let encoded = encoded.unwrap();
-    assert_eq!(QualityEncoder::is_rle(&encoded), is_rle, "Wrong RLE status for {}", name);
-    let decoded = encoder.decode(&encoded, sequence.len());
-    assert!(decoded.is_ok(), "Failed to decode the quality string for {}: {}", name, decoded.err().unwrap());
-    let decoded = decoded.unwrap();
-    assert_eq!(decoded, sequence, "Wrong decoded quality string for {}", name);
-}
-
-fn check_invalid_sequence(encoder: &QualityEncoder, sequence: &[u8], name: &str) {
-    let encoded = encoder.encode(sequence);
-    assert!(encoded.is_err(), "Encoded an invalid quality string for {}", name);
-}
-
-#[test]
-fn quality_empty() {
-    let alphabet = b"";
-    let dictionary = [];
-    let name = "empty alphabet";
-    let encoder = create_quality_encoder(alphabet, &dictionary, name);
-
-    let sequence = b"";
-    check_quality_encoder(&encoder, sequence, false, name);
-    let invalid = b"ACGT";
-    check_invalid_sequence(&encoder, invalid, name);
-}
-
-#[test]
-fn quality_unary() {
-    let alphabet = b"A";
-    let dictionary = [(1, 1)];
-    let name = "unary alphabet";
-    let encoder = create_quality_encoder(alphabet, &dictionary, name);
-
-    let empty = b"";
-    check_quality_encoder(&encoder, empty, false, "unary alphabet, empty sequence");
-    let sequence = b"AAAAA";
-    check_quality_encoder(&encoder, sequence, false, name);
-    let invalid = b"ACGT";
-    check_invalid_sequence(&encoder, invalid, name);
-}
-
-#[test]
-fn quality_huffman() {
-    // A: 0, C: 10, G: 110, T: 111
-    let alphabet = b"ACGT";
-    let dictionary = [(1, 1), (2, 1), (3, 2)];
-    let name = "general alphabet";
-    let encoder = create_quality_encoder(alphabet, &dictionary, name);
-
-    let empty = b"";
-    check_quality_encoder(&encoder, empty, false, "general alphabet, empty sequence");
-    let sequence = b"ACGTACGTACGT";
-    check_quality_encoder(&encoder, sequence, false, name);
-    let invalid = b"ACGTN";
-    check_invalid_sequence(&encoder, invalid, name);
-}
-
-#[test]
-fn quality_large_alphabet() {
-    // A: 0, B: 100, C: 101, D: 1100, E: 1101, F: 111000, ...
-    let alphabet = b"ABCDEFGHIJKLM";
-    let dictionary = [(1, 1), (3, 2), (4, 2), (6, 8)];
-    let name = "large alphabet";
-    let encoder = create_quality_encoder(alphabet, &dictionary, name);
-
-    let empty = b"";
-    check_quality_encoder(&encoder, empty, false, "large alphabet, empty sequence");
-    let sequence = b"ABCDEFGHIJKLMABCDEFGHIJKLM";
-    check_quality_encoder(&encoder, sequence, false, name);
-    let invalid = b"ACGT";
-    check_invalid_sequence(&encoder, invalid, name);
-}
-
-// huffman + rle
-#[test]
-fn quality_with_rle() {
-    let alphabet = b"ACGT";
-    let dictionary = [(1, 1), (2, 1), (3, 2)];
-    let name = "possible rle";
-    let encoder = create_quality_encoder(alphabet, &dictionary, name);
-
-    let empty = b"";
-    check_quality_encoder(&encoder, empty, false, "possible rle, empty sequence");
-    let rle = b"AAAAAAAAACAAAAAAAAG";
-    check_quality_encoder(&encoder, rle, true, name);
-    let wrong_symbol = b"CCCCCCCCCACCCCCCCG";
-    check_quality_encoder(&encoder, wrong_symbol, false, "possible rle, wrong symbol in the runs");
-    let invalid = b"ACGTN";
-    check_invalid_sequence(&encoder, invalid, name);
-
-    let balanced = [(2, 4)];
-    let balanced_encoder = create_quality_encoder(alphabet, &balanced, "balanced alphabet");
-    check_quality_encoder(&balanced_encoder, rle, false, "balanced alphabet, long runs");
+    integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt", 789);
 }
 
 //-----------------------------------------------------------------------------
@@ -510,51 +389,72 @@ fn check_difference(seq: &[u8], truth: &[Difference], name: &str, normalize: boo
     }
 }
 
+fn check_to_bytes(ops: &[Difference], truth: &[u8], target_sequence: &[u8], name: &str) {
+    let result = Difference::to_bytes(ops, target_sequence);
+    assert_eq!(result, truth, "Wrong byte representation for {}", name);
+}
+
 #[test]
 fn difference_empty() {
+    let name = "empty";
     let seq = b"";
     let truth = [];
-    check_difference(seq, &truth, "empty", false);
+    check_difference(seq, &truth, name, false);
+    let target_sequence = b"";
+    check_to_bytes(&truth, seq, target_sequence, name);
 }
 
 #[test]
 fn difference_single() {
     {
-        // Matching sequence.
+        let name = "matching sequence";
         let seq = b"=ACGT";
         let truth = [ Difference::Match(4) ];
-        check_difference(seq, &truth, "matching sequence", false);
+        check_difference(seq, &truth, name, false);
+        let expected = b":4"; // Converted to match length.
+        let target_sequence = b"ACGT";
+        check_to_bytes(&truth, expected, target_sequence, name);
     }
     {
-        // Match length.
+        let name = "match length";
         let seq = b":5";
         let truth = [ Difference::Match(5) ];
-        check_difference(seq, &truth, "match length", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"GATTA";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
     {
-        // Mismatch.
+        let name = "mismatch";
         let seq = b"*AC";
         let truth = [ Difference::Mismatch(b'C') ];
-        check_difference(seq, &truth, "mismatch", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"A";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
     {
-        // Insertion.
+        let name = "insertion";
         let seq = b"+ACGT";
         let truth = [ Difference::Insertion(b"ACGT".to_vec()) ];
-        check_difference(seq, &truth, "insertion", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
     {
-        // Deletion.
+        let name = "deletion";
         let seq = b"-ACGT";
         let truth = [ Difference::Deletion(4) ];
-        check_difference(seq, &truth, "deletion", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b"ACGT";
+        check_to_bytes(&truth, seq, target_sequence, name);
     }
 }
 
 #[test]
 fn difference_multi() {
     // All of these are from real reads mapped with Giraffe.
+    // Target sequences only contain the relevant bases.
     {
+        let name = "ERR3239454.129477191 fragment 2";
         let seq = b":24*CG:78-C:35*TG:2*TG:1*TG:6";
         let truth = [
             Difference::Match(24),
@@ -569,17 +469,28 @@ fn difference_multi() {
             Difference::Mismatch(b'G'),
             Difference::Match(6)
         ];
-        check_difference(seq, &truth, "ERR3239454.129477191 fragment 2", false);
+        check_difference(seq, &truth, name, false);
+        let mut target_sequence = vec![b'-'; 151];
+        target_sequence[24] = b'C';
+        target_sequence[103] = b'C';
+        target_sequence[139] = b'T';
+        target_sequence[142] = b'T';
+        target_sequence[144] = b'T';
+        check_to_bytes(&truth, seq, &target_sequence, name);
     }
     {
+        let name = "ERR3239454.11251898 fragment 1";
         let seq = b":129+TTGAGGGGGTATAAGAGGTCG";
         let truth = [
             Difference::Match(129),
             Difference::Insertion(b"TTGAGGGGGTATAAGAGGTCG".to_vec())
         ];
-        check_difference(seq, &truth, "ERR3239454.11251898 fragment 1", false);
+        check_difference(seq, &truth, name, false);
+        let target_sequence = vec![b'-', 129];
+        check_to_bytes(&truth, seq, &target_sequence, name);
     }
     {
+        let name = "ERR3239454.97848632 fragment 1";
         let seq = b":111*GT:20*CA:6*GT:2*GT:3*GT:3";
         let truth = [
             Difference::Match(111),
@@ -594,7 +505,14 @@ fn difference_multi() {
             Difference::Mismatch(b'T'),
             Difference::Match(3)
         ];
-        check_difference(seq, &truth, "ERR3239454.97848632 fragment 1", false);
+        check_difference(seq, &truth, name, false);
+        let mut target_sequence = vec![b'-'; 150];
+        target_sequence[111] = b'G';
+        target_sequence[132] = b'C';
+        target_sequence[139] = b'G';
+        target_sequence[142] = b'G';
+        target_sequence[146] = b'G';
+        check_to_bytes(&truth, seq, &target_sequence, name);
     }
 }
 
@@ -677,140 +595,3 @@ fn difference_normalize() {
 
 //-----------------------------------------------------------------------------
 
-// Tests for `TypedField`.
-
-#[test]
-fn typed_field_empty() {
-    let field = TypedField::parse(b"");
-    assert!(field.is_err(), "Empty string was parsed as a typed field");
-}
-
-// This assumes that the sequence is a valid typed field.
-fn check_typed_field(seq: &[u8], name: &str) {
-    let field = TypedField::parse(seq);
-    assert!(field.is_ok(), "Failed to parse the typed field for {}", name);
-    let field = field.unwrap();
-    assert_eq!(field.tag(), seq[0..2], "Wrong tag for {}", name);
-
-    match field {
-        TypedField::Char(_, value) => {
-            assert_eq!(seq[3], b'A', "Parsed the type as a char for {}", name);
-            assert_eq!(value, seq[5], "Wrong value for {}", name);
-        }
-        TypedField::String(_, value) => {
-            assert_eq!(seq[3], b'Z', "Parsed the type as a string for {}", name);
-            assert_eq!(value, &seq[5..], "Wrong value for {}", name);
-        },
-        TypedField::Int(_, value) => {
-            assert_eq!(seq[3], b'i', "Parsed the type as an integer for {}", name);
-            let value_seq = str::from_utf8(&seq[5..]).unwrap();
-            let truth = value_seq.parse::<isize>().unwrap();
-            assert_eq!(value, truth, "Wrong value for {}", name);
-        },
-        TypedField::Float(_, value) => {
-            assert_eq!(seq[3], b'f', "Parsed the type as a float for {}", name);
-            let value_seq = str::from_utf8(&seq[5..]).unwrap();
-            let truth = value_seq.parse::<f64>().unwrap();
-            assert_eq!(value, truth, "Wrong value for {}", name);
-        },
-        TypedField::Bool(_, value) => {
-            assert_eq!(seq[3], b'b', "Parsed the type as a boolean for {}", name);
-            let truth = match seq[5] {
-                b'0' => false,
-                b'1' => true,
-                _ => panic!("Invalid boolean value for {}", name),
-            };
-            assert_eq!(value, truth, "Wrong value for {}", name);
-        },
-    }
-}
-
-#[test]
-fn typed_field_char() {
-    check_typed_field(b"tp:A:P", "char");
-}
-
-#[test]
-fn typed_field_string() {
-    check_typed_field(b"cg:Z:6M", "string");
-    check_typed_field(b"ab:Z:", "empty string");
-}
-
-#[test]
-fn typed_field_int() {
-    check_typed_field(b"AS:i:150", "positive integer");
-    check_typed_field(b"cd:i:-3", "negative integer");
-    check_typed_field(b"ef:i:0", "zero");
-}
-
-#[test]
-fn typed_field_float() {
-    check_typed_field(b"gh:f:22", "positive whole number");
-    check_typed_field(b"ij:f:-10", "negative whole number");
-    check_typed_field(b"dv:f:0", "zero whole number");
-    check_typed_field(b"kl:f:3.0", "positive whole number with decimal point");
-    check_typed_field(b"mn:f:-2.0", "negative whole number with decimal point");
-
-    check_typed_field(b"kl:f:3.14", "positive decimal number");
-    check_typed_field(b"mn:f:-2.718", "negative decimal number");
-    check_typed_field(b"op:f:0.0", "zero decimal number");
-    check_typed_field(b"qr:f:.5", "positive decimal number without zero");
-    check_typed_field(b"st:f:-.25", "negative decimal number without zero");
-}
-
-#[test]
-fn typed_field_bool() {
-    check_typed_field(b"pd:b:0", "false");
-    check_typed_field(b"qr:b:1", "true");
-}
-
-fn invalid_typed_field(seq: &[u8], name: &str) {
-    let field = TypedField::parse(seq);
-    assert!(field.is_err(), "Parsed an invalid typed field for {}", name);
-}
-
-#[test]
-fn typed_field_invalid() {
-    // Invalid format.
-    invalid_typed_field(b"AS::150", "missing type");
-    invalid_typed_field(b"AS:i150", "missing separator");
-    invalid_typed_field(b"ASi150", "missing separators");
-    invalid_typed_field(b":i:150", "missing tag");
-    invalid_typed_field(b"A:i:150", "too short tag");
-    invalid_typed_field(b"ASC:i:150", "too long tag");
-
-    // Invalid type.
-    invalid_typed_field(b"AS:J:150", "JSON type (not supported)");
-    invalid_typed_field(b"AS:H:150", "hexadecimal type (not supported)");
-    invalid_typed_field(b"AS:B:150", "array type (not supported)");
-    invalid_typed_field(b"AS:?:150", "unknown type");
-
-    // Invalid value for char.
-    invalid_typed_field(b"tp:A:", "empty char value");
-    invalid_typed_field(b"tp:A:AC", "too long char value");
-    invalid_typed_field(b"tp:A: A", "char value with leading space");
-    invalid_typed_field(b"tp:A:A ", "char value with trailing space");
-
-    // Invalid value for integer.
-    invalid_typed_field(b"AS:i:", "empty integer value");
-    invalid_typed_field(b"AS:i: 150", "integer value with leading space");
-    invalid_typed_field(b"AS:i:150 ", "integer value with trailing space");
-    invalid_typed_field(b"AS:i:3.14", "decimal number as integer value");
-    invalid_typed_field(b"AS:i:3A", "invalid character in integer value");
-
-    // Invalid value for float.
-    invalid_typed_field(b"AS:f:", "empty float value");
-    invalid_typed_field(b"AS:f: 3.14", "float value with leading space");
-    invalid_typed_field(b"AS:f:3.14 ", "float value with trailing space");
-    invalid_typed_field(b"AS:f:3.14A", "invalid character in float value");
-
-    // Invalid value for boolean.
-    invalid_typed_field(b"pd:b:", "empty boolean value");
-    invalid_typed_field(b"pd:b:01", "too long boolean value");
-    invalid_typed_field(b"pd:b:2", "wrong number in boolean value");
-    invalid_typed_field(b"pd:b:?", "invalid character in boolean value");
-    invalid_typed_field(b"pd:b: 0", "boolean value with leading space");
-    invalid_typed_field(b"pd:b:0 ", "boolean value with trailing space");
-}
-
-//-----------------------------------------------------------------------------

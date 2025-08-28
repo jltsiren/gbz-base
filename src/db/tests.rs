@@ -1,3 +1,5 @@
+use crate::{HaplotypeOutput, SubgraphQuery, Alignment};
+
 use super::*;
 
 use gbwt::REF_SAMPLE;
@@ -418,3 +420,283 @@ fn indexed_position() {
 
 //-----------------------------------------------------------------------------
 
+// Helper functions for GAF-base tests.
+
+fn create_gaf_base(gaf_part: &'static str, gbwt_part: &'static str) -> PathBuf {
+    let gaf_file = utils::get_test_data(gaf_part);
+    let gbwt_file = utils::get_test_data(gbwt_part);
+    let db_file = serialize::temp_file_name("gaf-base");
+    let params = GAFBaseParams::default();
+    let result = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+    assert!(result.is_ok(), "Failed to create GAF-base database: {}", result.unwrap_err());
+    db_file
+}
+
+fn open_gaf_base(db_file: &Path) -> GAFBase {
+    let db = GAFBase::open(db_file);
+    assert!(db.is_ok(), "Failed to open GAF-base database: {}", db.unwrap_err());
+    // We do not check the filename, as the one reported by SQLite may differ.
+    db.unwrap()
+}
+
+fn check_gaf_base(db: &GAFBase, nodes: usize, alignments: usize, bidirectional_gbwt: bool) {
+    assert_eq!(db.nodes(), nodes, "Wrong number of nodes in GAF-base database");
+    assert_eq!(db.alignments(), alignments, "Wrong number of alignments in GAF-base database");
+    assert_eq!(db.bidirectional_gbwt(), bidirectional_gbwt, "Wrong GBWT bidirectionality in GAF-base database");
+}
+
+fn gaf_base_gbz() -> GBZ {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let result = serialize::load_from(&gbz_file);
+    assert!(result.is_ok(), "Failed to load GBZ graph: {}", result.unwrap_err());
+    result.unwrap()
+}
+
+fn gaf_base_db() -> (GBZBase, PathBuf) {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let db_file = create_database_from_file(&gbz_file);
+    let db = open_database(&db_file);
+    (db, db_file)
+}
+
+fn gaf_base_reads(gaf_part: &'static str) -> Vec<Alignment> {
+    let gaf_file = utils::get_test_data(gaf_part);
+
+    let reader = utils::open_file(gaf_file);
+    assert!(reader.is_ok(), "Failed to open GAF file: {}", reader.err().unwrap());
+    let mut reader = reader.unwrap();
+
+    let mut result = Vec::new();
+    let mut line_num = 1;
+    loop {
+        let mut buf: Vec<u8> = Vec::new();
+        let len = reader.read_until(b'\n', &mut buf);
+        assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        if buf.is_empty() {
+            break;
+        }
+        let aln = Alignment::from_gaf(&buf);
+        assert!(aln.is_ok(), "Failed to parse GAF line {}: {}", line_num, aln.unwrap_err());
+        result.push(aln.unwrap());
+        line_num += 1;
+    };
+
+    result
+
+}
+
+fn gaf_base_subgraph_queries() -> Vec<(SubgraphQuery, String)> {
+    vec![
+        (SubgraphQuery::nodes(vec![], 100, HaplotypeOutput::All), String::from("empty")),
+        (SubgraphQuery::nodes(vec![1000], 100, HaplotypeOutput::All), String::from("single component")),
+        (SubgraphQuery::nodes(vec![500, 1500], 100, HaplotypeOutput::All), String::from("two components")),
+    ]
+}
+
+fn validate_read_set(read_set: &ReadSet, subgraph: &Subgraph, all_reads: &[Alignment], name: &str, contained: bool) {
+    // Select the alignments that should be included in the read set.
+    let mut expected_reads = Vec::new();
+    for aln in all_reads {
+        let target_path = aln.target_path().unwrap();
+        if target_path.is_empty() {
+            continue;
+        }
+        let mut take = false;
+        for handle in target_path {
+            if subgraph.has_handle(*handle) {
+                take = true;
+            } else if contained {
+                take = false;
+                break;
+            }
+        }
+        if take {
+            let mut aln = aln.clone();
+            aln.optional.clear(); // We do not store unknown optional fields for the moment.
+            expected_reads.push(aln);
+        }
+    }
+    assert_eq!(read_set.len(), expected_reads.len(), "Wrong number of reads in read set for {}", name);
+
+    // GAF-base construction and read set extraction maintain order.
+    for (i, (aln, truth)) in read_set.iter().zip(expected_reads.iter()).enumerate() {
+        assert_eq!(aln, truth, "Wrong read {} for {}", i, name);
+    }
+
+    // Generate the expected GAF output.
+    let mut expected_gaf = Vec::new();
+    for aln in expected_reads {
+        let mut target_sequence = Vec::new();
+        let target_path = aln.target_path().unwrap();
+        for handle in target_path {
+            let record = read_set.nodes.get(handle);
+            assert!(record.is_some(), "Missing GBZ record for handle {} in {}", handle, name);
+            let record = record.unwrap();
+            target_sequence.extend_from_slice(record.sequence());
+        }
+        target_sequence = target_sequence[aln.path_interval.clone()].to_vec();
+        let gaf_line = aln.to_gaf(&target_sequence);
+        expected_gaf.extend_from_slice(&gaf_line);
+        expected_gaf.push(b'\n');
+    }
+
+    // Check the GAF output.
+    let mut gaf_output = Vec::new();
+    let result = read_set.to_gaf(&mut gaf_output);
+    assert!(result.is_ok(), "Failed to output GAF for {}: {}", name, result.unwrap_err());
+    assert_eq!(gaf_output.len(), expected_gaf.len(), "Wrong GAF output length for {}", name);
+    assert_eq!(gaf_output, expected_gaf, "Wrong GAF output for {}", name);
+}
+
+//-----------------------------------------------------------------------------
+
+// Tests for GAF-base.
+
+#[test]
+fn gaf_base_empty() {
+    let db_file = create_gaf_base("empty.gaf", "empty.gbwt");
+    let db = open_gaf_base(&db_file);
+    check_gaf_base(&db, 0, 0, true);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_plain_unidirectional() {
+    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt");
+    let db = open_gaf_base(&db_file);
+    check_gaf_base(&db, 2291, 12439, false);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_plain_bidirectional() {
+    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt");
+    let db = open_gaf_base(&db_file);
+    check_gaf_base(&db, 2324, 12439, true);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_gz_unidirectional() {
+    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt");
+    let db = open_gaf_base(&db_file);
+    check_gaf_base(&db, 2291, 12439, false);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_gz_bidirectional() {
+    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "bidirectional.gbwt");
+    let db = open_gaf_base(&db_file);
+    check_gaf_base(&db, 2324, 12439, true);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+//-----------------------------------------------------------------------------
+
+// Tests for ReadSet.
+
+fn test_read_set_gbz(gbwt_part: &'static str) {
+    // Load GBZ.
+    let graph = gaf_base_gbz();
+
+    // Build and open GAF-base.
+    let gaf_base_file = create_gaf_base("micb-kir3dl1_HG003.gaf", gbwt_part);
+    let gaf_base = open_gaf_base(&gaf_base_file);
+
+    // Parse the reads as a source of truth.
+    let all_reads = gaf_base_reads("micb-kir3dl1_HG003.gaf");
+
+    let queries = gaf_base_subgraph_queries();
+    for (query, name) in queries {
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_gbz(&graph, None, &query);
+        assert!(result.is_ok(), "Failed to extract subgraph for {}: {}", name, result.unwrap_err());
+
+        let overlapping = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &gaf_base, false);
+        assert!(overlapping.is_ok(), "Failed to extract overlapping reads for {}: {}", name, overlapping.unwrap_err());
+        let overlapping = overlapping.unwrap();
+        validate_read_set(&overlapping, &subgraph, &all_reads, &name, false);
+
+        let contained = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &gaf_base, true);
+        assert!(contained.is_ok(), "Failed to extract fully contained reads for {}: {}", name, contained.unwrap_err());
+        let contained = contained.unwrap();
+        validate_read_set(&contained, &subgraph, &all_reads, &name, true);
+    }
+
+    // Cleanup.
+    drop(gaf_base);
+    let _ = std::fs::remove_file(&gaf_base_file);
+}
+
+#[test]
+fn read_set_gbz_unidirectional() {
+    test_read_set_gbz("micb-kir3dl1_HG003.gbwt");
+}
+
+#[test]
+fn read_set_gbz_bidirectional() {
+    test_read_set_gbz("bidirectional.gbwt");
+}
+
+fn test_read_set_db(gbwt_part: &'static str) {
+    // Build and open GAF-base.
+    let gaf_base_file = create_gaf_base("micb-kir3dl1_HG003.gaf", gbwt_part);
+    let gaf_base = open_gaf_base(&gaf_base_file);
+
+    // Open GBZ-base.
+    let (gbz_base, gbz_base_file) = gaf_base_db();
+    let mut graph = create_interface(&gbz_base);
+
+    // Parse the reads as a source of truth.
+    let all_reads = gaf_base_reads("micb-kir3dl1_HG003.gaf");
+
+    let queries = gaf_base_subgraph_queries();
+    for (query, name) in queries {
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.from_db(&mut graph, &query);
+        assert!(result.is_ok(), "Failed to extract subgraph for {}: {}", name, result.unwrap_err());
+
+        let overlapping = ReadSet::new(GraphReference::Db(&mut graph), &subgraph, &gaf_base, false);
+        assert!(overlapping.is_ok(), "Failed to extract overlapping reads for {}: {}", name, overlapping.unwrap_err());
+        let overlapping = overlapping.unwrap();
+        validate_read_set(&overlapping, &subgraph, &all_reads, &name, false);
+
+        let contained = ReadSet::new(GraphReference::Db(&mut graph), &subgraph, &gaf_base, true);
+        assert!(contained.is_ok(), "Failed to extract fully contained reads for {}: {}", name, contained.unwrap_err());
+        let contained = contained.unwrap();
+        validate_read_set(&contained, &subgraph, &all_reads, &name, true);
+    }
+
+    // Cleanup.
+    drop(graph);
+    drop(gbz_base);
+    let _ = std::fs::remove_file(&gbz_base_file);
+    drop(gaf_base);
+    let _ = std::fs::remove_file(&gaf_base_file);
+}
+
+#[test]
+fn read_set_db_unidirectional() {
+    test_read_set_db("micb-kir3dl1_HG003.gbwt");
+}
+
+#[test]
+fn read_set_db_bidirectional() {
+    test_read_set_db("bidirectional.gbwt");
+}
+
+//-----------------------------------------------------------------------------

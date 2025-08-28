@@ -1,22 +1,22 @@
-//! GBZ-base: A SQLite database storing a GBZ graph.
-// FIXME: also GAF-base
+//! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
+// TODO: GBZ-base and GAF-base in separate files?
 
-use crate::Alignment;
-use crate::alignment::{QualityEncoder, TargetPath};
+use crate::{Alignment, AlignmentBlock, Subgraph};
+use crate::alignment::{Flags, TargetPath};
 use crate::utils;
 
+use std::collections::BTreeMap;
+use std::io::{BufRead, Write};
 use std::path::Path;
-use std::io::BufRead;
 use std::sync::{mpsc, Arc};
 use std::{fs, thread};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
-use gbwt::{GBWT, GBZ, Orientation, Pos, FullPathName};
+use gbwt::{FullPathName, Orientation, Pos, GBWT, GBZ};
 use gbwt::bwt::{BWT, Record};
 use gbwt::support;
 
-use simple_sds::raw_vector::RawVector;
 use simple_sds::serialize;
 
 #[cfg(test)]
@@ -129,18 +129,15 @@ impl GBZBase {
         })
     }
 
-    /// Returns the filename of the database.
-    pub fn filename(&self) -> Result<&str, String> {
-        self.connection.path().ok_or("No filename for the database".to_string())
+    /// Returns the filename of the database or an error if there is no filename.
+    pub fn filename(&self) -> Option<&str> {
+        self.connection.path()
     }
 
     /// Returns the size of the database file in a human-readable format.
     pub fn file_size(&self) -> Option<String> {
-        let filename = self.filename();
-        if filename.is_err() {
-            return None;
-        }
-        utils::file_size(filename.unwrap())
+        let filename = self.filename()?;
+        utils::file_size(filename)
     }
 
     /// Returns the version of the database.
@@ -429,19 +426,46 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME document (requirements for GBWT, GAF), examples, test, query interface
-// FIXME remember to test with empty paths
 /// A database connection to a GAF-base database.
+///
+/// This structure stores a database connection and some header information.
+/// In multi-threaded applications, each thread should have its own connection.
+/// A set of alignments overlapping with a subgraph can be extracted using the [`ReadSet`] structure.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{GAFBase, GAFBaseParams};
+/// use gbz_base::utils;
+/// use simple_sds::serialize;
+///
+/// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf.gz");
+/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let db_file = serialize::temp_file_name("gaf-base");
+///
+/// // Create the database.
+/// let params = GAFBaseParams::default();
+/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+/// assert!(db.is_ok());
+///
+/// // Now open it and check some statistics.
+/// let db = GAFBase::open(&db_file);
+/// assert!(db.is_ok());
+/// let db = db.unwrap();
+/// assert_eq!(db.nodes(), 2291);
+/// assert_eq!(db.alignments(), 12439);
+/// assert!(!db.bidirectional_gbwt());
+///
+/// drop(db);
+/// let _ = std::fs::remove_file(&db_file);
+/// ```
 #[derive(Debug)]
 pub struct GAFBase {
     connection: Connection,
     version: String,
     nodes: usize,
     alignments: usize,
-    sequences: usize,
-    prefix: String,
-    // Not in use yet
-    _quality_encoder: QualityEncoder,
+    bidirectional_gbwt: bool,
 }
 
 /// Using the database.
@@ -450,7 +474,7 @@ impl GAFBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base v0.1.0";
+    pub const VERSION: &'static str = "GAF-base v0.2.0";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -458,47 +482,11 @@ impl GAFBase {
     // Key for alignment count.
     const KEY_ALIGNMENTS: &'static str = "alignments";
 
-    // Key for sequence count.
-    const KEY_SEQUENCES: &'static str = "sequences";
+    // Key for bidirectional GBWT flag.
+    const KEY_BIDIRECTIONAL_GBWT: &'static str = "bidirectional_gbwt";
 
-    // Key for the common prefix of sequence names.
-    const KEY_PREFIX: &'static str = "name_prefix";
-
-    // Key for the alphabet of base quality values.
-    const KEY_QUALITY_VALUES: &'static str = "quality_values";
-
-    // Key for the canonical Huffman code lengths of base quality values.
-    const KEY_QUALITY_LENGTHS: &'static str = "quality_lengths";
-
-    // Key for the common prefix of sample names in GBWT tags.
-    // Will be stored in the database using `KEY_PREFIX`.
-    const KEY_GBWT_PREFIX: &'static str = "sample_prefix";
-
-    // Key for the alphabet of base quality values in GBWT tags.
-    // Will be stored in the database using `KEY_QUALITY_VALUES`.
-    const KEY_GBWT_QUALITY_VALUES: &'static str = "quality_values";
-
-    // Key for the canonical Huffman code lengths of base quality values in GBWT tags.
-    // Will be stored in the database using `KEY_QUALITY_LENGTHS`.
-    const KEY_GBWT_QUALITY_LENGTHS: &'static str = "quality_lengths";
-
-    // Parses the canonical Huffman code lengths.
-    fn parse_quality_lengths(value: &str) -> Result<Vec<(usize, usize)>, String> {
-        let mut result: Vec<(usize, usize)> = Vec::new();
-        for field in value.split(',') {
-            let code_len = field.parse::<usize>().map_err(|_|
-                format!("Invalid Huffman code length: {}", field)
-            )?;
-            if let Some(prev) = result.last_mut() {
-                if code_len == prev.0 {
-                    prev.1 += 1;
-                    continue;
-                }
-            }
-            result.push((code_len, 1));
-        }
-        Ok(result)
-    }
+    /// Default block size in alignments.
+    pub const BLOCK_SIZE: usize = 1000;
 
     /// Opens a connection to the database in the given file.
     ///
@@ -517,38 +505,25 @@ impl GAFBase {
         }
         let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
         let alignments = get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
-        let sequences = get_numeric_value(&mut get_tag, Self::KEY_SEQUENCES)?;
-        let prefix = get_string_value(&mut get_tag, Self::KEY_PREFIX)?;
-
-        let alphabet = get_string_value(&mut get_tag, Self::KEY_QUALITY_VALUES)?;
-        let code_lengths = get_string_value(&mut get_tag, Self::KEY_QUALITY_LENGTHS)?;
-        let dictionary = Self::parse_quality_lengths(&code_lengths)?;
-        let quality_encoder = QualityEncoder::new(alphabet.as_bytes(), &dictionary).ok_or(
-            String::from("Could not build a quality string encoder")
-        )?;
+        let bidirectional_gbwt = get_boolean_value(&mut get_tag, Self::KEY_BIDIRECTIONAL_GBWT)?;
 
         drop(get_tag);
         Ok(GAFBase {
             connection,
             version,
-            nodes, alignments, sequences,
-            prefix,
-            _quality_encoder: quality_encoder,
+            nodes, alignments, bidirectional_gbwt,
         })
     }
 
-    /// Returns the filename of the database.
-    pub fn filename(&self) -> Result<&str, String> {
-        self.connection.path().ok_or("No filename for the database".to_string())
+    /// Returns the filename of the database or an error if there is no filename.
+    pub fn filename(&self) -> Option<&str> {
+        self.connection.path()
     }
 
     /// Returns the size of the database file in a human-readable format.
     pub fn file_size(&self) -> Option<String> {
-        let filename = self.filename();
-        if filename.is_err() {
-            return None;
-        }
-        utils::file_size(filename.unwrap())
+        let filename = self.filename()?;
+        utils::file_size(filename)
     }
 
     /// Returns the version of the database.
@@ -566,18 +541,9 @@ impl GAFBase {
         self.alignments
     }
 
-    /// Returns the number of sequences in the database.
-    ///
-    /// Each sequence corresponds to one or more alignments.
-    pub fn sequences(&self) -> usize {
-        self.sequences
-    }
-
-    /// Returns the longest common prefix of sequence names.
-    ///
-    /// This prefix is stored only once to save space.
-    pub fn prefix(&self) -> &str {
-        &self.prefix
+    /// Returns `true` if the paths are stored in a bidirectional GBWT.
+    pub fn bidirectional_gbwt(&self) -> bool {
+        self.bidirectional_gbwt
     }
 }
 
@@ -587,104 +553,118 @@ impl GAFBase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
  struct AlignmentStats {
     pub alignments: usize,
+    pub start_bytes: usize,
     pub name_bytes: usize,
-    pub number_bytes: usize,
     pub quality_bytes: usize,
     pub difference_bytes: usize,
-    pub pair_bytes: usize,
+    pub flag_bytes: usize,
+    pub number_bytes: usize,
 }
+
+impl AlignmentStats {
+    pub fn new() -> Self {
+        Self {
+            alignments: 0,
+            start_bytes: 0,
+            name_bytes: 0,
+            quality_bytes: 0,
+            difference_bytes: 0,
+            flag_bytes: 0,
+            number_bytes: 0,
+        }
+    }
+}
+
+/// GAF-base construction parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GAFBaseParams {
+    /// Number of alignments in a block (database row).
+    pub block_size: usize,
+}
+
+impl Default for GAFBaseParams {
+    fn default() -> Self {
+        Self {
+            block_size: GAFBase::BLOCK_SIZE,
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
 
 /// Creating the database.
 impl GAFBase {
-    /// Creates a new database from the GBWT index in file `gbwt_file` and stores the database in file `db_file`.
+    /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
+    ///
+    /// The GBWT index can be forward-only or bidirectional.
+    /// Path `i` in the GBWT index corresponds to line `i` in the GAF file.
     ///
     /// # Arguments
     ///
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `gbwt_file`: GBWT file storing the target paths.
     /// * `db_file`: Output database file.
+    /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
     /// Returns an error if the input files do not exist or the database already exists.
-    /// Also returns an error if the GBWT index does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(gaf_file: P, gbwt_file: Q, db_file: R) -> Result<(), String> {
+    pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
+        gaf_file: P, gbwt_file: Q, db_file: R,
+        params: &GAFBaseParams
+    ) -> Result<(), String> {
         eprintln!("Loading GBWT index {}", gbwt_file.as_ref().display());
         let index: Arc<GBWT> = Arc::new(serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?);
-        Self::create(gaf_file, index, db_file)
+        Self::create(gaf_file, index, db_file, params)
     }
 
-    /// Checks if the GBWT index contains sufficient metadata.
+    /// Creates a new database in file `filename` from the given [`GBWT`] index.
     ///
-    /// Returns an error if there is no metadata.
-    /// Also returns an error if any of the following is missing:
-    ///
-    /// * Path names.
-    /// * Sample names.
-    /// * Tag storing the longest common prefix of sample names.
-    /// * Tag storing the alphabet of base quality values.
-    pub fn check_gbwt_metadata(index: &GBWT) -> Result<(), String> {
-        let metadata = index.metadata().ok_or(
-            String::from("The GBWT index does not contain metadata")
-        )?;
-        if !metadata.has_path_names() {
-            return Err("The metadata does not contain path names".to_string());
-        }
-        if !metadata.has_sample_names() {
-            return Err("The metadata does not contain sample names".to_string());
-        }
-
-        let tags = index.tags();
-        if !tags.contains_key(Self::KEY_GBWT_PREFIX) {
-            return Err("The GBWT index does not contain a sample name prefix".to_string());
-        }
-        if !tags.contains_key(Self::KEY_GBWT_QUALITY_VALUES) {
-            return Err("The GBWT index does not contain base quality values".to_string());
-        }
-        if !tags.contains_key(Self::KEY_GBWT_QUALITY_LENGTHS) {
-            return Err("The GBWT index does not contain Huffman code lengths for base quality values".to_string());
-        }
-
-        Ok(())
-    }
-
-    /// Creates a new database in file `filename` from the given GBWT index.
+    /// The GBWT index can be forward-only or bidirectional.
+    /// Path `i` in the GBWT index corresponds to line `i` in the GAF file.
     ///
     /// # Arguments
     ///
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `index`: GBWT index storing the target paths.
     /// * `db_file`: Output database file.
+    /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
     /// Returns an error if the GAF file does not exist or if the database already exists.
-    /// Also returns an error if the GBWT index does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(gaf_file: P, index: Arc<GBWT>, db_file: Q) -> Result<(), String> {
+    pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(
+        gaf_file: P, index: Arc<GBWT>, db_file: Q,
+        params: &GAFBaseParams
+    ) -> Result<(), String> {
         eprintln!("Creating database {}", db_file.as_ref().display());
         if utils::file_exists(&db_file) {
             return Err(format!("Database {} already exists", db_file.as_ref().display()));
         }
-        Self::check_gbwt_metadata(&index)?;
 
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
-        let (prefix, quality_encoder) = Self::insert_tags(&index, nodes, &mut connection)?;
+        Self::insert_tags(&index, nodes, &mut connection)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
         let gaf_file = utils::open_file(gaf_file)?;
-        Self::insert_alignments(gaf_file, index, connection, prefix.len(), quality_encoder)?;
+        Self::insert_alignments(index, gaf_file, connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
     }
 
+    // Returns the number of paths / alignments in the GBWT index.
+    fn gbwt_paths(index: &GBWT) -> usize {
+        if index.is_bidirectional() { index.sequences() / 2 } else { index.sequences() }
+    }
+
     // Returns (prefix, quality encoder).
-    fn insert_tags(index: &GBWT, nodes: usize, connection: &mut Connection) -> Result<(String, QualityEncoder), String> {
+    fn insert_tags(index: &GBWT, nodes: usize, connection: &mut Connection) -> Result<(), String> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -696,15 +676,7 @@ impl GAFBase {
             (),
         ).map_err(|x| x.to_string())?;
 
-        let tags = index.tags();
-        let prefix = tags.get(Self::KEY_GBWT_PREFIX).unwrap();
-        let quality_values = tags.get(Self::KEY_GBWT_QUALITY_VALUES).unwrap();
-        let quality_lengths = tags.get(Self::KEY_GBWT_QUALITY_LENGTHS).unwrap();
-        let dictionary = Self::parse_quality_lengths(quality_lengths)?;
-        let quality_encoder = QualityEncoder::new(quality_values.as_bytes(), &dictionary).ok_or(
-            String::from("Could not build a quality string encoder")
-        )?;
-
+        // TODO: Do we want to include GBWT tags?
         // Insert header and selected tags.
         let mut inserted = 0;
         let transaction = connection.transaction().map_err(|x| x.to_string())?;
@@ -713,24 +685,19 @@ impl GAFBase {
                 "INSERT INTO Tags(key, value) VALUES (?1, ?2)"
             ).map_err(|x| x.to_string())?;
 
-            let metadata = index.metadata().unwrap();
+            let alignments = Self::gbwt_paths(index);
             insert.execute((Self::KEY_VERSION, Self::VERSION)).map_err(|x| x.to_string())?;
             insert.execute((Self::KEY_NODES, nodes)).map_err(|x| x.to_string())?;
-            insert.execute((Self::KEY_ALIGNMENTS, metadata.paths())).map_err(|x| x.to_string())?;
-            insert.execute((Self::KEY_SEQUENCES, metadata.samples())).map_err(|x| x.to_string())?;
+            insert.execute((Self::KEY_ALIGNMENTS, alignments)).map_err(|x| x.to_string())?;
+            let bidirectional: usize = if index.is_bidirectional() { 1 } else { 0 };
+            insert.execute((Self::KEY_BIDIRECTIONAL_GBWT, bidirectional)).map_err(|x| x.to_string())?;
             inserted += 4;
-
-            insert.execute((Self::KEY_PREFIX, prefix)).map_err(|x| x.to_string())?;
-            insert.execute((Self::KEY_QUALITY_VALUES, quality_values)).map_err(|x| x.to_string())?;
-            insert.execute((Self::KEY_QUALITY_LENGTHS, quality_lengths)).map_err(|x| x.to_string())?;
-            inserted += 3;
         }
         transaction.commit().map_err(|x| x.to_string())?;
 
         eprintln!("Inserted {} key-value pairs", inserted);
 
-
-        Ok((prefix.clone(), quality_encoder))
+        Ok(())
     }
 
     // Returns the number of nodes in the graph.
@@ -771,15 +738,7 @@ impl GAFBase {
         Ok(inserted / 2)
     }
 
-    fn insert_alignments(
-        gaf_file: Box<dyn BufRead>, index: Arc<GBWT>, connection: Connection,
-        lcp: usize, quality_encoder: QualityEncoder
-    ) -> Result<(), String> {
-        eprintln!("Building structures for mapping alignments to GBWT paths");
-        let metadata = index.metadata().unwrap();
-        let paths_by_sample = Alignment::paths_by_sample(metadata)?;
-        let mut used_paths = RawVector::with_len(metadata.paths(), false);
-
+    fn insert_alignments(index: Arc<GBWT>, gaf_file: Box<dyn BufRead>, connection: Connection, params: &GAFBaseParams) -> Result<(), String> {
         eprintln!("Inserting alignments");
         let mut gaf_file = gaf_file;
         let mut connection = connection;
@@ -789,50 +748,60 @@ impl GAFBase {
         // `start_node` is a foreign key to `Nodes`, but we do not enforce that for performance reasons.
         connection.execute(
             "CREATE TABLE Alignments (
-                handle INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                start_node INTEGER NOT NULL,
-                numbers BLOB NOT NULL,
-                quality BLOB,
-                difference BLOB,
-                pair BLOB
+                min_handle INTEGER,
+                max_handle INTEGER CHECK (min_handle <= max_handle),
+                alignments INTEGER NOT NULL,
+                read_length INTEGER,
+                gbwt_starts BLOB,
+                names BLOB,
+                quality_strings BLOB,
+                difference_strings BLOB,
+                flags BLOB,
+                numbers BLOB
             ) STRICT",
             (),
         ).map_err(|x| x.to_string())?;
 
-        // The main thread parses the GAF file and sends the alignments to another thread that sets the relative information.
-        // That thread sends the alignments to a third thread that inserts them into the database.
+        // TODO: Use rtree?
+        // Create indexes for min/max nodes.
+        connection.execute(
+            "CREATE INDEX AlignmentNodeInterval
+                ON Alignments(min_handle, max_handle)",
+            (),
+        ).map_err(|x| x.to_string())?;
+
+        // The main thread parses the GAF file and sends blocks of alignments to an encoder thread.
+        // That thread sends the encoded blocks to a third thread that inserts them into the database.
         // If something fails within a thread, it sends an error message to the next thread and stops.
         // If a thread receives an error message, it passes it through and stops.
-        let (to_relative, from_parser) = mpsc::sync_channel(4);
-        let (to_insert, from_relative) = mpsc::sync_channel(4);
+        let (to_encoder, from_parser) = mpsc::sync_channel(4);
+        let (to_insert, from_encoder) = mpsc::sync_channel(4);
         let (to_report, from_insert) = mpsc::sync_channel(1);
 
-        // Relative information thread.
+        // Encoder thread.
         let gbwt_index = index.clone();
-        let relative_thread = thread::spawn(move || {
-            let mut line_num: usize = 1;
+        let encoder_thread = thread::spawn(move || {
+            let mut alignment_id = 0;
             loop {
                 // This can only fail if the sender is disconnected.
                 let block: Result<Vec<Alignment>, String> = from_parser.recv().unwrap();
                 match block {
-                    Ok(mut block) => {
+                    Ok(block) => {
+                        let encoded = AlignmentBlock::new(&block, &gbwt_index, alignment_id);
+                        match encoded {
+                            Ok(data) => {
+                                let _ = to_insert.send(Ok(data));
+                            },
+                            Err(message) => {
+                                let _ = to_insert.send(Err(message));
+                                return;
+                            }
+                        }
+                        alignment_id += block.len();
                         if block.is_empty() {
                             // An empty block indicates that we are done.
-                            let _ = to_insert.send(Ok(block));
                             return;
                         }
-                        for aln in block.iter_mut() {
-                            let result = aln.set_relative_information(
-                                &gbwt_index, lcp, &paths_by_sample, Some(&mut used_paths)
-                            );
-                            if let Err(message) = result {
-                                let _ = to_insert.send(Err(format!("Failed to match alignment {} with a GBWT path: {}", line_num, message)));
-                                return;
-                            };
-                            line_num += 1;
-                        }
-                        let _ = to_insert.send(Ok(block));
                     },
                     Err(message) => {
                         let _ = to_insert.send(Err(message));
@@ -853,8 +822,8 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(handle, name, start_node, numbers, quality, difference, pair)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                    Alignments(min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
                 let _ = to_report.send(Err(message));
@@ -862,54 +831,32 @@ impl GAFBase {
             }
             let mut insert = insert.unwrap();
 
-            let mut handle: usize = 0;
-            let mut statistics = AlignmentStats {
-                alignments: 0,
-                name_bytes: 0,
-                number_bytes: 0,
-                quality_bytes: 0,
-                difference_bytes: 0,
-                pair_bytes: 0,
-            };
+            let mut statistics = AlignmentStats::new();
             loop {
                 // This can only fail if the sender is disconnected.
-                let block: Result<Vec<Alignment>, String> = from_relative.recv().unwrap();
+                let block: Result<AlignmentBlock, String> = from_encoder.recv().unwrap();
                 match block {
                     Ok(block) => {
                         if block.is_empty() {
                             // An empty block indicates that we are done.
                             break;
                         }
-                        for aln in block.iter() {
-                            let name = &aln.name[lcp..];
-                            let start_node = if let TargetPath::StartPosition(start) = aln.path {
-                                start.node
-                            } else { unreachable!() };
-                            let numbers = aln.encode_numbers();
-                            let quality = aln.encode_base_quality(&quality_encoder);
-                            let difference = aln.encode_difference();
-                            let pair = aln.encode_pair(lcp);
-                            statistics.alignments += 1;
-                            statistics.name_bytes += name.len();
-                            statistics.number_bytes += numbers.len();
-                            if let Some(quality) = &quality {
-                                statistics.quality_bytes += quality.len();
-                            }
-                            if let Some(difference) = &difference {
-                                statistics.difference_bytes += difference.len();
-                            }
-                            if let Some(pair) = &pair {
-                                statistics.pair_bytes += pair.len();
-                            }
-                            let result = insert.execute((
-                                handle, name, start_node,
-                                numbers, quality, difference, pair
-                            )).map_err(|x| x.to_string());
-                            if let Err(message) = result {
-                                let _ = to_report.send(Err(message));
-                                return;
-                            }
-                            handle += 1;
+                        statistics.alignments += block.len();
+                        statistics.start_bytes += block.gbwt_starts.len();
+                        statistics.name_bytes += block.names.len();
+                        statistics.quality_bytes += block.quality_strings.len();
+                        statistics.difference_bytes += block.difference_strings.len();
+                        statistics.flag_bytes += block.flags.bytes();
+                        statistics.number_bytes += block.numbers.len();
+                        let result = insert.execute((
+                            block.min_handle, block.max_handle, block.alignments, block.read_length,
+                            block.gbwt_starts, block.names,
+                            block.quality_strings, block.difference_strings,
+                            block.flags.as_ref(), block.numbers
+                        )).map_err(|x| x.to_string());
+                        if let Err(message) = result {
+                            let _ = to_report.send(Err(message));
+                            return;
                         }
                     },
                     Err(message) => {
@@ -928,9 +875,10 @@ impl GAFBase {
             let _ = to_report.send(Ok(statistics));
         });
 
+        // TODO: Maybe we should start a new block when the min node changes and the block is large enough.
         // Main thread that parses the alignments.
-        const BLOCK_SIZE: usize = 1000;
-        let mut line_num: usize = 1;
+        let mut line_num: usize = 0;
+        let mut unaligned_block = false;
         let mut block: Vec<Alignment> = Vec::new();
         let mut failed = false;
         loop {
@@ -944,7 +892,7 @@ impl GAFBase {
                     }
                 },
                 Err(message) => {
-                    let _ = to_relative.send(Err(message));
+                    let _ = to_encoder.send(Err(message));
                     failed = true;
                     break;
                 },
@@ -954,14 +902,22 @@ impl GAFBase {
             );
             match aln {
                 Ok(aln) => {
+                    if aln.is_unaligned() != unaligned_block {
+                        // We have a new block.
+                        if !block.is_empty() {
+                            let _ = to_encoder.send(Ok(block));
+                            block = Vec::new();
+                        }
+                        unaligned_block = aln.is_unaligned();
+                    }
                     block.push(aln);
-                    if block.len() >= BLOCK_SIZE {
-                        let _ = to_relative.send(Ok(block));
+                    if block.len() >= params.block_size {
+                        let _ = to_encoder.send(Ok(block));
                         block = Vec::new();
                     }
                 },
                 Err(message) => {
-                    let _ = to_relative.send(Err(message));
+                    let _ = to_encoder.send(Err(message));
                     failed = true;
                     break;
                 },
@@ -973,25 +929,27 @@ impl GAFBase {
         // Then wait for the threads to finish and get the number of inserted alignments.
         if !failed {
             if !block.is_empty() {
-                let _ = to_relative.send(Ok(block));
+                let _ = to_encoder.send(Ok(block));
             }
-            let _ = to_relative.send(Ok(Vec::new()));
+            let _ = to_encoder.send(Ok(Vec::new()));
         }
-        let _ = relative_thread.join();
+        let _ = encoder_thread.join();
         let _ = insert_thread.join();
         let statistics = from_insert.recv().unwrap()?;
 
         eprintln!("Inserted information on {} alignments", statistics.alignments);
-        if statistics.alignments != metadata.paths() {
-            eprintln!("Warning: Expected {} alignments", metadata.paths());
+        let expected_alignments = Self::gbwt_paths(&index);
+        if statistics.alignments != expected_alignments {
+            eprintln!("Warning: Expected {} alignments", expected_alignments);
         }
         eprintln!(
-            "Field sizes: name {}, numbers {}, quality {}, difference {}, pair {}",
+            "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}",
+            utils::human_readable_size(statistics.start_bytes),
             utils::human_readable_size(statistics.name_bytes),
-            utils::human_readable_size(statistics.number_bytes),
             utils::human_readable_size(statistics.quality_bytes),
             utils::human_readable_size(statistics.difference_bytes),
-            utils::human_readable_size(statistics.pair_bytes)
+            utils::human_readable_size(statistics.flag_bytes),
+            utils::human_readable_size(statistics.number_bytes)
         );
 
         Ok(())
@@ -1413,7 +1371,321 @@ impl<'a> GraphInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
-// Helper functions for using the databases.
+/// A set of reads extracted from [`GAFBase`].
+///
+/// This is a counterpart to [`Subgraph`].
+/// Sets of reads fully contained in a subgraph or overlapping with it can be created using [`ReadSet::new`].
+/// The reads can be iterated over with [`ReadSet::iter`] and converted to GAF lines with [`ReadSet::to_gaf`].
+/// The reads will appear in the same order as in the database.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
+/// use gbz_base::{GAFBase, GAFBaseParams, ReadSet, GraphReference};
+/// use gbz_base::utils;
+/// use gbwt::GBZ;
+/// use simple_sds::serialize;
+///
+/// // Get an in-memory graph.
+/// let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+/// let graph = serialize::load_from(&gbz_file).unwrap();
+///
+/// // Extract a 100 bp subgraph around node 150.
+/// let nodes = vec![150];
+/// let query = SubgraphQuery::nodes(nodes, 100, HaplotypeOutput::Distinct);
+/// let mut subgraph = Subgraph::new();
+/// let _ = subgraph.from_gbz(&graph, None, &query).unwrap();
+///
+/// // Create a database of reads aligned to the graph.
+/// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let db_file = serialize::temp_file_name("gaf-base");
+/// let params = GAFBaseParams::default();
+/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+/// assert!(db.is_ok());
+///
+/// // Extract all reads fully within the subgraph.
+/// let db = GAFBase::open(&db_file);
+/// assert!(db.is_ok());
+/// let db = db.unwrap();
+/// let read_set = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &db, true);
+/// assert!(read_set.is_ok());
+/// let read_set = read_set.unwrap();
+/// assert_eq!(read_set.len(), 148);
+///
+/// // The extracted reads are aligned and fully within the subgraph.
+/// for aln in read_set.iter() {
+///     for handle in aln.target_path().unwrap() {
+///         assert!(subgraph.has_handle(*handle));
+///     }
+/// }
+///
+/// drop(db);
+/// let _ = std::fs::remove_file(&db_file);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadSet {
+    // GBZ records in the GAF GBWT, including sequence from the subgraph.
+    nodes: BTreeMap<usize, GBZRecord>,
+    reads: Vec<Alignment>,
+    blocks: usize,
+}
+
+impl ReadSet {
+    // Decompresses an alignment block from a row.
+    fn decompress_block(row: &Row) -> Result<Vec<Alignment>, String> {
+        let min_handle: Option<usize> = row.get(0).map_err(|x| x.to_string())?;
+        let max_handle: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
+        let alignments: usize = row.get(2).map_err(|x| x.to_string())?;
+        let read_length: Option<usize> = row.get(3).map_err(|x| x.to_string())?;
+        let gbwt_starts: Vec<u8> = row.get(4).map_err(|x| x.to_string())?;
+        let names: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
+        let quality_strings: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
+        let difference_strings: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
+        let flags: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
+        let numbers: Vec<u8> = row.get(9).map_err(|x| x.to_string())?;
+
+        let block = AlignmentBlock {
+            min_handle, max_handle, alignments, read_length,
+            gbwt_starts, names,
+            quality_strings, difference_strings,
+            flags: Flags::from(flags), numbers
+        };
+        block.decode()
+    }
+
+    // Replaces the GBWT starting position of the alignment with the path.
+    // Requires that the path overlaps with / is fully contained in the subgraph.
+    // If the path is valid, inserts all missing node records into the read set.
+    fn set_target_path(
+        &mut self, alignment: &mut Alignment, subgraph: &Subgraph,
+        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>,
+        contained: bool
+    ) -> Result<(), String> {
+        let mut pos = match alignment.path {
+            TargetPath::Path(_) => return Ok(()),
+            TargetPath::StartPosition(pos) => Some(pos),
+        };
+
+        let mut path = Vec::new();
+        let mut overlap = false;
+        while let Some(p) = pos {
+            if subgraph.has_handle(p.node) {
+                overlap = true;
+            } else if contained {
+                return Ok(()); // Not fully contained in the subgraph.
+            }
+
+            // Now get the record for the node.
+            let mut record = self.nodes.get(&p.node);
+            if record.is_none() {
+                let result = get_record(p.node)?;
+                self.nodes.insert(p.node, result);
+                record = self.nodes.get(&p.node);
+            }
+
+            // Navigate to the next position.
+            path.push(p.node);
+            let record = record.unwrap();
+            pos = record.to_gbwt_record().lf(p.offset);
+        }
+
+        // Set the target path in the alignment.
+        if overlap {
+            alignment.set_target_path(path);
+        }
+        Ok(())
+    }
+
+    // TODO: Better long read algorithm for the overlapping case: extend paths in a bidirectional GBWT.
+    /// Extracts a set of reads overlapping with the subgraph.
+    ///
+    /// The extracted reads will be in the same order as in the database.
+    /// That corresponds to the order in the original GAF file.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: A GBZ-compatible graph.
+    /// * `subgraph`: The subgraph used as the query region.
+    /// * `database`: A database storing reads aligned to the graph.
+    /// * `contained`: If `true`, only reads that are fully within the subgraph are returned.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any database errors.
+    /// Returns an error if an alignment cannot be decompressed.
+    pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, contained: bool) -> Result<Self, String> {
+        let mut read_set = ReadSet {
+            nodes: BTreeMap::new(),
+            reads: Vec::new(),
+            blocks: 0,
+        };
+
+        // Build a record from the databases.
+        let mut get_node = database.connection.prepare(
+            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
+        ).map_err(|x| x.to_string())?;
+        let mut graph = graph;
+        let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
+            // Get the edges and the BWT fragment from the GAF-base.
+            let gaf_result = get_node.query_row(
+                (handle,),
+                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
+                    let edge_bytes: Vec<u8> = row.get(0)?;
+                    let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
+                    let bwt: Vec<u8> = row.get(1)?;
+                    Ok((edges, bwt))
+                }
+            ).optional().map_err(|x| x.to_string())?;
+            if gaf_result.is_none() {
+                return Err(format!("Could not find the record for handle {} in GAF-base", handle));
+            }
+            let (edges, bwt) = gaf_result.unwrap();
+
+            // Get the sequence from the subgraph or from the GBZ-base.
+            let sequence = subgraph.sequence(handle);
+            let sequence = match sequence {
+                Some(seq) => seq.to_vec(),
+                None => {
+                    let gbz_record = graph.gbz_record(handle)?;
+                    gbz_record.sequence().to_vec()
+                }
+            };
+
+            unsafe {
+                Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence))
+            }
+        };
+
+        // Get the reads that may overlap with the subgraph.
+        let min_handle = subgraph.min_handle();
+        let max_handle = subgraph.max_handle();
+        let mut get_reads = database.connection.prepare(
+            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            FROM Alignments
+            WHERE min_handle <= ?1 AND max_handle >= ?2"
+        ).map_err(|x| x.to_string())?;
+        let mut rows = get_reads.query((max_handle, min_handle)).map_err(|x| x.to_string())?;
+        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+            let block = Self::decompress_block(row)?;
+            for mut alignment in block {
+                read_set.set_target_path(&mut alignment, subgraph, &mut get_record, contained)?;
+                if alignment.has_target_path() {
+                    read_set.reads.push(alignment);
+                }
+            }
+            read_set.blocks += 1;
+        }
+
+        Ok(read_set)
+    }
+
+    /// Returns the number of reads in the set.
+    pub fn len(&self) -> usize {
+        self.reads.len()
+    }
+
+    /// Returns `true` if the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.reads.is_empty()
+    }
+
+    /// Returns the number of alignment blocks decompressed when creating the read set.
+    pub fn blocks(&self) -> usize {
+        self.blocks
+    }
+
+    /// Returns the number of node records in the read set.
+    ///
+    /// Each record corresponds to an oriented node, and the opposite orientation may not be present.
+    /// This includes all node records encountered while tracing the alignments, even when the alignment was not included in the read set.
+    pub fn node_records(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Returns an iterator over the reads in the set.
+    pub fn iter(&self) -> impl Iterator<Item = &Alignment> {
+        self.reads.iter()
+    }
+
+    // Extracts the target sequence for the given alignment.
+    fn target_sequence(&self, alignment: &Alignment) -> Result<Vec<u8>, String> {
+        let target_path = alignment.target_path();
+        if target_path.is_none() {
+            return Ok(Vec::new());
+        }
+        let target_path = target_path.unwrap();
+
+        let mut sequence = Vec::new();
+        for handle in target_path{
+            let record = self.nodes.get(handle);
+            if record.is_none() {
+                return Err(format!("Read {}: Missing record for node handle {}", alignment.name, handle));
+            }
+            let record = record.unwrap();
+            sequence.extend_from_slice(record.sequence());
+        }
+
+        if sequence.len() != alignment.path_len {
+            return Err(format!(
+                "Read {}: Target path length {} does not match the expected length {}",
+                alignment.name, sequence.len(), alignment.path_len
+            ));
+        }
+        sequence = sequence[alignment.path_interval.clone()].to_vec();
+        Ok(sequence)
+    }
+
+    /// Serializes the read set in the GAF format.
+    ///
+    /// Returns an error if the target sequence for a read is invalid or cannot be determined.
+    /// Passes through any I/O errors.
+    pub fn to_gaf<W: Write>(&self, writer: &mut W) -> Result<(), String> {
+        for alignment in self.reads.iter() {
+            let target_sequence = self.target_sequence(alignment)?;
+            let mut line = alignment.to_gaf(&target_sequence);
+            line.push(b'\n');
+            writer.write_all(&line).map_err(|x| x.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// Helper types and functions for using the databases.
+
+/// A reference to a GBZ-compatible graph.
+///
+/// Graph operations with a [`GBZ`] graph take an immutable reference to the graph.
+/// The corresponding operations with GBZ-base using [`GraphInterface`] take a mutable reference instead.
+/// This wrapper can be created on demand to encapsulate a reference to either type of graph.
+pub enum GraphReference<'reference, 'graph> {
+    /// A [`GBZ`] graph.
+    Gbz(&'reference GBZ),
+    /// A [`GraphInterface`].
+    Db(&'reference mut GraphInterface<'graph>),
+}
+
+impl<'reference, 'graph> GraphReference<'reference, 'graph> {
+    /// Returns the record for the oriented node corresponding to the given handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the handle does not exist in the graph.
+    /// Passes through any errors from the graph implementation.
+    pub fn gbz_record(&mut self, handle: usize) -> Result<GBZRecord, String> {
+        match self {
+            GraphReference::Gbz(gbz) => {
+                GBZRecord::from_gbz(gbz, handle).ok_or_else(|| format!("The graph does not contain handle {}", handle))
+            },
+            GraphReference::Db(db) => {
+                db.get_record(handle)?.ok_or_else(|| format!("The graph does not contain handle {}", handle))
+            },
+        }
+    }
+}
 
 /// Returns the starting position of the given path in the given orientation.
 ///
@@ -1484,6 +1756,17 @@ fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, Stri
 fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
     let value = get_string_value(statement, key)?;
     value.parse::<usize>().map_err(|x| x.to_string())
+}
+
+// Executes the statement, which is expected to return a single string value.
+// Then returns the value as a boolen flag.
+fn get_boolean_value(statement: &mut Statement, key: &str) -> Result<bool, String> {
+    let value = get_string_value(statement, key)?;
+    match value.as_str() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(format!("Invalid boolean value for {}: {}", key, value))
+    }
 }
 
 //-----------------------------------------------------------------------------

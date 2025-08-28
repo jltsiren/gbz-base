@@ -363,13 +363,29 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
     assert_eq!(subgraph.paths(), path_count, "Wrong number of paths for {}", test_case);
 
     // Minimum and maximum node ids, assuming that `true_nodes` is sorted.
-    if !true_nodes.is_empty() {
-        assert_eq!(subgraph.min_node(), true_nodes.first().copied(), "Wrong minimum node id for {}", test_case);
-        assert_eq!(subgraph.max_node(), true_nodes.last().copied(), "Wrong maximum node id for {}", test_case);
+    assert_eq!(subgraph.min_node(), true_nodes.first().copied(), "Wrong minimum node id for {}", test_case);
+    let min_handle = match true_nodes.first() {
+        Some(&node) => Some(support::encode_node(node, Orientation::Forward)),
+        None => None,
+    };
+    assert_eq!(subgraph.min_handle(), min_handle, "Wrong minimum handle for {}", test_case);
+    assert_eq!(subgraph.max_node(), true_nodes.last().copied(), "Wrong maximum node id for {}", test_case);
+    let max_handle = match true_nodes.last() {
+        Some(&node) => Some(support::encode_node(node, Orientation::Reverse)),
+        None => None,
+    };
+    assert_eq!(subgraph.max_handle(), max_handle, "Wrong maximum handle for {}", test_case);
+
+    // Iterators.
+    assert!(subgraph.node_iter().eq(true_nodes.iter().copied()), "Wrong node ids for {}", test_case);
+    let mut true_handles = Vec::new();
+    for node_id in true_nodes.iter() {
+        true_handles.push(support::encode_node(*node_id, Orientation::Forward));
+        true_handles.push(support::encode_node(*node_id, Orientation::Reverse));
     }
+    assert!(subgraph.handle_iter().eq(true_handles.iter().copied()), "Wrong handles for {}", test_case);
 
     // Node ids and sequences.
-    assert!(subgraph.node_iter().eq(true_nodes.iter().copied()), "Wrong node ids for {}", test_case);
     for node_id in graph.node_iter() {
         if true_nodes.contains(&node_id) {
             assert!(subgraph.has_node(node_id), "Subgraph {} does not contain node {}", test_case, node_id);
@@ -615,9 +631,7 @@ fn random_nodes() {
             subgraph.remove_node(node_id);
         } else {
             selected.insert(node_id);
-            let result = subgraph.add_node(node_id, &mut |handle| {
-                GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-            });
+            let result = subgraph.add_node_from_gbz(&graph, node_id);
             if let Err(err) = result {
                 panic!("Failed to add node {}: {}", node_id, err);
             }
@@ -683,9 +697,7 @@ fn manual_gbz_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let graph_pos = reference_path.as_ref().unwrap().0.graph_pos();
-                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -697,17 +709,13 @@ fn manual_gbz_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let start_pos = reference_path.as_ref().unwrap().0;
-                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
             }
             QueryType::Nodes(nodes) => {
-                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -746,10 +754,7 @@ fn manual_db_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let graph_pos = reference_path.as_ref().unwrap().0.graph_pos();
-                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
-                    let record = graph.get_record(handle)?;
-                    record.ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_position(GraphReference::Db(&mut graph), graph_pos, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -761,19 +766,13 @@ fn manual_db_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let start_pos = reference_path.as_ref().unwrap().0;
-                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
-                    let record = graph.get_record(handle)?;
-                    record.ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_interval(GraphReference::Db(&mut graph), start_pos, *len, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
             }
             QueryType::Nodes(nodes) => {
-                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
-                    let record = graph.get_record(handle)?;
-                    record.ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_nodes(GraphReference::Db(&mut graph), nodes, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -808,15 +807,11 @@ fn duplicate_gbz_queries() {
                     panic!("Query {} failed: {}", query, err);
                 }
                 let graph_pos = result.unwrap().0.graph_pos();
-                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.around_position(graph_pos, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context);
                 match result {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
@@ -828,30 +823,22 @@ fn duplicate_gbz_queries() {
                     panic!("Query {} failed: {}", query, err);
                 }
                 let start_pos = result.unwrap().0;
-                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.around_interval(start_pos, *len, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context);
                 match result {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
                 }
             }
             QueryType::Nodes(nodes) => {
-                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.around_nodes(nodes, query.context, &mut |handle| {
-                    GBZRecord::from_gbz(&graph, handle).ok_or(format!("The graph does not contain handle {}", handle))
-                });
+                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context);
                 match result {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),

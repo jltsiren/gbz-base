@@ -1,38 +1,129 @@
 //! Structures for representing sequence to graph alignments.
 //!
 //! An [`Alignment`] object represents the alignment of a query sequence to a target path in a graph.
-//! It corresponds to a single line in a GAF file or a row in table `Alignments` in a [`crate::GAFBase`].
+//! It corresponds to a single line in a GAF file.
+//!
+//! An [`AlignmentBlock`] object represents an ordered collection of alignments, using column-based compression.
+//! It corresponds to a row in table `Alignments` in a [`crate::GAFBase`].
 //!
 //! The GAF format is a text-based format for representing sequence alignments to a graph.
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
+//!
+//! # Assumptions
+//!
+//! Some details of the GAF format are not well documented, and this implementation makes some assumptions.
+//!
+//! * Softclips are included either in both the query interval and the difference string or in neither.
+//! * If a difference string is present, it overrides query/path interval ends, the number of matches, and alignment block length.
+//! * Alignment block length is the sum of matches, mismatches, insertions, and deletions.
+//!
+//! # Supported optional fields
+//!
+//! * `AS:i`: Alignment score.
+//! * `bq:Z`: Base quality values for the query sequence.
+//! * `cs:Z`: Difference string for the alignment.
+//! * `pd:B`: Properly paired flag.
+//! * `fn:Z`: Name of the next read in the pair.
+//! * `fp:Z`: Name of the previous read in the pair.
+//!
+//! Only matches, mismatches, insertions, and deletions are supported in the difference string.
+//! Matches are represented as a match length rather than as the matching sequence.
+//!
+//! The order of optional fields is not preserved.
+//! Compression with [`AlignmentBlock`] discards unsupported optional fields.
 
-use crate::{db, utils};
+use crate::formats::{self, TypedField};
+use crate::utils;
 
-use std::fmt::Display;
+use std::io::{Read, Write};
 use std::ops::Range;
 use std::str;
 
-use gbwt::{GBWT, Metadata, Orientation, Pos};
-use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
+use zstd::stream::Encoder as ZstdEncoder;
+use zstd::stream::Decoder as ZstdDecoder;
 
-use simple_sds::ops::Select;
-use simple_sds::raw_vector::{RawVector, AccessRaw, PushRaw};
-use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
-use simple_sds::bits;
+use gbwt::{GBWT, Orientation, Pos};
+use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 #[cfg(test)]
 mod tests;
 
 //-----------------------------------------------------------------------------
 
-// FIXME examples
 /// An alignment between a query sequence and a target path in a graph.
 ///
 /// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
 /// When the alignment is built from a GAF line, the target path is stored explicitly.
 /// For alignments stored in a database, only the GBWT starting position is stored.
-/// See [`TargetPath`] for details and [`Self::set_relative_information`] for conversion.
+/// See [`TargetPath`] for details.
+///
+/// A GAF line can be converted to an `Alignment` object with [`Alignment::from_gaf`].
+/// An `Alignment` object can be serialized as a GAF line with [`Alignment::to_gaf`].
+/// The conversion can be lossy (see [`crate::alignment`] for details).
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::Alignment;
+/// use gbwt::Orientation;
+/// use gbwt::support;
+///
+/// // Unnamed empty sequence.
+/// let empty = Alignment::new();
+/// assert!(empty.name.is_empty());
+/// assert_eq!(empty.seq_len, 0);
+/// assert!(empty.is_unaligned());
+///
+/// // Construct a GAF line.
+/// let name = "query";
+/// let seq_len = 7;
+/// let seq_interval = 0..6;
+/// let path = ">1<2>3";
+/// let path_len = 8;
+/// let path_interval = 2..8;
+/// let matches = 5;
+/// let edits = 1;
+/// let mapq = 60;
+/// let line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+///     name,
+///     seq_len, seq_interval.start, seq_interval.end,
+///     '+', path,
+///     path_len, path_interval.start, path_interval.end,
+///     matches, matches + edits, mapq
+/// );
+///
+/// // Create an alignment from the line.
+/// let aln = Alignment::from_gaf(line.as_bytes()).unwrap();
+/// assert_eq!(aln.name, name);
+/// assert_eq!(aln.seq_len, seq_len);
+/// assert_eq!(aln.seq_interval, seq_interval);
+/// assert!(aln.has_target_path());
+/// let path = vec!(
+///     support::encode_node(1, Orientation::Forward),
+///     support::encode_node(2, Orientation::Reverse),
+///     support::encode_node(3, Orientation::Forward)
+/// );
+/// assert_eq!(aln.target_path(), Some(path.as_ref()));
+/// assert_eq!(aln.path_len, path_len);
+/// assert_eq!(aln.path_interval, path_interval);
+/// assert_eq!(aln.matches, matches);
+/// assert_eq!(aln.edits, edits);
+/// assert_eq!(aln.mapq, Some(mapq));
+///
+/// // All optional fields are missing.
+/// assert!(aln.score.is_none());
+/// assert!(aln.base_quality.is_empty());
+/// assert!(aln.difference.is_empty());
+/// assert!(aln.pair.is_none());
+/// assert!(aln.optional.is_empty());
+///
+/// // Convert back to GAF.
+/// let _query_sequence =   b"GATTACA"; // Not used yet.
+/// let target_sequence = b"GAGATCAC".to_vec();
+/// let from_aln = aln.to_gaf(&target_sequence);
+/// assert_eq!(&from_aln, line.as_bytes());
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alignment {
     /// Name of the query sequence.
@@ -56,16 +147,39 @@ pub struct Alignment {
     /// Alignment score.
     pub score: Option<isize>,
     /// Base quality values for the query sequence.
-    pub base_quality: Option<Vec<u8>>,
-    /// Difference string.
-    pub difference: Option<Vec<Difference>>,
+    pub base_quality: Vec<u8>,
+    /// Difference string, or an empty vector if not present.
+    pub difference: Vec<Difference>,
     /// Information about the paired alignment.
     pub pair: Option<PairedRead>,
     /// Optional typed fields that have not been interpreted.
     pub optional: Vec<TypedField>,
 }
 
-/// Construction from a GAF line and matching the alignment with a GBWT path.
+impl Default for Alignment {
+    fn default() -> Self {
+        Alignment {
+            name: String::new(),
+            seq_len: 0,
+            seq_interval: 0..0,
+            path: TargetPath::Path(Vec::new()),
+            path_len: 0,
+            path_interval: 0..0,
+            matches: 0,
+            edits: 0,
+            mapq: None,
+            score: None,
+            base_quality: Vec::new(),
+            difference: Vec::new(),
+            pair: None,
+            optional: Vec::new(),
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+/// Construction; conversions between GAF lines and `Alignment` objects.
 impl Alignment {
     // Number of mandatory fields in a GAF line.
     const MANDATORY_FIELDS: usize = 12;
@@ -75,6 +189,11 @@ impl Alignment {
 
     // The field is empty and the value is missing; typically used with unaligned sequences.
     const MISSING_VALUE: [u8; 1] = [b'*'];
+
+    /// Creates an empty alignment.
+    pub fn new() -> Self {
+        Alignment::default()
+    }
 
     // Parses a string field from a GAF field.
     fn parse_string(field: &[u8], field_name: &str) -> Result<String, String> {
@@ -218,8 +337,8 @@ impl Alignment {
 
         // Optional fields.
         let mut score = None;
-        let mut base_quality = None;
-        let mut difference = None;
+        let mut base_quality = Vec::new();
+        let mut difference = Vec::new();
         let mut pair = None;
         let mut properly_paired = None;
         let mut optional = Vec::new();
@@ -233,17 +352,16 @@ impl Alignment {
                     score = Some(value);
                 },
                 TypedField::String([b'b', b'q'], value) => {
-                    if base_quality.is_some() {
+                    if !base_quality.is_empty() {
                         return Err(String::from("Multiple base quality fields"));
                     }
-                    base_quality = Some(value.to_vec());
+                    base_quality = value;
                 },
                 TypedField::String([b'c', b's'], value) => {
-                    if difference.is_some() {
+                    if !difference.is_empty() {
                         return Err(String::from("Multiple difference fields"));
                     }
-                    let ops = Difference::parse_normalized(&value)?;
-                    difference = Some(ops);
+                    difference = Difference::parse_normalized(&value)?;
                 },
                 TypedField::Bool([b'p', b'd'], value) => {
                     if properly_paired.is_some() {
@@ -268,7 +386,7 @@ impl Alignment {
         let mut path_interval = match path_interval {
             Ok(interval) => interval,
             Err(_) => {
-                if difference.is_some() {
+                if !difference.is_empty() {
                     let target_start = Self::parse_usize(fields[7], "target interval start")?;
                     target_start..target_start
                 } else {
@@ -278,8 +396,8 @@ impl Alignment {
         };
 
         // If we have a difference string, recalculate the redundant numerical fields.
-        if let Some(ops) = difference.as_ref() {
-            let (query_len, target_len, num_matches, num_edits) = Difference::stats(ops);
+        if !difference.is_empty() {
+            let (query_len, target_len, num_matches, num_edits) = Difference::stats(&difference);
             seq_interval.end = seq_interval.start + query_len;
             path_interval.end = path_interval.start + target_len;
             matches = num_matches;
@@ -302,131 +420,92 @@ impl Alignment {
         })
     }
 
-    /// Returns the list of all path identifiers in GBWT metadata, sorted by sample identifier.
+    // TODO: Should we take the sequence for the full target path instead?
+    /// Converts the alignment to a GAF line.
     ///
-    /// Path identifiers are returned as [`u32`], because a GBWT index cannot have more than [`u32::MAX`] paths.
-    /// Also returns a multiset [`SparseVector`] that maps sample identifiers to intervals in the returned list.
-    /// The interval for sample identifier `i` is `select(i)..select(i + 1)`.
-    /// Note that there is a sentinel to make the general formula work for the last sample.
+    /// If the target path is stored as a GBWT starting position, it will be missing (`*`).
+    /// The path can be set with [`Alignment::set_target_path`] or extracted from a GBWT index with [`Alignment::extract_target_path`].
+    /// The returned line does not end with an endline character.
     ///
-    /// Returns an error if something goes wrong.
-    /// [`crate::GAFBase::check_gbwt_metadata`] has more detailed error messages for insufficient metadata.
-    ///
-    /// # Panics
-    ///
-    /// May panic during [`SparseVector`] construction if the metadata is in an inconsistent state.
-    pub fn paths_by_sample(metadata: &Metadata) -> Result<(Vec<u32>, SparseVector), String> {
-        let mut sample_path: Vec<(u32, u32)> = metadata.path_iter().enumerate().map(|(id, name)| {
-            (name.sample() as u32, id as u32)
-        }).collect();
-        sample_path.sort_unstable();
+    /// A target sequence is necessary for reconstructing the difference string, if present.
+    /// It must correspond only to `path_interval` of the target path.
+    pub fn to_gaf(&self, target_sequence: &[u8]) -> Vec<u8> {
+        let mut result = Vec::new();
 
-        let mut builder = SparseBuilder::multiset(metadata.paths() + 1, metadata.samples() + 1);
-        let mut sample_id = 0;
-        for (offset, (sample, _)) in sample_path.iter().enumerate() {
-            while sample_id <= *sample {
-                builder.set(offset);
-                sample_id += 1;
-            }
-        }
-        while (sample_id as usize) <= metadata.samples() {
-            builder.set(metadata.paths());
-            sample_id += 1;
-        }
-        let path_ids: Vec<u32> = sample_path.iter().map(|(_, path)| *path).collect();
-        let path_index = SparseVector::try_from(builder).map_err(|err| {
-            format!("Failed to build a sample-to-path index: {}", err)
-        })?;
+        result.extend_from_slice(self.name.as_bytes());
 
-        Ok((path_ids, path_index))
-    }
+        // Coordinates in the query sequence.
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.seq_len);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.seq_interval.start);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.seq_interval.end);
 
-    // TODO: We could simplify this greatly by storing GAF line number as fragment id in the path name.
-    // Replaces target path with its starting position in the given GBWT index.
-    fn set_target_start(&mut self,
-        index: &GBWT, sample_id: usize,
-        paths_by_sample: &(Vec<u32>, SparseVector),
-        used_paths: Option<&mut RawVector>
-    ) -> Result<(), String> {
-        if let TargetPath::StartPosition(_) = self.path {
-            return Ok(());
-        }
-        let (path_ids, path_index) = paths_by_sample;
-
-        let mut iter = path_index.select_iter(sample_id);
-        let start = iter.next().unwrap_or((0, path_ids.len())).1;
-        let end = iter.next().unwrap_or((0, path_ids.len())).1;
-
-        // Check the paths in the interval.
-        for &path_id in path_ids[start..end].iter() {
-            // Is it still available?
-            let path_id = path_id as usize;
-            if let Some(used) = used_paths.as_ref() {
-                if used.bit(path_id) {
-                    continue;
+        // Target path; always in the forward orientation.
+        result.push(b'\t');
+        result.push(b'+');
+        result.push(b'\t');
+        match &self.path {
+            TargetPath::Path(path) => {
+                if path.is_empty() {
+                    result.extend_from_slice(&Self::MISSING_VALUE);
+                } else {
+                    formats::append_walk(&mut result, path);
                 }
-            }
-
-            // Does it match the query sequence?
-            let iter = index.sequence(support::encode_path(path_id, Orientation::Forward));
-            if iter.is_none() {
-                continue;
-            }
-            let gbwt_path = iter.unwrap();
-            let query_path = match self.path {
-                TargetPath::Path(ref path) => path.iter().copied(),
-                _ => unreachable!(),
-            };
-            if !gbwt_path.eq(query_path) {
-                continue;
-            }
-
-            // Mark the path as used and set the start position.
-            if let Some(used) = used_paths {
-                used.set_bit(path_id, true);
-            }
-            let start_pos = db::path_start(index, path_id, Orientation::Forward);
-            self.path = TargetPath::StartPosition(start_pos);
-            return Ok(());
+            },
+            TargetPath::StartPosition(_) => {
+                result.extend_from_slice(&Self::MISSING_VALUE);
+            },
         }
 
-        Err(format!("Could not match query sequence {} to an unused GBWT path (interval: {}..{})", self.name, start, end))
-    }
+        // Coordinates in the target path.
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.path_len);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.path_interval.start);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.path_interval.end);
 
-    /// Replaces the explicitly stored data with data relative to the given GBWT index.
-    ///
-    /// Replaces the target path with a starting position.
-    /// No effect if the data is already relative to a GBWT index.
-    /// Returns an error if the replacement fails for any reason.
-    /// [`crate::GAFBase::check_gbwt_metadata`] has more detailed error messages for insufficient metadata.
-    ///
-    /// # Arguments
-    ///
-    /// * `index`: The GBWT index.
-    /// * `prefix_len`: Length of the common prefix of query sequence names.
-    /// * `paths_by_sample`: Path identifiers indexed by sample identifier (from [`Self::paths_by_sample`]).
-    /// * `used_paths`: Optional vector to mark paths that have been used and should not be used again.
-    ///
-    /// The length of `used_paths` must be at least `index.metadata().paths()`.
-    ///
-    /// # Panics
-    ///
-    /// May panic if `paths_by_sample` or `used_paths` are inconsistent with the GBWT metadata.
-    pub fn set_relative_information(&mut self,
-        index: &GBWT, prefix_len: usize,
-        paths_by_sample: &(Vec<u32>, SparseVector),
-        used_paths: Option<&mut RawVector>
-    ) -> Result<(), String> {
-        let metadata = index.metadata().ok_or(
-            String::from("The GBWT index does not contain metadata")
-        )?;
-        let sample_id = metadata.sample_id(&self.name[prefix_len..]).ok_or(
-            format!("Sequence name {} not found in the GBWT metadata", self.name)
-        )?;
-        self.set_target_start(index, sample_id, paths_by_sample, used_paths)
-    }
+        // Alignment statistics.
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.matches);
+        result.push(b'\t');
+        utils::append_usize(&mut result, self.matches + self.edits);
+        result.push(b'\t');
+        let mapq = self.mapq.unwrap_or(Self::MISSING_MAPQ);
+        utils::append_usize(&mut result, mapq);
 
-    // TODO: back to a GAF line
+        // Known optional fields.
+        if let Some(score) = self.score {
+            let field = TypedField::Int([b'A', b'S'], score);
+            field.append_to(&mut result, true);
+        }
+        if !self.base_quality.is_empty() {
+            TypedField::append_string(&mut result, [b'b', b'q'], &self.base_quality, true);
+        }
+        if !self.difference.is_empty() {
+            // TODO: Can we write the difference string directly?
+            let field = TypedField::String([b'c', b's'], Difference::to_bytes(&self.difference, target_sequence));
+            field.append_to(&mut result, true);
+        }
+        if let Some(pair) = &self.pair {
+            if pair.is_next {
+                TypedField::append_string(&mut result, [b'f', b'n'], pair.name.as_bytes(), true);
+            } else {
+                TypedField::append_string(&mut result, [b'f', b'p'], pair.name.as_bytes(), true);
+            }
+            let field = TypedField::Bool([b'p', b'd'], pair.is_proper);
+            field.append_to(&mut result, true);
+        }
+
+        // Other optional fields.
+        for field in self.optional.iter() {
+            field.append_to(&mut result, true);
+        }
+
+        result
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -450,119 +529,69 @@ impl Alignment {
         encoder.write(value);
     }
 
-    /// Encodes numerical fields as a blob.
-    ///
-    /// This includes the following fields:
-    ///
-    /// * Query sequence: `seq_len`, `seq_interval.start`, (`seq_interval.end`).
-    /// * Target path: offset in the start node, `path_len`, `path_interval.start`, (`path_interval.end`).
-    /// * Alignment statistics: (`matches`), (`edits`), `mapq`, `score`.
-    ///
-    /// The coordinates are normalized so that `start <= end <= len`.
-    /// If a difference string is present, the numbers in parentheses are not stored, as they can be derived from it.
-    ///
-    /// # Panics
-    ///
-    /// Will panic if the target path is not stored relative to a GBWT index.
-    pub fn encode_numbers(&self) -> Vec<u8> {
-        let mut encoder = ByteCode::new();
-        let include_redundant = self.difference.is_none();
+    // Encodes numerical fields as a blob.
+    //
+    // This includes the following fields:
+    //
+    // * Query sequence: `seq_len`, `seq_interval.start`, `seq_interval.end`.
+    // * Target path: `path_len`, `path_interval.start`, `path_interval.end`.
+    // * Alignment statistics: `matches`, `edits`, `mapq`, `score`.
+    //
+    // The coordinates are normalized so that `start <= end <= len`.
+    // If `perfect_alignment` is set, this is assumed to be a perfect alignment of the expected length.
+    // In that case, numbers that can be derived from the length are not stored.
+    // If a difference string is present, numbers that can be derived from it are not stored.
+    //
+    // Mapping quality and alignment score are stored if they are present.
+    // Their presence should be stored separately.
+    fn encode_numbers_into(&self, encoder: &mut ByteCode, perfect_alignment: bool) {
+        let include_redundant = self.difference.is_empty();
 
         // Coordinates.
-        Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, &mut encoder);
-        if let TargetPath::StartPosition(pos) = self.path {
-            encoder.write(pos.offset);
+        if perfect_alignment {
+            // We can also derive target interval length from the sequence length.
+            Self::encode_coordinates(self.path_interval.clone(), self.path_len, false, encoder);
         } else {
-            panic!("Target path is not stored relative to a GBWT index");
+            Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, encoder);
+            Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, encoder);
         }
-        Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, &mut encoder);
 
         // Alignment statistics.
         if include_redundant {
             encoder.write(self.matches);
             encoder.write(self.edits);
         }
-        encoder.write(self.mapq.unwrap_or(Self::MISSING_MAPQ));
+        if let Some(mapq) = self.mapq {
+            encoder.write(mapq);
+        }
         if let Some(score) = self.score {
-            Self::encode_signed(score, &mut encoder);
+            Self::encode_signed(score, encoder);
         };
-
-        Vec::from(encoder)
     }
 
-    // TODO: panic or error?
-    /// Encodes the base quality sequence using the given encoder.
-    ///
-    /// Returns [`None`] if the base quality sequence is missing.
-    ///
-    /// # Panics
-    ///
-    /// Will panic if the base quality sequence cannot be encoded with the given encoder.
-    pub fn encode_base_quality(&self, encoder: &QualityEncoder) -> Option<Vec<u8>> {
-        let base_quality = self.base_quality.as_ref()?;
-        Some(encoder.encode(base_quality).unwrap())
-    }
-
-    /// Encodes the difference string as a blob.
-    ///
-    /// Returns [`None`] if the difference string is missing.
-    pub fn encode_difference(&self) -> Option<Vec<u8>> {
-        let difference = self.difference.as_ref()?;
-
-        let mut encoder = RLE::with_sigma(Difference::NUM_TYPES);
-        for diff in difference.iter() {
-            match diff {
-                Difference::Match(len) => encoder.write(Run::new(0, *len)),
-                Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
-                Difference::Insertion(seq) => {
-                    let len = utils::encoded_length(seq.len());
-                    encoder.write(Run::new(2, len));
-                    let encoded = utils::encode_sequence(seq);
-                    for byte in encoded {
-                        encoder.write_byte(byte);
-                    }
-                },
-                Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
+    // Encodes the difference string into the given encoder.
+    //
+    // [`Difference::End`] values are not included in the encoding, but one is always added at the end.
+    fn encode_difference_into(&self, encoder: &mut RLE) {
+        if !self.difference.is_empty() {
+            for diff in self.difference.iter() {
+                match diff {
+                    Difference::Match(len) => encoder.write(Run::new(0, *len)),
+                    Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
+                    Difference::Insertion(seq) => {
+                        let len = utils::encoded_length(seq.len());
+                        encoder.write(Run::new(2, len));
+                        let encoded = utils::encode_sequence(seq);
+                        for byte in encoded {
+                            encoder.write_byte(byte);
+                        }
+                    },
+                    Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
+                    Difference::End => {},
+                }
             }
         }
-
-        Some(Vec::from(encoder))
-    }
-
-    const FLAG_PAIR_SAME_NAME: u8 = 0x01;
-    const FLAG_PAIR_IS_NEXT: u8 = 0x02;
-    const FLAG_PAIR_IS_PROPER: u8 = 0x04;
-
-    /// Encodes the pair information as a blob.
-    ///
-    /// Returns [`None`] if the pair information is missing.
-    /// The first byte in the encoding contains flags.
-    /// The remaining bytes contain the name of the pair without the common prefix, if necessary.
-    pub fn encode_pair(&self, prefix_len: usize) -> Option<Vec<u8>> {
-        let pair = self.pair.as_ref()?;
-
-        let mut flags = 0;
-        let name_len = if pair.name == self.name {
-            flags |= Self::FLAG_PAIR_SAME_NAME;
-            0
-        } else if pair.name.len() >= prefix_len {
-            pair.name.len() - prefix_len
-        } else {
-            0
-        };
-        let mut result = Vec::with_capacity(1 + name_len);
-        if pair.is_next {
-            flags |= Self::FLAG_PAIR_IS_NEXT;
-        }
-        if pair.is_proper {
-            flags |= Self::FLAG_PAIR_IS_PROPER;
-        }
-        result.push(flags);
-        if flags & Self::FLAG_PAIR_SAME_NAME == 0 {
-            result.extend_from_slice(&pair.name.as_bytes()[prefix_len..]);
-        }
-
-        Some(result)
+        encoder.write(Run::new(4, 1));
     }
 
     // TODO: encode optional fields
@@ -585,139 +614,105 @@ impl Alignment {
         }
     }
 
-    // Decodes a quality string.
-    fn decode_quality(quality: Option<&[u8]>, len: usize, encoder: &QualityEncoder) -> Result<Option<Vec<u8>>, String> {
-        if quality.is_none() {
-            return Ok(None);
-        }
-        let quality = quality.unwrap();
-        let result = encoder.decode(quality, len)?;
-        Ok(Some(result))
-    }
-
-    // Decodes a difference string.
-    fn decode_difference(difference: &[u8]) -> Result<Vec<Difference>, String> {
-        let mut difference_decoder = RLEIter::with_sigma(difference, Difference::NUM_TYPES);
+    // Decodes a difference string from the iterator until an End value.
+    // Also needs the underlying slice for decoding insertions.
+    // Returns an error if the if there is no End value.
+    fn decode_difference_from(encoded: &[u8], decoder: &mut RLEIter) -> Result<Vec<Difference>, String> {
         let mut result: Vec<Difference> = Vec::new();
-        while let Some(run) = difference_decoder.next() {
+        while let Some(run) = decoder.next() {
             match run.value {
                 0 => result.push(Difference::Match(run.len)),
                 1 => result.push(Difference::Mismatch(utils::decode_base(run.len))),
                 2 => {
-                    let offset = difference_decoder.offset();
+                    let offset = decoder.offset();
                     for _ in 0..run.len {
-                        let _ = difference_decoder.byte().ok_or(String::from("Missing insertion base"))?;
+                        let _ = decoder.byte().ok_or(String::from("Missing insertion base"))?;
                     }
-                    let encoded = &difference[offset..offset + run.len];
+                    let encoded = &encoded[offset..offset + run.len];
                     let seq = utils::decode_sequence(encoded);
                     result.push(Difference::Insertion(seq));
                 },
                 3 => result.push(Difference::Deletion(run.len)),
+                4 => {
+                    return Ok(result);
+                },
                 _ => return Err(format!("Invalid difference string operation: {}", run.value)),
             }
         }
-        Ok(result)
+        Err(String::from("Encoded difference string ended without an End value"))
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: Add an operation for reconstructing the query sequence.
+/// Operations on the Alignment object.
+impl Alignment {
+    /// Returns `true` if the read is unaligned.
+    ///
+    /// NOTE: An empty sequence is by definition unaligned.
+    pub fn is_unaligned(&self) -> bool {
+        self.seq_interval.is_empty()
     }
 
-    // Decodes pair information.
-    fn decode_pair(pair: Option<&[u8]>, prefix: &str, name_of_pair: &str) -> Result<Option<PairedRead>, String> {
-        if pair.is_none() {
-            return Ok(None);
-        }
-        let pair = pair.unwrap();
-        if pair.is_empty() {
-            return Err(String::from("Empty pair information field"));
-        }
-
-        let flags = pair[0];
-        let is_next = (flags & Self::FLAG_PAIR_IS_NEXT) != 0;
-        let is_proper = (flags & Self::FLAG_PAIR_IS_PROPER) != 0;
-
-        let name = if flags & Self::FLAG_PAIR_SAME_NAME != 0 {
-            name_of_pair.to_string()
-        } else {
-            let name = String::from_utf8_lossy(&pair[1..]);
-            format!("{}{}", prefix, name)
-        };
-
-        Ok(Some(PairedRead { name: format!("{}{}", prefix, name), is_next, is_proper }))
+    /// Returns `true` if this is a perfect alignment of the entire read.
+    pub fn is_perfect(&self) -> bool {
+        self.seq_len > 0 &&
+            self.seq_interval.start == 0 &&
+            self.seq_interval.end == self.seq_len &&
+            self.edits == 0
     }
 
-    /// Decodes the alignment from the given fields.
-    ///
-    /// Returns an error if the fields cannot be decoded.
-    ///
-    /// # Arguments
-    ///
-    /// * `prefix`: A common prefix of query sequence names.
-    /// * `query`: The remaining part of the query sequence name.
-    /// * `target`: Target path starting position.
-    /// * `numbers`: Encoded numerical fields.
-    /// * `quality`: Encoded base quality sequence.
-    /// * `quality_encoder`: Encoder for the base quality sequence.
-    /// * `difference`: Encoded difference string.
-    pub fn decode(
-        prefix: &str, query: &str, target_node: usize,
-        numbers: &[u8],
-        quality: Option<&[u8]>, quality_encoder: &QualityEncoder,
-        difference: Option<&[u8]>, pair: Option<&[u8]>
-    ) -> Result<Self, String> {
-        let name = format!("{}{}", prefix, query);
-        let include_redundant = difference.is_none();
+    /// Returns the minimum GBWT node identifier in the target path, or [`None`] if there is no path.
+    pub fn min_handle(&self) -> Option<usize> {
+        match self.path {
+            TargetPath::Path(ref path) => path.iter().copied().min(),
+            TargetPath::StartPosition(_) => None,
+        }
+    }
 
-        // Decode the numerical fields.
-        let mut number_decoder = ByteCodeIter::new(numbers);
-        let (mut seq_interval, mut seq_len) = Self::decode_coordinates(&mut number_decoder, include_redundant).ok_or(
-            String::from("Missing query sequence coordinates")
-        )?;
-        let target_offset = number_decoder.next().ok_or(String::from("Missing target path offset"))?;
-        let path = TargetPath::StartPosition(Pos::new(target_node, target_offset));
-        let (mut path_interval, mut path_len) = Self::decode_coordinates(&mut number_decoder, include_redundant).ok_or(
-            String::from("Missing target path coordinates")
-        )?;
-        let mut matches = if include_redundant {
-            number_decoder.next().ok_or(String::from("Missing number of matches"))?
-        } else { 0 };
-        let mut edits = if include_redundant {
-            number_decoder.next().ok_or(String::from("Missing number of edits"))?
-        } else { 0 };
-        let mapq = match number_decoder.next() {
-            Some(mapq) => if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) },
-            None => return Err(String::from("Missing mapping quality")),
+    /// Returns the maximum GBWT node identifier in the target path, or [`None`] if there is no path.
+    pub fn max_handle(&self) -> Option<usize> {
+        match self.path {
+            TargetPath::Path(ref path) => path.iter().copied().max(),
+            TargetPath::StartPosition(_) => None,
+        }
+    }
+
+    /// Returns true if the target path is stored explicitly.
+    pub fn has_target_path(&self) -> bool {
+        matches!(self.path, TargetPath::Path(_))
+    }
+
+    /// Returns the target path if it is stored explicitly.
+    pub fn target_path(&self) -> Option<&[usize]> {
+        match &self.path {
+            TargetPath::Path(path) => Some(path),
+            TargetPath::StartPosition(_) => None,
+        }
+    }
+
+    // TODO: Should this update an existing target path?
+    /// Sets the target path from the GBWT index if it is not already present.
+    pub fn extract_target_path(&mut self, index: &GBWT) {
+        let mut pos = match self.path {
+            TargetPath::Path(_) => return,
+            TargetPath::StartPosition(pos) => Some(pos),
         };
-        let score = Self::decode_signed(&mut number_decoder);
+        let mut path = Vec::new();
+        while let Some(p) = pos {
+            path.push(p.node);
+            pos = index.forward(p);
+        }
+        self.path = TargetPath::Path(path);
+    }
 
-        // Decode the difference string and calculate the values for redundant fields.
-        let difference = if let Some(difference) = difference {
-            let result = Self::decode_difference(difference)?;
-            let (query_len, target_len, num_matches, num_edits) = Difference::stats(&result);
-            seq_interval.end = seq_interval.start + query_len;
-            seq_len += query_len;
-            path_interval.end = path_interval.start + target_len;
-            path_len += target_len;
-            matches = num_matches;
-            edits = num_edits;
-            Some(result)
-        } else {
-            None
-        };
-
-        // Decode the quality string.
-        let base_quality = Self::decode_quality(quality, seq_len, quality_encoder)?;
-
-        // Decode the pair.
-        let pair = Self::decode_pair(pair, prefix, &name)?;
-
-        // TODO: Decode optional fields
-        let optional = Vec::new();
-
-        Ok(Alignment {
-            name, seq_len, seq_interval,
-            path, path_len, path_interval,
-            matches, edits, mapq, score,
-            base_quality, difference, pair,
-            optional,
-        })
+    // TODO: Should this update an existing target path?
+    /// Sets the given path as the target path, if the path is currently a GBWT starting position.
+    pub fn set_target_path(&mut self, path: Vec<usize>) {
+        if let TargetPath::StartPosition(_) = self.path {
+            self.path = TargetPath::Path(path);
+        }
     }
 }
 
@@ -744,291 +739,6 @@ pub struct PairedRead {
     pub is_next: bool,
     /// Are the alignments properly paired?
     pub is_proper: bool,
-}
-
-//-----------------------------------------------------------------------------
-
-/// An encoder and decoder for quality strings.
-///
-/// The encoder uses a canonical Huffman code for a fixed alphabet.
-/// There are four possible encodings:
-///
-/// * Empty alphabet: Works only for empty sequences.
-/// * Unary alphabet: The encoding is empty, as we get the length from an external source.
-/// * General alphabet: Huffman encoding.
-/// * General alphabet: Huffman encoding with run-length encoding using Gamma codes for symbols with code length 1.
-///
-/// With a general alphabet, the encoder tries both options and chooses the smaller one.
-///
-/// # Examples
-///
-/// ```
-/// use gbz_base::alignment::QualityEncoder;
-///
-/// // A: 0, C, 10, G: 110, T: 111
-/// let alphabet = b"ACGT";
-/// let dictionary = &[(1, 1), (2, 1), (3, 2)];
-/// let encoder = QualityEncoder::new(alphabet, dictionary).unwrap();
-///
-/// let sequence = b"GATTACA";
-/// let encoded = encoder.encode(sequence).unwrap();
-/// let decoded = encoder.decode(&encoded, sequence.len()).unwrap();
-/// assert_eq!(&decoded, sequence);
-/// ```
-#[derive(Clone, Debug)]
-pub struct QualityEncoder {
-    alphabet: Vec<u8>,
-    // Canonical Huffman dictionary.
-    // For each code length in increasing order: (length, count).
-    dictionary: Vec<(usize, usize)>,
-}
-
-impl QualityEncoder {
-    /// Constructs a new quality encoder with the given alphabet and canonical Huffman code lengths.
-    ///
-    /// Returns [`None`] if the code lengths do not match the alphabet.
-    /// If the code lengths are invalid, the encoder will not work and encoding will fail.
-    pub fn new(alphabet: &[u8], dictionary: &[(usize, usize)]) -> Option<Self> {
-        let alphabet = alphabet.to_vec();
-        let dictionary = dictionary.to_vec();
-        let count = dictionary.iter().map(|&(_, count)| count).sum::<usize>();
-        if alphabet.len() != count {
-            return None;
-        }
-        Some(QualityEncoder { alphabet, dictionary })
-    }
-
-    /// Returns the size of the alphabet.
-    #[inline]
-    pub fn alphabet_len(&self) -> usize {
-        self.alphabet.len()
-    }
-
-    /// Returns `true` if the alphabet is empty.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.alphabet.is_empty()
-    }
-
-    /// Returns `true` if the alphabet is unary.
-    #[inline]
-    pub fn is_unary(&self) -> bool {
-        self.alphabet_len() == 1
-    }
-
-    /// Returns `true` if there are symbols with code length 1 in the alphabet.
-    ///
-    /// Run-length encoding is only possible with such symbols.
-    pub fn supports_rle(&self) -> bool {
-        self.dictionary.iter().any(|&(len, _)| len == 1)
-    }
-
-    /// Returns `true` if the given encoding is run-length encoded.
-    pub fn is_rle(encoded: &[u8]) -> bool {
-        if encoded.is_empty() {
-            return false;
-        }
-        (encoded[0] & 0x1) != 0
-    }
-
-    // Returns the canonical Huffman code in little-endian order as well as code length.
-    // Returns `None` if the symbol is not in the alphabet.
-    fn encode_huffman(&self, symbol: u8) -> Option<(u64, usize)> {
-        let index = self.alphabet.iter().position(|&x| x == symbol)?;
-        let mut cumulative = 0;
-        let mut code_len = 0;
-        let mut code: u64 = 0;
-        for (new_len, count) in self.dictionary.iter() {
-            code <<= *new_len - code_len;
-            if index < cumulative + count {
-                code += (index - cumulative) as u64;
-                return Some((bits::reverse_low(code, *new_len), *new_len));
-            }
-            code += *count as u64;
-            cumulative += count;
-            code_len = *new_len;
-        }
-        None
-    }
-
-    // Appends a gamma code to the buffer.
-    // Because we use little-endian buffers, we need to store the highest bit separately.
-    fn encode_gamma(value: usize, buffer: &mut RawVector) {
-        let bit_len = bits::bit_len(value as u64);
-        unsafe { buffer.push_int(0, bit_len - 1); }
-        buffer.push_bit(true);
-        unsafe { buffer.push_int(value as u64, bit_len - 1); }
-    }
-
-    fn try_huffman(&self, sequence: &[u8]) -> Option<RawVector> {
-        let mut buffer = RawVector::new();
-        buffer.push_bit(false); // Not run-length encoded.
-        for symbol in sequence {
-            let (code, len) = self.encode_huffman(*symbol)?;
-            unsafe { buffer.push_int(code, len); }
-        }
-        Some(buffer)
-    }
-
-    fn try_huffman_rle(&self, sequence: &[u8]) -> Option<RawVector> {
-        let mut buffer = RawVector::new();
-        buffer.push_bit(true); // Run-length encoded.
-        let mut run: (u8, usize) = (0, 0);
-        for symbol in sequence {
-            if run.1 > 0 {
-                if *symbol == run.0 {
-                    run.1 += 1;
-                    continue;
-                } else {
-                    Self::encode_gamma(run.1, &mut buffer);
-                    run.1 = 0;
-                }
-            }
-            let (code, len) = self.encode_huffman(*symbol)?;
-            unsafe { buffer.push_int(code, len); }
-            if len == 1 {
-                run = (*symbol, 1);
-            }
-        }
-        if run.1 > 0 {
-            Self::encode_gamma(run.1, &mut buffer);
-        }
-        Some(buffer)
-    }
-
-    // TODO: optimize
-    /// Encodes the given sequence of quality symbols.
-    ///
-    /// Returns an error if the encoding fails.
-    pub fn encode(&self, sequence: &[u8]) -> Result<Vec<u8>, String> {
-        if self.is_empty() {
-            if sequence.is_empty() {
-                return Ok(Vec::new());
-            }
-            return Err(String::from("QualityEncoder: Empty alphabet with non-empty sequence"));
-        }
-        if self.is_unary() {
-            for symbol in sequence {
-                if *symbol != self.alphabet[0] {
-                    return Err(String::from("QualityEncoder: Invalid symbol with a unary alphabet"));
-                }
-            }
-            return Ok(Vec::new());
-        }
-
-        // Try encoding the sequence with and without run-length encoding.
-        let mut buffer = self.try_huffman(sequence).ok_or(
-            String::from("QualityEncoder: Huffman encoding failed")
-        )?;
-        if self.supports_rle() {
-            let with_rle = self.try_huffman_rle(sequence).ok_or(
-                String::from("QualityEncoder: Huffman + RLE encoding failed")
-            )?;
-            if with_rle.len() < buffer.len() {
-                buffer = with_rle;
-            }
-        }
-
-        // Convert the selected encoding to a byte vector.
-        let mut result = Vec::with_capacity((buffer.len() + 7) / 8);
-        for i in 0..result.capacity() {
-            let byte = unsafe { buffer.int(i * 8, 8) };
-            result.push(byte as u8);
-        }
-        Ok(result)
-    }
-
-    // Decodes a canonical Huffman code from the buffer starting at the given offset.
-    // The code is assumed to be in little-endian order.
-    // Returns the symbol and the new offset.
-    // Returns `None` if the buffer runs out of bits or if the decoder is in an invalid state.
-    fn decode_huffman(&self, buffer: &RawVector, offset: usize) -> Option<(u8, usize)> {
-        let mut base_code = 0;
-        let mut index = 0;
-        let mut code_len = 0;
-        for (new_len, count) in self.dictionary.iter() {
-            if offset + new_len > buffer.len() {
-                return None;
-            }
-            base_code <<= *new_len - code_len;
-            let code = unsafe { buffer.int(offset, *new_len) };
-            let code = bits::reverse_low(code, *new_len);
-            if code - base_code < (*count as u64) {
-                index += (code - base_code) as usize;
-                return Some((self.alphabet[index], offset + new_len));
-            }
-            base_code += *count as u64;
-            index += *count;
-            code_len = *new_len;
-        }
-        None
-    }
-
-    // Decodes a gamma code from the buffer starting at the given offset.
-    // Returns the value and the new offset.
-    // Returns `None` if the buffer runs out of bits.
-    // Because we use little-endian buffers, we need to handle the highest bit separately.
-    fn decode_gamma(buffer: &RawVector, offset: usize) -> Option<(usize, usize)> {
-        let mut offset = offset;
-        let mut bit_len = 1;
-        while offset < buffer.len() && !buffer.bit(offset) {
-            offset += 1;
-            bit_len += 1;
-        }
-        if offset + bit_len > buffer.len() {
-            return None;
-        }
-        let mut value = unsafe { buffer.int(offset + 1, bit_len - 1) } as usize;
-        value += 1 << (bit_len - 1);
-        Some((value, offset + bit_len))
-    }
-
-    // TODO: optimize
-    /// Decodes the given byte sequence.
-    ///
-    /// Returns an error if the encoding is invalid or does not contain the expected number of symbols.
-    /// Silently ignores any unused bytes in the encoding.
-    pub fn decode(&self, encoded: &[u8], expected_len: usize) -> Result<Vec<u8>, String> {
-        if self.is_empty() {
-            return Ok(Vec::new());
-        }
-        if self.is_unary() {
-            return Ok(vec![self.alphabet[0]; expected_len]);
-        }
-        if encoded.is_empty() && expected_len > 0 {
-            return Err(String::from("Empty encoding for a non-trivial quality sequence"));
-        }
-
-        // Copy the input to a RawVector.
-        let mut buffer = RawVector::with_capacity(encoded.len() * 8);
-        for &byte in encoded.iter() {
-            unsafe { buffer.push_int(byte as u64, 8); }
-        }
-        let rle = buffer.bit(0);
-
-        let mut result = Vec::with_capacity(expected_len);
-        let mut offset = 1;
-        while result.len() < expected_len {
-            let (symbol, new_offset) = self.decode_huffman(&buffer, offset).ok_or(
-                String::from("QualityEncoder: Huffman decoding failed")
-            )?;
-            let code_len = new_offset - offset;
-            offset = new_offset;
-            if rle && code_len == 1 {
-                let (run, new_offset) = Self::decode_gamma(&buffer, offset).ok_or(
-                    String::from("QualityEncoder: Gamma decoding failed")
-                )?;
-                offset = new_offset;
-                for _ in 0..run {
-                    result.push(symbol);
-                }
-            } else {
-                result.push(symbol);
-            }
-        }
-
-        Ok(result)
-    }
 }
 
 //-----------------------------------------------------------------------------
@@ -1073,11 +783,16 @@ pub enum Difference {
     Insertion(Vec<u8>),
     /// Deletion from the reference represented as deletion length.
     Deletion(usize),
+    /// Marker for the end of a sequence when concatenating multiple difference strings.
+    End,
 }
 
 impl Difference {
     /// Number of supported operation types.
-    pub const NUM_TYPES: usize = 4;
+    pub const NUM_TYPES: usize = 5;
+
+    /// Symbol used as a substitute for an unknown base.
+    pub const UNKNOWN_BASE: u8 = b'X';
 
     // TODO: This does not support `~` (intron length and splice signal) yet.
     const OPS: &'static [u8] = b"=:*+-";
@@ -1190,6 +905,7 @@ impl Difference {
                     target_len += len;
                     edits += len;
                 },
+                Self::End => {},
             }
         }
         (query_len, target_len, matches, edits)
@@ -1202,6 +918,7 @@ impl Difference {
             Self::Mismatch(_) => 1,
             Self::Insertion(seq) => seq.len(),
             Self::Deletion(len) => *len,
+            Self::End => 0,
         }
     }
 
@@ -1217,6 +934,7 @@ impl Difference {
             Self::Mismatch(_) => 1,
             Self::Insertion(_) => 0,
             Self::Deletion(len) => *len,
+            Self::End => 0,
         }
     }
 
@@ -1227,6 +945,7 @@ impl Difference {
             Self::Mismatch(_) => 1,
             Self::Insertion(seq) => seq.len(),
             Self::Deletion(_) => 0,
+            Self::End => 0,
         }
     }
 
@@ -1275,119 +994,479 @@ impl Difference {
         result.truncate(tail);
         result
     }
+
+    /// Writes a difference string as a `Vec<u8>` string.
+    pub fn to_bytes(ops: &[Difference], target_sequence: &[u8]) -> Vec<u8> {
+        let mut result = Vec::new();
+        let mut target_offset = 0;
+        for op in ops.iter() {
+            match op {
+                Self::Match(len) => {
+                    result.push(b':');
+                    utils::append_usize(&mut result, *len);
+                    target_offset += *len;
+                },
+                Self::Mismatch(base) => {
+                    result.push(b'*');
+                    result.push(target_sequence[target_offset]);
+                    result.push(*base);
+                    target_offset += 1;
+                },
+                Self::Insertion(seq) => {
+                    result.push(b'+');
+                    result.extend_from_slice(seq);
+                },
+                Self::Deletion(len) => {
+                    result.push(b'-');
+                    result.extend_from_slice(&target_sequence[target_offset..target_offset + *len]);
+                    target_offset += *len;
+                },
+                Self::End => {},
+            }
+        }
+        result
+    }
 }
 
 //-----------------------------------------------------------------------------
 
-/// A typed optional field used in formats such as SAM, GFA, and GAF.
+/// An ad hoc bitvector for flags in [`AlignmentBlock`].
+#[derive(Debug, Clone)]
+pub struct Flags {
+    bits: Vec<u8>,
+}
+
+impl Flags {
+    /// Number of flags per alignment.
+    pub const NUM_FLAGS: usize = 5;
+
+    // Flags expressed as a bit offset.
+    // TODO: As enum?
+
+    /// Flag: Pair is the next fragment in the read pair.
+    pub const FLAG_PAIR_IS_NEXT: usize = 0;
+
+    /// Flag: The the alignment is properly paired.
+    pub const FLAG_PAIR_IS_PROPER: usize = 1;
+
+    /// Flag: A mapping quality score is present.
+    pub const FLAG_HAS_MAPQ: usize = 2;
+
+    /// Flag: An alignment score is present.
+    pub const FLAG_HAS_SCORE: usize = 3;
+
+    /// Flag: This is a perfect alignment of the entire read, and read length is as expected.
+    pub const FLAG_PERFECT_ALIGNMENT: usize = 4;
+
+    /// Creates a new flags object with the given number of alignments.
+    /// The flags are initialized to zero (false).
+    pub fn new(num_alignments: usize) -> Self {
+        let bits = vec![0; (num_alignments * Self::NUM_FLAGS + 7) / 8];
+        Self { bits }
+    }
+
+    /// Sets the given flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `index`: The index of the alignment.
+    /// * `flag`: The flag to set.
+    /// * `value`: The value to set the flag to.
+    pub fn set(&mut self, index: usize, flag: usize, value: bool) {
+        let bit = index * Self::NUM_FLAGS + flag;
+        if value {
+            self.bits[bit / 8] |= 1 << (bit % 8);
+        } else {
+            self.bits[bit / 8] &= !(1 << (bit % 8));
+        }
+    }
+
+    /// Gets the value of the given flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `index`: The index of the alignment.
+    /// * `flag`: The flag to get.
+    pub fn get(&self, index: usize, flag: usize) -> bool {
+        let bit = index * Self::NUM_FLAGS + flag;
+        (self.bits[bit / 8] >> (bit % 8)) & 0x01 != 0
+    }
+
+    /// Returns the number of bytes used to store the flags.
+    pub fn bytes(&self) -> usize {
+        self.bits.len()
+    }
+}
+
+impl From<Vec<u8>> for Flags {
+    fn from(bits: Vec<u8>) -> Self {
+        Self { bits }
+    }
+}
+
+impl AsRef<[u8]> for Flags {
+    fn as_ref(&self) -> &[u8] {
+        &self.bits
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: expected alignment score for perfect alignments? Or just a scoring model?
+/// An encoded block of [`Alignment`] objects.
 ///
-/// The field corresponds to a TAG:TYPE:VALUE string.
-/// Supported types include A (single character), Z (string), i (integer), f (float), and b (boolean).
-/// The field is stored as a tag and a value.
-/// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
+/// This is a compressed representation of multiple sequences aligned to the same graph.
+/// With short reads, a properly chosen block size enables both column-based compression and random access to the alignments.
+/// Long reads do not benefit from column-based compression, as the amount of metadata is insignificant.
+/// Reasonable block sizes could be 1000 alignments for short reads and 10 for long reads.
+///
+/// For best results, node identifiers should approximate a topological order in the graph.
+/// The range of node identifiers in a path is typically proportional to the length of the path.
+/// If the alignments are sorted by (min id, max id), a block will then consist of alignments that are close to each other in the graph.
+///
+/// # Notes
+///
+/// * Target paths must be stored separately (e.g. using a GBWT-based encoding).
+/// * A block must contain either aligned reads or unaligned reads, but not both.
 ///
 /// # Examples
 ///
 /// ```
-/// use gbz_base::alignment::TypedField;
+/// use gbz_base::{Alignment, AlignmentBlock};
+/// use gbz_base::utils;
+/// use gbwt::GBWT;
+/// use gbwt::support;
+/// use simple_sds::serialize;
 ///
-/// let alignment_score = "AS:i:160";
-/// let field = TypedField::parse(alignment_score.as_bytes());
-/// assert_eq!(field, Ok(TypedField::Int([b'A', b'S'], 160)));
-/// assert_eq!(field.unwrap().to_string(), alignment_score);
+/// // We need a GBWT index of the paths for compressing alignments.
+/// let gbwt_filename = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let index: GBWT = serialize::load_from(&gbwt_filename).unwrap();
+///
+/// // Read the some lines from the GAF file.
+/// let gaf_filename = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+/// let mut gaf_file = utils::open_file(&gaf_filename).unwrap();
+/// let mut alignments = Vec::new();
+/// for _ in 0..10 {
+///     let mut buf: Vec<u8> = Vec::new();
+///     let _ = gaf_file.read_until(b'\n', &mut buf).unwrap();
+///     let mut aln = Alignment::from_gaf(&buf).unwrap();
+///     // A block cannot have a mix of aligned and unaligned reads.
+///     assert!(!aln.is_unaligned());
+///     // We do not store unsupported optional fields.
+///     aln.optional.clear();
+///     alignments.push(aln);
+/// }
+///
+/// // Compress the block.
+/// let mut first_id = 0;
+/// let block = AlignmentBlock::new(&alignments, &index, first_id).unwrap();
+/// assert_eq!(block.len(), alignments.len());
+/// first_id += alignments.len(); // Next block would start there.
+///
+/// // Decompress the block and extract the paths from the GBWT.
+/// let mut decompressed = block.decode().unwrap();
+/// assert_eq!(decompressed.len(), alignments.len());
+/// for (i, aln) in decompressed.iter_mut().enumerate() {
+///     aln.extract_target_path(&index);
+///     assert_eq!(*aln, alignments[i]);
+/// }
 /// ```
-#[derive(Clone, Debug, PartialEq)]
-pub enum TypedField {
-    /// A single character.
-    Char([u8; 2], u8),
-    /// A string.
-    String([u8; 2], Vec<u8>),
-    /// An integer.
-    Int([u8; 2], isize),
-    /// A float.
-    Float([u8; 2], f64),
-    /// A boolean value.
-    Bool([u8; 2], bool),
+#[derive(Debug, Clone)]
+pub struct AlignmentBlock {
+    /// Minimum GBWT node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
+    pub min_handle: Option<usize>,
+    /// Maximum GBWT node identifier in the target paths, or [`None`] if this is a block of unaligned reads.
+    pub max_handle: Option<usize>,
+    /// Number of alignments in the block.
+    pub alignments: usize,
+    /// Expected read length in the block, or [`None`] if the lengths vary.
+    pub read_length: Option<usize>,
+    /// GBWT starting positions for the target paths.
+    pub gbwt_starts: Vec<u8>,
+    /// Read and pair names.
+    pub names: Vec<u8>,
+    /// Quality strings.
+    pub quality_strings: Vec<u8>,
+    /// Difference strings.
+    pub difference_strings: Vec<u8>,
+    /// Binary flags for each alignment.
+    pub flags: Flags,
+    /// Encoded numerical information that cannot be derived from the other fields.
+    pub numbers: Vec<u8>,
 }
 
-impl TypedField {
-    /// Parses the field from a TAG:TYPE:VALUE string.
+impl AlignmentBlock {
+    // TODO: Make this a parameter?
+    /// Compression level for Zstandard.
+    pub const COMPRESSION_LEVEL: i32 = 7;
+
+    // TODO: Allow outliers instead of requiring the same length from every read.
+    fn expected_read_length(alignments: &[Alignment]) -> Option<usize> {
+        let mut read_length = None;
+        for aln in alignments.iter() {
+            if let Some(len) = read_length {
+                if aln.seq_len != len {
+                    read_length = None;
+                    break;
+                }
+            } else {
+                if aln.seq_len == 0 {
+                    break;
+                }
+                read_length = Some(aln.seq_len);
+            }
+        }
+        read_length
+    }
+
+    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_handle: Option<usize>) -> Result<Vec<u8>, String> {
+        let base_node = min_handle.unwrap_or(0);
+        let mut encoder = ByteCode::new();
+        for i in 0..alignments.len() {
+            // GBWT start as (node - min_handle, offset).
+            let gbwt_sequence_id = if index.is_bidirectional() {
+                support::encode_path(first_id + i, Orientation::Forward)
+            } else { first_id + i };
+            if let Some(start) = index.start(gbwt_sequence_id) {
+                encoder.write(start.node - base_node);
+                encoder.write(start.offset);
+            } else if !encoder.is_empty() {
+                return Err(format!("Line {}: Unaligned read in a block with aligned reads", first_id + i));
+            }
+        }
+        Ok(Vec::from(encoder))
+    }
+
+    // TODO: Somewhere else?
+    fn zstd_compress(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut encoder = ZstdEncoder::new(Vec::new(), Self::COMPRESSION_LEVEL).unwrap();
+        encoder.write_all(data).map_err(|err| format!("Zstd compression error: {}", err))?;
+        encoder.finish().map_err(|err| format!("Zstd compression error: {}", err))
+    }
+
+    fn compress_names_pairs(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
+        let mut names: Vec<u8> = Vec::new();
+        for aln in alignments.iter() {
+            // Read name as a 0-terminated string.
+            names.extend_from_slice(aln.name.as_bytes());
+            names.push(0);
+            // Pair name as a 0-terminated string, if present.
+            if let Some(pair) = &aln.pair {
+                names.extend_from_slice(pair.name.as_bytes());
+            }
+            names.push(0);
+        }
+        Self::zstd_compress(&names)
+    }
+
+    fn compress_quality_strings(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
+        let mut quality_strings: Vec<u8> = Vec::new();
+        for aln in alignments.iter() {
+            // Quality strings as 0-terminated strings.
+            if !aln.base_quality.is_empty() {
+                quality_strings.extend_from_slice(&aln.base_quality);
+            }
+            quality_strings.push(0);
+        }
+        Self::zstd_compress(&quality_strings)
+    }
+
+    /// Creates a new alignment block from the given read alignments and GBWT index.
     ///
-    /// Returns [`None`] if the field cannot be parsed or the type is unsupported.
-    pub fn parse(field: &[u8]) -> Result<Self, String> {
-        if field.len() < 5 || field[2] != b':' || field[4] != b':' {
-            return Err(format!("Invalid typed field: {}", String::from_utf8_lossy(field)));
+    /// If the reads are aligned, they correspond to paths `first_id` to `first_id + alignments.len() - 1` in the GBWT index.
+    /// The GBWT index may be bidirectional or unidirectional.
+    ///
+    /// # Arguments
+    ///
+    /// * `alignments`: The alignments to include in the block.
+    /// * `index`: The GBWT index to use for encoding the GBWT starts.
+    /// * `first_id`: Path identifier of the first alignment in the block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the block contains a mix of aligned and unaligned reads.
+    /// Returns an error if compression fails.
+    pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Result<Self, String> {
+        let min_handle = alignments.iter().map(|aln| aln.min_handle()).min().flatten();
+        let max_handle = alignments.iter().map(|aln| aln.max_handle()).max().flatten();
+        let read_length = Self::expected_read_length(alignments);
+        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_handle)?;
+        let names = Self::compress_names_pairs(alignments)?;
+        let quality_strings = Self::compress_quality_strings(alignments)?;
+
+        // We encode the remaining fields together, as they depend on each other.
+        let mut difference_strings = RLE::with_sigma(Difference::NUM_TYPES);
+        let mut flags = Flags::new(alignments.len());
+        let mut numbers = ByteCode::new();
+
+        for (i, aln) in alignments.iter().enumerate() {
+            let perfect_alignment = aln.is_perfect() && Some(aln.seq_len) == read_length;
+            if !perfect_alignment {
+                aln.encode_difference_into(&mut difference_strings);
+            }
+
+            if let Some(pair) = &aln.pair {
+                if pair.is_next {
+                    flags.set(i, Flags::FLAG_PAIR_IS_NEXT, true);
+                }
+                if pair.is_proper {
+                    flags.set(i, Flags::FLAG_PAIR_IS_PROPER, true);
+                }
+            }
+            if aln.mapq.is_some() {
+                flags.set(i, Flags::FLAG_HAS_MAPQ, true);
+            }
+            if aln.score.is_some() {
+                flags.set(i, Flags::FLAG_HAS_SCORE, true);
+            }
+            flags.set(i, Flags::FLAG_PERFECT_ALIGNMENT, perfect_alignment);
+
+            aln.encode_numbers_into(&mut numbers, perfect_alignment);
         }
-        let tag = [field[0], field[1]];
-        match field[3] {
-            b'A' => {
-                if field.len() != 6 {
-                    return Err(format!("Invalid char field {}", String::from_utf8_lossy(field)));
-                }
-                Ok(TypedField::Char(tag, field[5]))
-            },
-            b'Z' => Ok(TypedField::String(tag, field[5..].to_vec())),
-            b'i' => {
-                let value = String::from_utf8_lossy(&field[5..]);
-                let value = value.parse::<isize>().map_err(|err| {
-                    format!("Invalid int field {}: {}", value, err)
-                })?;
-                Ok(TypedField::Int(tag, value))
-            },
-            b'f' => {
-                let value = String::from_utf8_lossy(&field[5..]);
-                let value = value.parse::<f64>().map_err(|err| {
-                    format!("Invalid float field {}: {}", value, err)
-                })?;
-                Ok(TypedField::Float(tag, value))
-            },
-            b'b' => {
-                if field.len() != 6 {
-                    return Err(format!("Invalid bool field {}", String::from_utf8_lossy(field)));
-                }
-                match field[5] {
-                    b'0' => Ok(TypedField::Bool(tag, false)),
-                    b'1' => Ok(TypedField::Bool(tag, true)),
-                    _ => Err(format!("Invalid bool field {}", String::from_utf8_lossy(field))),
-                }
-            },
-            _ => Err(format!("Unsupported field type: {}", field[3] as char)),
-        }
+
+        Ok(Self {
+            min_handle,
+            max_handle,
+            alignments: alignments.len(),
+            read_length,
+            gbwt_starts,
+            names,
+            quality_strings,
+            difference_strings: Vec::from(difference_strings),
+            flags,
+            numbers: Vec::from(numbers),
+        })
     }
 
-    /// Returns the tag of the field.
-    pub fn tag(&self) -> [u8; 2] {
-        match self {
-            TypedField::Char(tag, _) => *tag,
-            TypedField::String(tag, _) => *tag,
-            TypedField::Int(tag, _) => *tag,
-            TypedField::Float(tag, _) => *tag,
-            TypedField::Bool(tag, _) => *tag,
-        }
+    pub fn len(&self) -> usize {
+        self.alignments
     }
-}
 
-impl Display for TypedField {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TypedField::Char(tag, value) => {
-                write!(f, "{}{}:A:{}", tag[0] as char, tag[1] as char, *value as char)
-            },
-            TypedField::String(tag, value) => {
-                let value = String::from_utf8_lossy(value);
-                write!(f, "{}{}:Z:{}", tag[0] as char, tag[1] as char, value)
-            },
-            TypedField::Int(tag, value) => {
-                write!(f, "{}{}:i:{}", tag[0] as char, tag[1] as char, value)
-            },
-            TypedField::Float(tag, value) => {
-                // TODO: Precision?
-                write!(f, "{}{}:f:{}", tag[0] as char, tag[1] as char, value)
-            },
-            TypedField::Bool(tag, value) => {
-                write!(f, "{}{}:b:{}", tag[0] as char, tag[1] as char, if *value { '1' } else { '0' })
-            },
+    pub fn is_empty(&self) -> bool {
+        self.alignments == 0
+    }
+
+    fn decompress_gbwt_starts(&self, result: &mut [Alignment]) -> Result<(), String> {
+        if self.min_handle.is_none() {
+            return Ok(());
         }
+        let base_node = self.min_handle.unwrap();
+        let mut decoder: ByteCodeIter<'_> = ByteCodeIter::new(&self.gbwt_starts[..]);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let start = decoder.next().ok_or(
+                format!("Missing GBWT start for alignment {}", i)
+            )?;
+            let offset = decoder.next().ok_or(
+                format!("Missing GBWT offset for alignment {}", i)
+            )?;
+            aln.path = TargetPath::StartPosition(Pos::new(start + base_node, offset));
+        }
+        Ok(())
+    }
+
+    // TODO: Somewhere else?
+    fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut decoder = ZstdDecoder::new(data).map_err(|err| format!("Zstd decompression error: {}", err))?;
+        let mut buffer = Vec::new();
+        decoder.read_to_end(&mut buffer).map_err(|err| format!("Zstd decompression error: {}", err))?;
+        Ok(buffer)
+    }
+
+    fn decompress_names_pairs(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let buffer = Self::zstd_decompress(&self.names[..])?;
+        let mut iter = buffer.split(|&c| c == 0);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let name = iter.next().ok_or(format!("Missing name for alignment {}", i))?;
+            aln.name = String::from_utf8_lossy(name).to_string();
+            let pair_name = iter.next().ok_or(format!("Missing pair name for alignment {}", i))?;
+            if !pair_name.is_empty() {
+                aln.pair = Some(PairedRead {
+                    name: String::from_utf8_lossy(pair_name).to_string(),
+                    is_next: self.flags.get(i, Flags::FLAG_PAIR_IS_NEXT),
+                    is_proper: self.flags.get(i, Flags::FLAG_PAIR_IS_PROPER),
+                });
+            }
+        }
+        // There should be an empty slice at the end, as the buffer is 0-terminated.
+        // TODO: Should we check this?
+        Ok(())
+    }
+
+    fn decompress_quality_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let buffer = Self::zstd_decompress(&self.quality_strings[..])?;
+        let mut iter = buffer.split(|&c| c == 0);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let quality = iter.next().ok_or(format!("Missing quality string for alignment {}", i))?;
+            aln.base_quality = quality.to_vec();
+        }
+        // There should be an empty slice at the end, as the buffer is 0-terminated.
+        // TODO: Should we check this?
+        Ok(())
+    }
+
+    fn decompress_difference_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let mut decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
+        for (i, aln) in result.iter_mut().enumerate() {
+            if self.flags.get(i, Flags::FLAG_PERFECT_ALIGNMENT) {
+                let len = self.read_length.ok_or(format!("Missing read length for perfect alignment {}", i))?;
+                aln.difference = vec![Difference::Match(len)];
+            } else {
+                let res = Alignment::decode_difference_from(&self.difference_strings, &mut decoder);
+                aln.difference = res.map_err(|err| format!("Missing difference string for alignment {}: {}", i, err))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn decompress_numbers(&self, result: &mut [Alignment]) -> Result<(), String> {
+        let mut decoder = ByteCodeIter::new(&self.numbers[..]);
+        for (i, aln) in result.iter_mut().enumerate() {
+            // If this is a perfect alignment, we created a difference string even if the original alignment did not have one.
+            let include_redundant = aln.difference.is_empty();
+            if !self.flags.get(i, Flags::FLAG_PERFECT_ALIGNMENT) {
+                (aln.seq_interval, aln.seq_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
+                    .ok_or(format!("Missing query sequence coordinates for alignment {}", i))?;
+            }
+            (aln.path_interval, aln.path_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
+                .ok_or(format!("Missing target path coordinates for alignment {}", i))?;
+            if include_redundant {
+                aln.matches = decoder.next().ok_or(format!("Missing number of matches for alignment {}", i))?;
+                aln.edits = decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?;
+            }
+            if self.flags.get(i, Flags::FLAG_HAS_MAPQ) {
+                aln.mapq = Some(decoder.next().ok_or(format!("Missing mapping quality for alignment {}", i))?);
+            }
+            if self.flags.get(i, Flags::FLAG_HAS_SCORE) {
+                aln.score = Some(Alignment::decode_signed(&mut decoder).ok_or(
+                    format!("Missing alignment score for alignment {}", i)
+                )?);
+            }
+
+            // Derive redundant numbers from the difference string.
+            // This also handles numbers derived from a perfect alignment.
+            if !include_redundant {
+                let (query_len, target_len, num_matches, num_edits) = Difference::stats(&aln.difference);
+                aln.seq_interval.end = aln.seq_interval.start + query_len;
+                aln.seq_len += query_len;
+                aln.path_interval.end = aln.path_interval.start + target_len;
+                aln.path_len += target_len;
+                aln.matches = num_matches;
+                aln.edits = num_edits;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn decode(&self) -> Result<Vec<Alignment>, String> {
+        let mut result = vec![Alignment::default(); self.len()];
+        self.decompress_gbwt_starts(&mut result)?;
+        self.decompress_names_pairs(&mut result)?;
+        self.decompress_quality_strings(&mut result)?;
+        self.decompress_difference_strings(&mut result)?;
+        // We decompress the numbers last, as their presence may depend on the other fields.
+        self.decompress_numbers(&mut result)?;
+        Ok(result)
     }
 }
 
