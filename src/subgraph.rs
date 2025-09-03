@@ -58,7 +58,7 @@ enum QueryType {
     Nodes(BTreeSet<usize>),
 }
 
-// but we first need to implement context extraction based on an interval.
+// FIXME: snarls
 /// Arguments for extracting a subgraph.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
@@ -725,6 +725,7 @@ impl Subgraph {
         Ok((inserted, removed))
     }
 
+    // FIXME: snarls
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
@@ -807,6 +808,7 @@ impl Subgraph {
         Ok(())
     }
 
+    // FIXME: snarls
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
@@ -1245,14 +1247,14 @@ impl Subgraph {
     }
 
     /// Returns an iterator over the successors of an oriented node, or [`None`] if there is no such node.
-    pub fn successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
+    pub fn successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
         let handle = support::encode_node(node_id, orientation);
         let record = self.records.get(&handle)?;
         Some(EdgeIter::new(self, record, false))
     }
 
     /// Returns an iterator over the predecessors of an oriented node, or [`None`] if there is no such node.
-    pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
+    pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
         let handle = support::encode_node(node_id, orientation.flip());
         let record = self.records.get(&handle)?;
         Some(EdgeIter::new(self, record, true))

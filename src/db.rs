@@ -173,6 +173,7 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: chains
 /// Creating the database.
 impl GBZBase {
     /// Creates a new database from the GBZ graph in file `gbz_file` and stores the database in file `db_file`.
@@ -278,6 +279,7 @@ impl GBZBase {
         Ok(())
     }
 
+    // FIXME: next
     fn insert_nodes(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Inserting nodes");
 
@@ -958,6 +960,7 @@ impl GAFBase {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: next
 /// A record for an oriented node.
 ///
 /// The record corresponds to one row in table `Nodes`.
@@ -1018,7 +1021,7 @@ impl GBZRecord {
     ///
     /// Will panic if the record would be empty.
     /// This should never happen with a valid database.
-    pub fn to_gbwt_record(&self) -> Record {
+    pub fn to_gbwt_record(&self) -> Record<'_> {
         if self.edges.is_empty() {
             panic!("GBZRecord::to_gbwt_record: Empty record");
         }
@@ -1238,6 +1241,7 @@ impl<'a> GraphInterface<'a> {
             "SELECT value FROM Tags WHERE key = ?1"
         ).map_err(|x| x.to_string())?;
 
+        // FIXME: next
         let get_record = database.connection.prepare(
             "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
@@ -1290,6 +1294,7 @@ impl<'a> GraphInterface<'a> {
         ).optional().map_err(|x| x.to_string())
     }
 
+    // FIXME: next
     /// Returns the node record for the given handle, or [`None`] if the node does not exist.
     pub fn get_record(&mut self, handle: usize) -> Result<Option<GBZRecord>, String> {
         self.get_record.query_row(

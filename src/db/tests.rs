@@ -32,7 +32,7 @@ fn open_database(filename: &PathBuf) -> GBZBase {
     database.unwrap()
 }
 
-fn create_interface(database: &GBZBase) -> GraphInterface {
+fn create_interface(database: &GBZBase) -> GraphInterface<'_> {
     let interface = GraphInterface::new(database);
     assert!(interface.is_ok(), "Failed to create graph interface: {}", interface.unwrap_err());
     interface.unwrap()

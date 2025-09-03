@@ -45,6 +45,7 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: chains file
 struct Config {
     pub gbz_file: String,
     pub db_file: String,
