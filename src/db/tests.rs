@@ -10,18 +10,19 @@ use std::path::PathBuf;
 
 //-----------------------------------------------------------------------------
 
-fn create_database_from_graph(graph: &GBZ) -> PathBuf {
+fn create_database_from_graph(graph: &GBZ, chains: &Chains) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
     assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
-    let result = GBZBase::create(&graph, &db_file);
+    let result = GBZBase::create(&graph, chains, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     db_file
 }
 
-fn create_database_from_file(filename: &PathBuf) -> PathBuf {
+fn create_database_from_files(gbz_file: &PathBuf, chains_file: Option<&PathBuf>) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
     assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
-    let result = GBZBase::create_from_file(&filename, &db_file);
+    let chains_file = chains_file.map(|x| x.as_ref());
+    let result = GBZBase::create_from_files(&gbz_file, chains_file, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     db_file
 }
@@ -78,13 +79,15 @@ fn existing_indexed_pos(interface: &mut GraphInterface, path_handle: usize, offs
 
 //-----------------------------------------------------------------------------
 
-fn check_header(database: &GBZBase, graph: &GBZ) {
+fn check_header(database: &GBZBase, graph: &GBZ, chains: &Chains) {
     let metadata = graph.metadata().unwrap();
     assert_eq!(database.nodes(), graph.nodes(), "Wrong number of nodes");
+    assert_eq!(database.chains(), chains.len(), "Wrong number of chains");
+    assert_eq!(database.chain_links(), chains.links(), "Wrong number of chain links");
+    assert_eq!(database.paths(), metadata.paths(), "Wrong number of paths");
     assert_eq!(database.samples(), metadata.samples(), "Wrong number of samples");
     assert_eq!(database.haplotypes(), metadata.haplotypes(), "Wrong number of haplotypes");
     assert_eq!(database.contigs(), metadata.contigs(), "Wrong number of contigs");
-    assert_eq!(database.paths(), metadata.paths(), "Wrong number of paths");
 }
 
 fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
@@ -208,14 +211,15 @@ fn create_from_graph() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
+    let db_file = create_database_from_graph(&graph, &chains);
     let database = open_database(&db_file);
     let mut interface = create_interface(&database);
 
     // Check header, tags, and nodes.
-    check_header(&database, &graph);
+    check_header(&database, &graph, &chains);
     check_tags(&mut interface, &graph);
     check_nodes(&mut interface, &graph);
 
@@ -229,14 +233,15 @@ fn create_from_file() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new(); // FIXME: placeholder
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_file(&gbz_file);
+    let db_file = create_database_from_files(&gbz_file, None);
     let database = open_database(&db_file);
     let mut interface = create_interface(&database);
 
     // Check header, tags, and nodes.
-    check_header(&database, &graph);
+    check_header(&database, &graph, &chains);
     check_tags(&mut interface, &graph);
     check_nodes(&mut interface, &graph);
 
@@ -253,9 +258,10 @@ fn get_path() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
+    let db_file = create_database_from_graph(&graph, &chains);
     let database = open_database(&db_file);
     let mut interface = create_interface(&database);
 
@@ -310,9 +316,10 @@ fn paths_for_sample() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
+    let db_file = create_database_from_graph(&graph, &chains);
     let database = open_database(&db_file);
     let mut interface = create_interface(&database);
 
@@ -340,7 +347,7 @@ fn paths_for_sample() {
 fn nonexistent_paths() {
     // Create and open the database and create a graph interface.
     let gbz_file = support::get_test_data("example.gbz");
-    let db_file = create_database_from_file(&gbz_file);
+    let db_file = create_database_from_files(&gbz_file, None);
     let database = open_database(&db_file);
     let mut interface = create_interface(&database);
 
@@ -379,9 +386,10 @@ fn visited_positions(gbwt: &GBWT, path_handle: usize) -> HashSet<Pos> {
 fn indexed_position() {
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
+    let db_file = create_database_from_graph(&graph, &chains);
     let database = open_database(&db_file);
     let mut interface = create_interface(&database);
 
@@ -454,7 +462,7 @@ fn gaf_base_gbz() -> GBZ {
 
 fn gaf_base_db() -> (GBZBase, PathBuf) {
     let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
-    let db_file = create_database_from_file(&gbz_file);
+    let db_file = create_database_from_files(&gbz_file, None);
     let db = open_database(&db_file);
     (db, db_file)
 }

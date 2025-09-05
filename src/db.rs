@@ -1,7 +1,7 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 // TODO: GBZ-base and GAF-base in separate files?
 
-use crate::{Alignment, AlignmentBlock, Subgraph};
+use crate::{Alignment, AlignmentBlock, Subgraph, Chains};
 use crate::alignment::{Flags, TargetPath};
 use crate::utils;
 
@@ -24,6 +24,7 @@ mod tests;
 
 //-----------------------------------------------------------------------------
 
+// FIXME: add top-level chains to statistics
 /// A database connection to a GBZ-base database.
 ///
 /// This structure stores a database connection and some header information.
@@ -42,7 +43,7 @@ mod tests;
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("gbz-base");
 /// assert!(!utils::file_exists(&db_file));
-/// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+/// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
 /// assert!(result.is_ok());
 ///
 /// // Open the database and check some header information.
@@ -62,10 +63,12 @@ pub struct GBZBase {
     connection: Connection,
     version: String,
     nodes: usize,
+    chains: usize,
+    chain_links: usize,
+    paths: usize,
     samples: usize,
     haplotypes: usize,
     contigs: usize,
-    paths: usize,
 }
 
 /// Using the database.
@@ -77,10 +80,19 @@ impl GBZBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "GBZ-base v0.3.0";
+    pub const VERSION: &'static str = "GBZ-base v0.4.0";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
+
+    // Key for chain count.
+    const KEY_CHAINS: &'static str = "chains";
+
+    // Key for the total number of links in the chains.
+    const KEY_CHAIN_LINKS: &'static str = "chain_links";
+
+    // Key for path count.
+    const KEY_PATHS: &'static str = "paths";
 
     // Key for sample count.
     const KEY_SAMPLES: &'static str = "samples";
@@ -90,9 +102,6 @@ impl GBZBase {
 
     // Key for sample count.
     const KEY_CONTIGS: &'static str = "contigs";
-
-    // Key for path count.
-    const KEY_PATHS: &'static str = "paths";
 
     // Prefix for GBWT tag keys.
     const KEY_GBWT: &'static str = "gbwt_";
@@ -116,16 +125,19 @@ impl GBZBase {
             return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
         }
         let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
+        let chains = get_numeric_value(&mut get_tag, Self::KEY_CHAINS)?;
+        let chain_links = get_numeric_value(&mut get_tag, Self::KEY_CHAIN_LINKS)?;
+        let paths = get_numeric_value(&mut get_tag, Self::KEY_PATHS)?;
         let samples = get_numeric_value(&mut get_tag, Self::KEY_SAMPLES)?;
         let haplotypes = get_numeric_value(&mut get_tag, Self::KEY_HAPLOTYPES)?;
         let contigs = get_numeric_value(&mut get_tag, Self::KEY_CONTIGS)?;
-        let paths = get_numeric_value(&mut get_tag, Self::KEY_PATHS)?;
         drop(get_tag);
 
         Ok(GBZBase {
             connection,
             version,
-            nodes, samples, haplotypes, contigs, paths,
+            nodes, chains, chain_links,
+            paths, samples, haplotypes, contigs,
         })
     }
 
@@ -150,6 +162,21 @@ impl GBZBase {
         self.nodes
     }
 
+    /// Returns the number of top-level chains with stored links between boundary nodes.
+    pub fn chains(&self) -> usize {
+        self.chains
+    }
+
+    /// Returns the total number of links in the top-level chains.
+    pub fn chain_links(&self) -> usize {
+        self.chain_links
+    }
+
+    /// Returns the number of paths in the graph.
+    pub fn paths(&self) -> usize {
+        self.paths
+    }
+
     /// Returns the number of samples in path metadata.
     pub fn samples(&self) -> usize {
         self.samples
@@ -164,28 +191,35 @@ impl GBZBase {
     pub fn contigs(&self) -> usize {
         self.contigs
     }
-
-    /// Returns the number of paths in the graph.
-    pub fn paths(&self) -> usize {
-        self.paths
-    }
 }
 
 //-----------------------------------------------------------------------------
 
-// FIXME: chains
+// FIXME: tests + examples with chains
 /// Creating the database.
 impl GBZBase {
-    /// Creates a new database from the GBZ graph in file `gbz_file` and stores the database in file `db_file`.
+    /// Creates a new database from the input files.
+    ///
+    /// # Arguments
+    ///
+    /// * `gbz_file`: Name of the file containing the GBZ graph.
+    /// * `chains_file`: Name of the file containing top-level chains.
+    /// * `db_file`: Name of the database file to be created.
     ///
     /// # Errors
     ///
     /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create_from_file<P: AsRef<Path>, Q: AsRef<Path>>(gbz_file: P, db_file: Q) -> Result<(), String> {
-        eprintln!("Loading GBZ graph {}", gbz_file.as_ref().display());
+    pub fn create_from_files(gbz_file: &Path, chains_file: Option<&Path>, db_file: &Path) -> Result<(), String> {
+        eprintln!("Loading GBZ graph {}", gbz_file.display());
         let graph: GBZ = serialize::load_from(&gbz_file).map_err(|x| x.to_string())?;
-        Self::create(&graph, db_file)
+        let chains = if let Some(filename) = chains_file {
+            eprintln!("Loading top-level chain file {}", filename.display());
+            Chains::from_file(filename)?
+        } else {
+            Chains::new()
+        };
+        Self::create(&graph, &chains, db_file)
     }
 
     // Sanity checks for the GBZ graph. We do not want to handle graphs without sufficient metadata.
@@ -207,13 +241,19 @@ impl GBZBase {
         Ok(())
     }
 
-    /// Creates a new database in file `filename` from the given GBZ graph.
+    /// Creates a new database from the given inputs.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: GBZ graph.
+    /// * `chains`: Top-level chains.
+    /// * `filename`: Name of the database file to be created.
     ///
     /// # Errors
     ///
     /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create<P: AsRef<Path>>(graph: &GBZ, filename: P) -> Result<(), String> {
+    pub fn create<P: AsRef<Path>>(graph: &GBZ, chains: &Chains, filename: P) -> Result<(), String> {
         eprintln!("Creating database {}", filename.as_ref().display());
         if utils::file_exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
@@ -221,14 +261,14 @@ impl GBZBase {
         Self::sanity_checks(graph)?;
 
         let mut connection = Connection::open(filename).map_err(|x| x.to_string())?;
-        Self::insert_tags(graph, &mut connection).map_err(|x| x.to_string())?;
-        Self::insert_nodes(graph, &mut connection).map_err(|x| x.to_string())?;
+        Self::insert_tags(graph, chains, &mut connection).map_err(|x| x.to_string())?;
+        Self::insert_nodes(graph, chains, &mut connection).map_err(|x| x.to_string())?;
         Self::insert_paths(graph, &mut connection).map_err(|x| x.to_string())?;
         Self::index_reference_paths(graph, &mut connection).map_err(|x| x.to_string())?;
         Ok(())
     }
 
-    fn insert_tags(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
+    fn insert_tags(graph: &GBZ, chains: &Chains, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -252,10 +292,12 @@ impl GBZBase {
             let metadata = graph.metadata().unwrap();
             insert.execute((Self::KEY_VERSION, Self::VERSION))?;
             insert.execute((Self::KEY_NODES, graph.nodes()))?;
+            insert.execute((Self::KEY_CHAINS, chains.len()))?;
+            insert.execute((Self::KEY_CHAIN_LINKS, chains.links()))?;
+            insert.execute((Self::KEY_PATHS, metadata.paths()))?;
             insert.execute((Self::KEY_SAMPLES, metadata.samples()))?;
             insert.execute((Self::KEY_HAPLOTYPES, metadata.haplotypes()))?;
             insert.execute((Self::KEY_CONTIGS, metadata.contigs()))?;
-            insert.execute((Self::KEY_PATHS, metadata.paths()))?;
             inserted += 6;
 
             // GBWT tags.
@@ -279,8 +321,7 @@ impl GBZBase {
         Ok(())
     }
 
-    // FIXME: next
-    fn insert_nodes(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
+    fn insert_nodes(graph: &GBZ, chains: &Chains, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Inserting nodes");
 
         // Create the nodes table.
@@ -289,7 +330,8 @@ impl GBZBase {
                 handle INTEGER PRIMARY KEY,
                 edges BLOB NOT NULL,
                 bwt BLOB NOT NULL,
-                sequence BLOB NOT NULL
+                sequence BLOB NOT NULL,
+                next INTEGER
             ) STRICT",
             (),
         )?;
@@ -299,7 +341,7 @@ impl GBZBase {
         let transaction = connection.transaction()?;
         {
             let mut insert = transaction.prepare(
-                "INSERT INTO Nodes(handle, edges, bwt, sequence) VALUES (?1, ?2, ?3, ?4)"
+                "INSERT INTO Nodes(handle, edges, bwt, sequence, next) VALUES (?1, ?2, ?3, ?4, ?5)"
             )?;
             let index: &GBWT = graph.as_ref();
             let bwt: &BWT = index.as_ref();
@@ -310,7 +352,8 @@ impl GBZBase {
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = graph.sequence(node_id).unwrap();
                 let encoded_sequence = utils::encode_sequence(sequence);
-                insert.execute((forward_id, edge_bytes, bwt_bytes, encoded_sequence))?;
+                let next: Option<usize> = chains.next(forward_id);
+                insert.execute((forward_id, edge_bytes, bwt_bytes, encoded_sequence, next))?;
                 inserted += 1;
         
                 // Reverse orientation.
@@ -319,7 +362,8 @@ impl GBZBase {
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = support::reverse_complement(sequence);
                 let encoded_sequence = utils::encode_sequence(&sequence);
-                insert.execute((reverse_id, edge_bytes, bwt_bytes, encoded_sequence))?;
+                let next: Option<usize> = chains.next(reverse_id);
+                insert.execute((reverse_id, edge_bytes, bwt_bytes, encoded_sequence, next))?;
                 inserted += 1;
             }
         }
@@ -612,11 +656,11 @@ impl GAFBase {
     ///
     /// Returns an error if the input files do not exist or the database already exists.
     /// Passes through any database errors.
-    pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
-        gaf_file: P, gbwt_file: Q, db_file: R,
+    pub fn create_from_files(
+        gaf_file: &Path, gbwt_file: &Path, db_file: &Path,
         params: &GAFBaseParams
     ) -> Result<(), String> {
-        eprintln!("Loading GBWT index {}", gbwt_file.as_ref().display());
+        eprintln!("Loading GBWT index {}", gbwt_file.display());
         let index: Arc<GBWT> = Arc::new(serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?);
         Self::create(gaf_file, index, db_file, params)
     }
@@ -960,21 +1004,25 @@ impl GAFBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: next
 /// A record for an oriented node.
 ///
 /// The record corresponds to one row in table `Nodes`.
 /// It stores the information in a GBWT node record ([`Record`]) and the sequence of the node in the correct orientation.
 /// The edges and the sequence are decompressed, while the BWT fragment remains in compressed form.
+///
+/// If the node is a boundary node in a top-level chain, there may also be a link to the next node in the chain.
+/// That requires that the link was also present in the source of the record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GBZRecord {
     handle: usize,
     edges: Vec<Pos>,
     bwt: Vec<u8>,
     sequence: Vec<u8>,
+    next: Option<usize>,
 }
 
 impl GBZRecord {
+    // TODO: add next from chains?
     /// Creates a new GBZ record from the given GBZ graph and node handle.
     ///
     /// Returns [`None`] if the node does not exist in the graph.
@@ -996,8 +1044,9 @@ impl GBZRecord {
         } else {
             support::reverse_complement(sequence)
         };
+        let next = None;
 
-        Some(GBZRecord { handle, edges, bwt, sequence })
+        Some(GBZRecord { handle, edges, bwt, sequence, next })
     }
 
     /// Creates a new GBZ record from the raw parts.
@@ -1009,8 +1058,8 @@ impl GBZRecord {
     /// This is probably safe, even if the record breaks some invariants.
     /// However, I do not have the time and the energy to determine the consequences.
     #[doc(hidden)]
-    pub unsafe fn from_raw_parts(handle: usize, edges: Vec<Pos>, bwt: Vec<u8>, sequence: Vec<u8>) -> Self {
-        GBZRecord { handle, edges, bwt, sequence }
+    pub unsafe fn from_raw_parts(handle: usize, edges: Vec<Pos>, bwt: Vec<u8>, sequence: Vec<u8>, next: Option<usize>) -> Self {
+        GBZRecord { handle, edges, bwt, sequence, next }
     }
 
     /// Returns a GBWT record based on this record.
@@ -1089,6 +1138,12 @@ impl GBZRecord {
     #[inline]
     pub fn sequence_len(&self) -> usize {
         self.sequence.len()
+    }
+
+    /// Returns the next handle for the next boundary node in the chain, or [`None`] if there is none.
+    #[inline]
+    pub fn next(&self) -> Option<usize> {
+        self.next
     }
 }
 
@@ -1179,7 +1234,7 @@ impl AsRef<FullPathName> for GBZPath {
 /// // Create the database.
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("graph-interface");
-/// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+/// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
 /// assert!(result.is_ok());
 ///
 /// // Open the database and create a graph interface.
@@ -1241,9 +1296,8 @@ impl<'a> GraphInterface<'a> {
             "SELECT value FROM Tags WHERE key = ?1"
         ).map_err(|x| x.to_string())?;
 
-        // FIXME: next
         let get_record = database.connection.prepare(
-            "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
+            "SELECT edges, bwt, sequence, next FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
 
         let get_path = database.connection.prepare(
@@ -1294,7 +1348,6 @@ impl<'a> GraphInterface<'a> {
         ).optional().map_err(|x| x.to_string())
     }
 
-    // FIXME: next
     /// Returns the node record for the given handle, or [`None`] if the node does not exist.
     pub fn get_record(&mut self, handle: usize) -> Result<Option<GBZRecord>, String> {
         self.get_record.query_row(
@@ -1305,7 +1358,8 @@ impl<'a> GraphInterface<'a> {
                 let bwt: Vec<u8> = row.get(1)?;
                 let encoded_sequence: Vec<u8> = row.get(2)?;
                 let sequence: Vec<u8> = utils::decode_sequence(&encoded_sequence);
-                Ok(GBZRecord { handle, edges, bwt, sequence })
+                let next: Option<usize> = row.get(3)?;
+                Ok(GBZRecord { handle, edges, bwt, sequence, next })
             }
         ).optional().map_err(|x| x.to_string())
     }
@@ -1559,7 +1613,7 @@ impl ReadSet {
             };
 
             unsafe {
-                Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence))
+                Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence, None))
             }
         };
 

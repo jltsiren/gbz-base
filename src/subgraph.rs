@@ -380,7 +380,7 @@ impl Subgraph {
     /// // Create the database.
     /// let gbz_file = support::get_test_data("example.gbz");
     /// let db_file = serialize::temp_file_name("subgraph");
-    /// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    /// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
     /// assert!(result.is_ok());
     ///
     /// // Open the database and create a graph interface.
@@ -833,7 +833,7 @@ impl Subgraph {
     /// // Create the database.
     /// let gbz_file = support::get_test_data("example.gbz");
     /// let db_file = serialize::temp_file_name("subgraph");
-    /// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    /// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
     /// assert!(result.is_ok());
     ///
     /// // Open the database and create a graph interface.

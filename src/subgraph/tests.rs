@@ -18,7 +18,7 @@ fn subgraph_from_sequences(nodes: &[(usize, Vec<u8>)]) -> Subgraph {
     let mut records: BTreeMap<usize, GBZRecord> = BTreeMap::new();
     for (handle, sequence) in nodes.iter() {
         let record = unsafe {
-            GBZRecord::from_raw_parts(*handle, Vec::new(), Vec::new(), sequence.clone())
+            GBZRecord::from_raw_parts(*handle, Vec::new(), Vec::new(), sequence.clone(), None)
         };
         records.insert(*handle, record);
     }
@@ -661,8 +661,9 @@ fn subgraph_from_gbz() {
 fn subgraph_from_db() {
     let gbz_file = support::get_test_data("example.gbz");
     let gbz_graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains_file = None;
     let db_file = serialize::temp_file_name("subgraph-from-db");
-    let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    let result = GBZBase::create_from_files(&gbz_file, chains_file, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     let mut database = GBZBase::open(&db_file).unwrap();
     let mut graph = GraphInterface::new(&mut database).unwrap();
@@ -736,8 +737,9 @@ fn manual_gbz_queries() {
 fn manual_db_queries() {
     let gbz_file = support::get_test_data("example.gbz");
     let gbz_graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains_file= None;
     let db_file = serialize::temp_file_name("subgraph-from-db");
-    let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    let result = GBZBase::create_from_files(&gbz_file, chains_file, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     let mut database = GBZBase::open(&db_file).unwrap();
     let mut graph = GraphInterface::new(&mut database).unwrap();

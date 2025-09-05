@@ -189,6 +189,7 @@ pub fn encoded_length(sequence_length: usize) -> usize {
 //-----------------------------------------------------------------------------
 
 // TODO: Move to gbwt-rs?
+// TODO: Do we want to support nested chains as well?
 /// A set of top-level chains represented as links between boundary nodes.
 ///
 /// Top-level chains provide a linear high-level structure for each weakly connected component in the graph.
@@ -226,7 +227,7 @@ pub struct Chains {
 
 impl Chains {
     // Reads the serialized chains representation.
-    fn deserialize<R: Read>(reader: &mut R) -> io::Result<Vec<IntVector>> {
+    fn read_data<R: Read>(reader: &mut R) -> io::Result<Vec<IntVector>> {
         let chains = usize::load(reader)?;
         let mut data: Vec<IntVector> = Vec::with_capacity(chains);
         for _ in 0..chains {
@@ -261,14 +262,22 @@ impl Chains {
         Ok(next)
     }
 
+    /// Creates an empty set of chains.
+    pub fn new() -> Self {
+        Self {
+            chains: 0,
+            next: BTreeMap::new(),
+        }
+    }
+
     /// Reads the chains from a reader in binary format.
     ///
     /// # Errors
     ///
     /// Passes through all deserialization errors.
     /// Returns an error if a handle occurs in multiple chains.
-    pub fn new<R: Read>(reader: &mut R) -> io::Result<Self> {
-        let data = Self::deserialize(reader)?;
+    pub fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let data = Self::read_data(reader)?;
         let chains = data.len();
         let next = Self::link_map(data)?;
         Ok(Self { chains, next })
@@ -278,12 +287,12 @@ impl Chains {
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be opened or [`Self::new`] fails.
+    /// Returns an error if the file cannot be opened or [`Self::deserialize`] fails.
     pub fn from_file<P: AsRef<Path>>(filename: P) -> Result<Self, String> {
         let mut file = File::open(&filename).map_err(|x|
             format!("Failed to open chains file {}: {}", filename.as_ref().display(), x)
         )?;
-        Self::new(&mut file).map_err(|x|
+        Self::deserialize(&mut file).map_err(|x|
             format!("Failed to read chains from file {}: {}", filename.as_ref().display(), x)
         )
     }
@@ -355,7 +364,7 @@ mod tests {
         let file = File::open(&filename);
         assert!(file.is_ok(), "Failed to open chains file {}", filename.display());
         let mut file = file.unwrap();
-        let data = Chains::deserialize(&mut file);
+        let data = Chains::read_data(&mut file);
         assert!(data.is_ok(), "Failed to read chains from {}", filename.display());
         data.unwrap()
     }
@@ -413,7 +422,14 @@ mod tests {
     }
 
     #[test]
-    fn chains_test() {
+    fn chains_empty() {
+        let chains = Chains::new();
+        assert_eq!(chains.len(), 0, "Expected empty chains");
+        assert_eq!(chains.links(), 0, "Expected no links");
+    }
+
+    #[test]
+    fn chains_nonempty() {
         let chains_file = get_test_data("micb-kir3dl1.chains");
         let data = load_chains(&chains_file);
         let chains = Chains::from_file(&chains_file);

@@ -11,6 +11,7 @@ Both file formats are under development and can change without warning.
 
 ## Building
 
+
 To build the package, run:
 
 ```sh
@@ -20,6 +21,8 @@ cargo build --release
 You will then have the `gbz2db`, `gaf2db`, and `query` tool binaries in `target/release/`.
 
 ## GBZ-base construction
+
+### Basic construction
 
 You can convert a GBZ graph `graph.gbz` into a database `graph.gbz.db` using:
 
@@ -33,6 +36,20 @@ An existing database can be overwritten with option `--overwrite`.
 
 The database will be functionally equivalent to the GBZ graph, except that it will not contain a node-to-segment translation.
 Generic paths (with sample name `_gbwt_ref`) and reference paths (samples specified in GBWT tag `reference_samples`) will be indexed for querying.
+
+### Including top-level chains
+
+A GBZ-base can optionally store links between boundary nodes in top-level chains.
+Such links enable better subgraph queries (see below).
+In order to build a database with top-level chains, you first need to extract the chains from a distance index or a snarls file.
+That requires [vg](https://github.com/vgteam/vg) version 1.69.0 or newer.
+
+Example with chains extracted from a distance index:
+
+```sh
+vg chains graph.gbz graph.dist > graph.chains
+gbz2db --chains graph.chains graph.gbz
+```
 
 ## GAF-base construction
 
