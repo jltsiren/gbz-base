@@ -189,7 +189,6 @@ pub fn encoded_length(sequence_length: usize) -> usize {
 //-----------------------------------------------------------------------------
 
 // TODO: Move to gbwt-rs?
-// FIXME: examples, tests
 /// A set of top-level chains represented as links between boundary nodes.
 ///
 /// Top-level chains provide a linear high-level structure for each weakly connected component in the graph.
@@ -200,6 +199,26 @@ pub fn encoded_length(sequence_length: usize) -> usize {
 ///
 /// This representation is based on storing links between successive boundary nodes.
 /// Each link is stored twice, once in each orientation.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::Chains;
+/// use gbz_base::utils;
+/// use gbwt::support::{self, Orientation};
+///
+/// let filename = utils::get_test_data("micb-kir3dl1.chains");
+/// let chains = Chains::from_file(&filename);
+/// assert!(chains.is_ok());
+/// let chains = chains.unwrap();
+///
+/// assert_eq!(chains.len(), 2);
+/// assert_eq!(chains.links(), 925);
+/// let handle = support::encode_node(44, Orientation::Forward);
+/// assert!(chains.has_handle(handle));
+/// let next = support::encode_node(47, Orientation::Forward);
+/// assert_eq!(chains.next(handle), Some(next));
+/// ```
 pub struct Chains {
     chains: usize,
     next: BTreeMap<usize, usize>,
