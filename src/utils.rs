@@ -288,12 +288,12 @@ impl Chains {
     /// # Errors
     ///
     /// Returns an error if the file cannot be opened or [`Self::deserialize`] fails.
-    pub fn from_file<P: AsRef<Path>>(filename: P) -> Result<Self, String> {
+    pub fn from_file(filename: &Path) -> Result<Self, String> {
         let mut file = File::open(&filename).map_err(|x|
-            format!("Failed to open chains file {}: {}", filename.as_ref().display(), x)
+            format!("Failed to open chains file {}: {}", filename.display(), x)
         )?;
         Self::deserialize(&mut file).map_err(|x|
-            format!("Failed to read chains from file {}: {}", filename.as_ref().display(), x)
+            format!("Failed to read chains from file {}: {}", filename.display(), x)
         )
     }
 

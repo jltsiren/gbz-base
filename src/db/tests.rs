@@ -1,4 +1,5 @@
 use crate::{HaplotypeOutput, SubgraphQuery, Alignment};
+use crate::utils;
 
 use super::*;
 
@@ -112,7 +113,7 @@ fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
     }
 }
 
-fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
+fn check_nodes(interface: &mut GraphInterface, graph: &GBZ, chains: &Chains) {
     let gbwt: &GBWT = graph.as_ref();
     let bwt: &BWT = gbwt.as_ref();
 
@@ -126,7 +127,7 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
             assert!(record.is_some(), "Missing node record for handle {}", handle);
             let record = record.unwrap();
 
-            // Handle and sequence.
+            // Handle, sequence, and link.
             assert_eq!(record.handle(), handle, "Wrong node record handle");
             if orientation == Orientation::Forward {
                 assert_eq!(record.sequence(), sequence, "Wrong sequence for handle {}", handle);
@@ -134,6 +135,7 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
                 let rc = support::reverse_complement(sequence);
                 assert_eq!(record.sequence(), rc, "Wrong sequence for handle {}", handle);
             }
+            assert_eq!(record.next(), chains.next(handle), "Wrong chain link for handle {}", handle);
 
             // Successors using the graph / iterator.
             let truth: Vec<(usize, Orientation)> = graph.successors(node_id, orientation).unwrap().collect();
@@ -221,7 +223,7 @@ fn create_from_graph() {
     // Check header, tags, and nodes.
     check_header(&database, &graph, &chains);
     check_tags(&mut interface, &graph);
-    check_nodes(&mut interface, &graph);
+    check_nodes(&mut interface, &graph, &chains);
 
     drop(interface);
     drop(database);
@@ -233,7 +235,7 @@ fn create_from_file() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    let chains = Chains::new(); // FIXME: placeholder
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
     let db_file = create_database_from_files(&gbz_file, None);
@@ -243,7 +245,30 @@ fn create_from_file() {
     // Check header, tags, and nodes.
     check_header(&database, &graph, &chains);
     check_tags(&mut interface, &graph);
-    check_nodes(&mut interface, &graph);
+    check_nodes(&mut interface, &graph, &chains);
+
+    drop(interface);
+    drop(database);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn large_test_case() {
+    // Load the graph.
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains_file = utils::get_test_data("micb-kir3dl1.chains");
+    let chains = Chains::from_file(&chains_file).unwrap();
+
+    // Create and open the database and create a graph interface.
+    let db_file = create_database_from_graph(&graph, &chains);
+    let database = open_database(&db_file);
+    let mut interface = create_interface(&database);
+
+    // Check header, tags, and nodes.
+    check_header(&database, &graph, &chains);
+    check_tags(&mut interface, &graph);
+    check_nodes(&mut interface, &graph, &chains);
 
     drop(interface);
     drop(database);
@@ -382,28 +407,31 @@ fn visited_positions(gbwt: &GBWT, path_handle: usize) -> HashSet<Pos> {
     result
 }
 
-#[test]
-fn indexed_position() {
-    let gbz_file = support::get_test_data("example.gbz");
-    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    let chains = Chains::new();
+fn check_indexed_positions(gbz_file: &PathBuf, chains_file: Option<&PathBuf>, ref_samples: Vec<String>) {
+    let graph: GBZ = serialize::load_from(gbz_file).unwrap();
+    let chains = if let Some(chains_file) = chains_file {
+        Chains::from_file(chains_file).unwrap()
+    } else {
+        Chains::new()
+    };
 
     // Create and open the database and create a graph interface.
     let db_file = create_database_from_graph(&graph, &chains);
     let database = open_database(&db_file);
     let mut interface = create_interface(&database);
 
-    // Check that paths corresponding to `gbwt::REF_SAMPLE` have been indexed.
-    // TODO: We should have another test graph with reference paths instead of generic paths.
-    const MAX_LEN: usize = 20; // This is enough for the example.
+    // Check that paths corresponding to the reference samples have been indexed.
+    let mut offsets: Vec<usize> = (0..20).collect();
+    let past_the_end = 1000000;
+    offsets.push(past_the_end); // This is past the end in all test cases.
     let gbwt: &GBWT = graph.as_ref();
     for path_handle in 0..database.paths() {
         let path = existing_path_by_handle(&mut interface, path_handle);
         if path.is_indexed {
-            assert_eq!(path.name.sample, REF_SAMPLE, "Path {} with sample name {} is indexed", path_handle, path.name.sample);
+            assert!(ref_samples.contains(&path.name.sample), "Path {} with sample name {} is not indexed", path_handle, path.name.sample);
             let mut previous = 0;
             let visited = visited_positions(gbwt, path_handle);
-            for offset in 0..MAX_LEN {
+            for &offset in offsets.iter() {
                 let (indexed, pos) = existing_indexed_pos(&mut interface, path_handle, offset);
                 assert!(indexed <= offset, "Indexed position {} is after query position {} for path {}", indexed, offset, path_handle);
                 assert!(indexed >= previous, "Indexed position {} is before the previous position {} for path {}", indexed, previous, path_handle);
@@ -411,19 +439,35 @@ fn indexed_position() {
                 assert!(visited.contains(&pos), "Path {} does not visit indexed position ({}, {}) at offset {}", path_handle, pos.node, pos.offset, indexed);
             }
         } else {
-            assert_ne!(path.name.sample, REF_SAMPLE, "Path {} with sample name {} is not indexed", path_handle, path.name.sample);
-            let result = indexed_pos(&mut interface, path_handle, MAX_LEN);
+            assert!(!ref_samples.contains(&path.name.sample), "Path {} with sample name {} is indexed", path_handle, path.name.sample);
+            let result = indexed_pos(&mut interface, path_handle, past_the_end);
             assert!(result.is_none(), "Found indexed position for non-indeded path {}", path_handle);
             continue;
         }
     }
 
-    let nonexistent = indexed_pos(&mut interface, database.paths(), MAX_LEN);
+    let nonexistent = indexed_pos(&mut interface, database.paths(), past_the_end);
     assert!(nonexistent.is_none(), "Found indexed position for nonexistent path");
 
     drop(interface);
     drop(database);
     let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn index_generic_paths() {
+    let gbz_file = support::get_test_data("example.gbz");
+    let chains_file = None;
+    let ref_samples = vec![String::from(REF_SAMPLE)];
+    check_indexed_positions(&gbz_file, chains_file, ref_samples);
+}
+
+#[test]
+fn index_reference_paths() {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let chains_file = Some(utils::get_test_data("micb-kir3dl1.chains"));
+    let ref_samples = vec![String::from("GRCh38"), String::from("CHM13")];
+    check_indexed_positions(&gbz_file, chains_file.as_ref(), ref_samples);
 }
 
 //-----------------------------------------------------------------------------

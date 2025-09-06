@@ -24,7 +24,6 @@ mod tests;
 
 //-----------------------------------------------------------------------------
 
-// FIXME: add top-level chains to statistics
 /// A database connection to a GBZ-base database.
 ///
 /// This structure stores a database connection and some header information.
@@ -195,7 +194,7 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: tests + examples with chains
+// FIXME: examples with chains
 /// Creating the database.
 impl GBZBase {
     /// Creates a new database from the input files.
