@@ -73,6 +73,7 @@ pub struct SubgraphQuery {
     output: HaplotypeOutput,
 }
 
+// TODO: Builder pattern?
 impl SubgraphQuery {
     /// Creates a query that retrieves a subgraph around a path offset.
     ///
@@ -854,7 +855,7 @@ impl Subgraph {
     ///
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
-    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, false, HaplotypeOutput::All);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_gbz(&graph, Some(&path_index), None, &query);
     /// assert!(result.is_ok());
@@ -864,7 +865,7 @@ impl Subgraph {
     /// assert_eq!(subgraph.paths(), 3);
     ///
     /// // We get the same result using a node id.
-    /// let query = SubgraphQuery::nodes([14], 1, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::nodes([14], 1, false, HaplotypeOutput::All);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_gbz(&graph, None, None, &query);
     /// assert!(result.is_ok());
@@ -947,7 +948,7 @@ impl Subgraph {
     ///
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
-    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, false, HaplotypeOutput::All);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_db(&mut interface, &query);
     /// assert!(result.is_ok());

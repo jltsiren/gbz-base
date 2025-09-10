@@ -1451,9 +1451,9 @@ impl<'a> GraphInterface<'a> {
 ///
 /// // Extract a 100 bp subgraph around node 150.
 /// let nodes = vec![150];
-/// let query = SubgraphQuery::nodes(nodes, 100, HaplotypeOutput::Distinct);
+/// let query = SubgraphQuery::nodes(nodes, 100, false, HaplotypeOutput::Distinct);
 /// let mut subgraph = Subgraph::new();
-/// let _ = subgraph.from_gbz(&graph, None, &query).unwrap();
+/// let _ = subgraph.from_gbz(&graph, None, None, &query).unwrap();
 ///
 /// // Create a database of reads aligned to the graph.
 /// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
