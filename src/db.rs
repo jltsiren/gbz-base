@@ -42,6 +42,7 @@ mod tests;
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("gbz-base");
 /// assert!(!utils::file_exists(&db_file));
+/// // Here we build a database without chains.
 /// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
 /// assert!(result.is_ok());
 ///
@@ -194,7 +195,6 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: examples with chains
 /// Creating the database.
 impl GBZBase {
     /// Creates a new database from the input files.

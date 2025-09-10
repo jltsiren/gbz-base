@@ -542,9 +542,9 @@ fn gaf_base_reads(gaf_part: &'static str) -> Vec<Alignment> {
 
 fn gaf_base_subgraph_queries() -> Vec<(SubgraphQuery, String)> {
     vec![
-        (SubgraphQuery::nodes(vec![], 100, HaplotypeOutput::All), String::from("empty")),
-        (SubgraphQuery::nodes(vec![1000], 100, HaplotypeOutput::All), String::from("single component")),
-        (SubgraphQuery::nodes(vec![500, 1500], 100, HaplotypeOutput::All), String::from("two components")),
+        (SubgraphQuery::nodes(vec![], 100, false, HaplotypeOutput::All), String::from("empty")),
+        (SubgraphQuery::nodes(vec![1000], 100, false, HaplotypeOutput::All), String::from("single component")),
+        (SubgraphQuery::nodes(vec![500, 1500], 100, false, HaplotypeOutput::All), String::from("two components")),
     ]
 }
 
@@ -675,7 +675,7 @@ fn test_read_set_gbz(gbwt_part: &'static str) {
     let queries = gaf_base_subgraph_queries();
     for (query, name) in queries {
         let mut subgraph = Subgraph::new();
-        let result = subgraph.from_gbz(&graph, None, &query);
+        let result = subgraph.from_gbz(&graph, None, None, &query);
         assert!(result.is_ok(), "Failed to extract subgraph for {}: {}", name, result.unwrap_err());
 
         let overlapping = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &gaf_base, false);

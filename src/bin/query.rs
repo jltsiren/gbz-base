@@ -1,4 +1,4 @@
-use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Subgraph, SubgraphQuery, HaplotypeOutput};
+use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Subgraph, SubgraphQuery, HaplotypeOutput, Chains};
 use gbz_base::{GAFBase, ReadSet};
 
 use gbwt::{FullPathName, GBZ, REF_SAMPLE};
@@ -26,7 +26,11 @@ fn main() -> Result<(), String> {
     if use_gbz {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
-        subgraph.from_gbz(&graph, Some(&path_index), &config.query)?;
+        let chains = match &config.chains {
+            Some(file) => Some(Chains::from_file(file.as_ref())?),
+            None => None,
+        };
+        subgraph.from_gbz(&graph, Some(&path_index), chains.as_ref(), &config.query)?;
         subgraph_statistics(&subgraph);
         write_subgraph(&subgraph, &config)?;
         extract_gaf(GraphReference::Gbz(&graph), &subgraph, &config)?;
@@ -90,6 +94,7 @@ enum OutputFormat {
 struct Config {
     filename: String,
     query: SubgraphQuery,
+    chains: Option<String>,
     cigar: bool,
     format: OutputFormat,
     gaf_base: Option<String>,
@@ -114,6 +119,8 @@ impl Config {
         opts.optmulti("n", "node", "node identifier (may repeat)", "INT");
         let context_desc = format!("context length in bp (default: {})", Self::DEFAULT_CONTEXT);
         opts.optopt("", "context", &context_desc, "INT");
+        opts.optflag("", "snarls", "include nodes in covered top-level snarls");
+        opts.optopt("", "chains", "top-level chains file (for --snarls with a GBZ graph)", "FILE");
         opts.optflag("", "distinct", "output distinct haplotypes with weights");
         opts.optflag("", "reference-only", "output the reference but no other haplotypes");
         opts.optflag("", "cigar", "output CIGAR strings for the haplotypes");
@@ -135,7 +142,9 @@ impl Config {
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
+
         let query = Self::parse_query(&matches)?;
+        let chains = matches.opt_str("chains");
         let cigar = matches.opt_present("cigar");
         let mut format: OutputFormat = OutputFormat::Gfa;
         if let Some(s) = matches.opt_str("format") {
@@ -150,7 +159,7 @@ impl Config {
         let gaf_output = matches.opt_str("gaf-output");
         let contained = matches.opt_present("contained");
 
-        Ok(Config { filename, query, cigar, format, gaf_base, gaf_output, contained })
+        Ok(Config { filename, query, chains, cigar, format, gaf_base, gaf_output, contained })
     }
 
     fn write_gaf(&self) -> bool {
@@ -194,6 +203,7 @@ impl Config {
         } else {
             Self::DEFAULT_CONTEXT
         };
+        let snarls = matches.opt_present("snarls");
         let mut output = HaplotypeOutput::All;
         if matches.opt_present("distinct") {
             output = HaplotypeOutput::Distinct;
@@ -204,12 +214,12 @@ impl Config {
 
         if let Some(s) = matches.opt_str("offset") {
             let offset = Self::parse_integer(&s, "offset")?;
-            let query = SubgraphQuery::path_offset(&path_name.unwrap(), offset, context, output);
+            let query = SubgraphQuery::path_offset(&path_name.unwrap(), offset, context, snarls, output);
             Ok(query)
         }
         else if let Some(s) = matches.opt_str("interval") {
             let interval = Self::parse_interval(&s)?;
-            let query = SubgraphQuery::path_interval(&path_name.unwrap(), interval, context, output);
+            let query = SubgraphQuery::path_interval(&path_name.unwrap(), interval, context, snarls, output);
             Ok(query)
         } else {
             let node_strings = matches.opt_strs("node");
@@ -218,7 +228,7 @@ impl Config {
                 let id = Self::parse_integer(&node, "node")?;
                 nodes.push(id);
             }
-            let query = SubgraphQuery::nodes(nodes, context, output);
+            let query = SubgraphQuery::nodes(nodes, context, snarls, output);
             Ok(query)
         }
     }
