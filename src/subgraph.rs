@@ -2,9 +2,14 @@
 //!
 //! This module provides functionality for extracting a subgraph around a specific position or interval of a specific path.
 //! The subgraph contains all nodes within a given context and all edges between them.
+//! It can also be extended to include all nodes in top-level snarls with boundary nodes already in the subgraph.
 //! All other paths within the subgraph can also be extracted, but they will not have any true metadata associated with them.
 
-use crate::{GBZRecord, GBZPath, GraphInterface, GraphReference, PathIndex, Chains};
+use crate::{GBZRecord, GBZPath};
+use crate::{GraphInterface, GraphReference};
+use crate::{PathIndex, Chains};
+use crate::{SubgraphQuery, HaplotypeOutput};
+use crate::subgraph::query::QueryType;
 use crate::formats::{self, WalkMetadata, JSONValue};
 
 use std::cmp::Reverse;
@@ -23,166 +28,7 @@ use gbwt::{algorithms, support};
 #[cfg(test)]
 mod tests;
 
-//-----------------------------------------------------------------------------
-
-/// Output options for the haplotypes in the subgraph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum HaplotypeOutput {
-    /// Output all haplotypes as separate paths.
-    All,
-
-    /// Output only distinct haplotypes with the number of duplicates stored in the weight field.
-    Distinct,
-
-    /// Output only the reference path.
-    ReferenceOnly,
-}
-
-impl Display for HaplotypeOutput {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            HaplotypeOutput::All => write!(f, "all"),
-            HaplotypeOutput::Distinct => write!(f, "distinct"),
-            HaplotypeOutput::ReferenceOnly => write!(f, "reference only"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum QueryType {
-    // Path name and offset in bp stored in the fragment field.
-    PathOffset(FullPathName),
-    // Starting position as in `PathOffset` and length in bp.
-    PathInterval((FullPathName, usize)),
-    // Set of node identifiers.
-    Nodes(BTreeSet<usize>),
-}
-
-/// Arguments for extracting a subgraph.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SubgraphQuery {
-    query_type: QueryType,
-
-    // Context size around the reference position (in bp).
-    context: usize,
-
-    // Also extract nodes in covered top-level snarls.
-    snarls: bool,
-
-    // How to output the haplotypes.
-    output: HaplotypeOutput,
-}
-
-// TODO: Builder pattern?
-impl SubgraphQuery {
-    /// Creates a query that retrieves a subgraph around a path offset.
-    ///
-    /// The reference path should be specified by using a sample name, a contig name, and optionally a haplotype number.
-    /// The fragment field should not be used.
-    /// If the reference haplotype is fragmented, the query will try to find the right fragment.
-    ///
-    /// # Arguments
-    ///
-    /// * `path_name`: Name of the reference path.
-    /// * `offset`: Position in the reference path (in bp).
-    /// * `context`: Context length around the reference position (in bp).
-    /// * `snarls`: Also extract nodes in covered top-level snarls (requires top-level chains).
-    /// * `output`: How to output the haplotypes.
-    pub fn path_offset(path_name: &FullPathName, offset: usize, context: usize, snarls: bool, output: HaplotypeOutput) -> Self {
-        let mut path_name = path_name.clone();
-        path_name.fragment = offset;
-        SubgraphQuery {
-            query_type: QueryType::PathOffset(path_name),
-            context,
-            snarls,
-            output,
-        }
-    }
-
-    /// Cretes a query that retrieves a subgraph around a path interval.
-    ///
-    /// The reference path should be specified by using a sample name, a contig name, and optionally a haplotype number.
-    /// The fragment field should not be used.
-    /// If the reference haplotype is fragmented, the query will try to find the right fragment.
-    ///
-    /// # Arguments
-    ///
-    /// * `path_name`: Name of the reference path.
-    /// * `interval`: Interval of the reference path (in bp).
-    /// * `context`: Context length around the reference interval (in bp).
-    /// * `snarls`: Also extract nodes in covered top-level snarls (requires top-level chains in the graph).
-    /// * `output`: How to output the haplotypes.
-    pub fn path_interval(path_name: &FullPathName, interval: Range<usize>, context: usize, snarls: bool, output: HaplotypeOutput) -> Self {
-        let mut path_name = path_name.clone();
-        path_name.fragment = interval.start;
-        SubgraphQuery {
-            query_type: QueryType::PathInterval((path_name, interval.len())),
-            context,
-            snarls,
-            output,
-        }
-    }
-
-    /// Creates a query that retrieves a subgraph around a set of nodes.
-    ///
-    /// # Arguments
-    ///
-    /// * `nodes`: Set of node identifiers.
-    /// * `context`: Context length around the reference nodes (in bp).
-    /// * `snarls`: Also extract nodes in covered top-level snarls (requires top-level chains in the graph).
-    /// * `output`: How to output the haplotypes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `output` is [`HaplotypeOutput::ReferenceOnly`].
-    pub fn nodes(nodes: impl IntoIterator<Item = usize>, context: usize, snarls: bool, output: HaplotypeOutput) -> Self {
-        if output == HaplotypeOutput::ReferenceOnly {
-            panic!("Cannot output a reference path in a node-based query");
-        }
-        SubgraphQuery {
-            query_type: QueryType::Nodes(nodes.into_iter().collect()),
-            context,
-            snarls,
-            output,
-        }
-    }
-
-    fn query_type(&self) -> &QueryType {
-        &self.query_type
-    }
-
-    /// Returns the context length (in bp) for the query.
-    pub fn context(&self) -> usize {
-        self.context
-    }
-
-    /// Returns `true` if the query also extracts nodes coverered top-level snarls.
-    ///
-    /// A snarl is covered, if both of its boundary nodes are contained in the query interval or in the context.
-    pub fn snarls(&self) -> bool {
-        self.snarls
-    }
-
-    /// Returns the output format for the query.
-    pub fn output(&self) -> HaplotypeOutput {
-        self.output
-    }
-}
-
-impl Display for SubgraphQuery {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let context_str = if self.snarls() {
-            format!("{} with snarls", self.context)
-        } else {
-            format!("{}", self.context)
-        };
-        match self.query_type() {
-            QueryType::PathOffset(path_name) => write!(f, "(path {}, context {}, {})", path_name, context_str, self.output),
-            QueryType::PathInterval((path_name, len)) => write!(f, "(path {}, len {}, context {}, {})", path_name, len, context_str, self.output),
-            QueryType::Nodes(nodes) => write!(f, "(nodes {:#?}, context {}, {})", nodes, context_str, self.output),
-        }
-    }
-}
+pub mod query;
 
 //-----------------------------------------------------------------------------
 
@@ -855,7 +701,7 @@ impl Subgraph {
     ///
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
-    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, false, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::path_offset(&path_name, 2).with_context(1);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_gbz(&graph, Some(&path_index), None, &query);
     /// assert!(result.is_ok());
@@ -865,7 +711,7 @@ impl Subgraph {
     /// assert_eq!(subgraph.paths(), 3);
     ///
     /// // We get the same result using a node id.
-    /// let query = SubgraphQuery::nodes([14], 1, false, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::nodes([14]).with_context(1);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_gbz(&graph, None, None, &query);
     /// assert!(result.is_ok());
@@ -882,7 +728,7 @@ impl Subgraph {
                     String::from("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
-                self.around_position(GraphReference::Gbz(graph), reference_path.0.graph_pos(), query.context)?;
+                self.around_position(GraphReference::Gbz(graph), reference_path.0.graph_pos(), query.context())?;
                 if query.snarls() {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
@@ -893,7 +739,7 @@ impl Subgraph {
                     String::from("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
-                self.around_interval(GraphReference::Gbz(graph), reference_path.0, *len, query.context)?;
+                self.around_interval(GraphReference::Gbz(graph), reference_path.0, *len, query.context())?;
                 if query.snarls() {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
@@ -903,7 +749,7 @@ impl Subgraph {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
-                self.around_nodes(GraphReference::Gbz(graph), nodes, query.context)?;
+                self.around_nodes(GraphReference::Gbz(graph), nodes, query.context())?;
                 if query.snarls() {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
@@ -948,7 +794,7 @@ impl Subgraph {
     ///
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
-    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, false, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::path_offset(&path_name, 2).with_context(1);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_db(&mut interface, &query);
     /// assert!(result.is_ok());
@@ -966,7 +812,7 @@ impl Subgraph {
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
-                self.around_position(GraphReference::Db(graph), reference_path.0.graph_pos(), query.context)?;
+                self.around_position(GraphReference::Db(graph), reference_path.0.graph_pos(), query.context())?;
                 if query.snarls() {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
@@ -974,7 +820,7 @@ impl Subgraph {
             }
             QueryType::PathInterval((query_pos, len)) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
-                self.around_interval(GraphReference::Db(graph), reference_path.0, *len, query.context)?;
+                self.around_interval(GraphReference::Db(graph), reference_path.0, *len, query.context())?;
                 if query.snarls() {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
@@ -984,7 +830,7 @@ impl Subgraph {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
-                self.around_nodes(GraphReference::Db(graph), nodes, query.context)?;
+                self.around_nodes(GraphReference::Db(graph), nodes, query.context())?;
                 if query.snarls() {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }

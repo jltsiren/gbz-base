@@ -542,9 +542,9 @@ fn gaf_base_reads(gaf_part: &'static str) -> Vec<Alignment> {
 
 fn gaf_base_subgraph_queries() -> Vec<(SubgraphQuery, String)> {
     vec![
-        (SubgraphQuery::nodes(vec![], 100, false, HaplotypeOutput::All), String::from("empty")),
-        (SubgraphQuery::nodes(vec![1000], 100, false, HaplotypeOutput::All), String::from("single component")),
-        (SubgraphQuery::nodes(vec![500, 1500], 100, false, HaplotypeOutput::All), String::from("two components")),
+        (SubgraphQuery::nodes(vec![]).with_context(100).with_snarls(false).with_output(HaplotypeOutput::All), String::from("empty")),
+        (SubgraphQuery::nodes(vec![1000]).with_context(100).with_snarls(false).with_output(HaplotypeOutput::All), String::from("single component")),
+        (SubgraphQuery::nodes(vec![500, 1500]).with_context(100).with_snarls(false).with_output(HaplotypeOutput::All), String::from("two components")),
     ]
 }
 

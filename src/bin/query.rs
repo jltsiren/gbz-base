@@ -212,15 +212,13 @@ impl Config {
             output = HaplotypeOutput::ReferenceOnly;
         }
 
-        if let Some(s) = matches.opt_str("offset") {
+        let query = if let Some(s) = matches.opt_str("offset") {
             let offset = Self::parse_integer(&s, "offset")?;
-            let query = SubgraphQuery::path_offset(&path_name.unwrap(), offset, context, snarls, output);
-            Ok(query)
+            SubgraphQuery::path_offset(&path_name.unwrap(), offset)
         }
         else if let Some(s) = matches.opt_str("interval") {
             let interval = Self::parse_interval(&s)?;
-            let query = SubgraphQuery::path_interval(&path_name.unwrap(), interval, context, snarls, output);
-            Ok(query)
+            SubgraphQuery::path_interval(&path_name.unwrap(), interval)
         } else {
             let node_strings = matches.opt_strs("node");
             let mut nodes = Vec::with_capacity(node_strings.len());
@@ -228,9 +226,10 @@ impl Config {
                 let id = Self::parse_integer(&node, "node")?;
                 nodes.push(id);
             }
-            let query = SubgraphQuery::nodes(nodes, context, snarls, output);
-            Ok(query)
-        }
+            SubgraphQuery::nodes(nodes)
+        };
+
+        Ok(query.with_context(context).with_snarls(snarls).with_output(output))
     }
 }
 

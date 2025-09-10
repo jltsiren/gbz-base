@@ -1451,7 +1451,7 @@ impl<'a> GraphInterface<'a> {
 ///
 /// // Extract a 100 bp subgraph around node 150.
 /// let nodes = vec![150];
-/// let query = SubgraphQuery::nodes(nodes, 100, false, HaplotypeOutput::Distinct);
+/// let query = SubgraphQuery::nodes(nodes).with_output(HaplotypeOutput::Distinct);
 /// let mut subgraph = Subgraph::new();
 /// let _ = subgraph.from_gbz(&graph, None, None, &query).unwrap();
 ///

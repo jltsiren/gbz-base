@@ -436,11 +436,11 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
     let path_a = FullPathName::generic("A");
     let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::All),
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::Distinct),
-        SubgraphQuery::nodes([14], 1, false, HaplotypeOutput::Distinct),
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::ReferenceOnly),
-        SubgraphQuery::path_offset(&path_b, 2, 1, false, HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14]).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
     ];
     let truth = vec![
         (vec![12, 13, 14, 15, 16], 3),
@@ -456,11 +456,11 @@ fn queries_and_gfas(cigar: bool) -> (Vec<SubgraphQuery>, Vec<Vec<String>>){
     let path_a = FullPathName::generic("A");
     let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::All),
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::Distinct),
-        SubgraphQuery::nodes([14], 1, false, HaplotypeOutput::Distinct),
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::ReferenceOnly),
-        SubgraphQuery::path_offset(&path_b, 2, 1, false, HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14]).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
     ];
     let gfas = vec![
         vec![
@@ -540,10 +540,10 @@ fn queries_and_jsons(cigar: bool) -> (Vec<SubgraphQuery>, Vec<String>){
     let path_a = FullPathName::generic("A");
     //let path_b = FullPathName::generic("B");
     let queries = vec![
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::All),
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::Distinct),
-        SubgraphQuery::nodes([14], 1, false, HaplotypeOutput::Distinct),
-        SubgraphQuery::path_offset(&path_a, 2, 1, false, HaplotypeOutput::ReferenceOnly),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::All),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::nodes([14]).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::ReferenceOnly),
     ];
 
     let mut nodes: Vec<JSONValue> = Vec::new();
@@ -699,7 +699,7 @@ fn manual_gbz_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let graph_pos = reference_path.as_ref().unwrap().0.graph_pos();
-                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context);
+                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -711,13 +711,13 @@ fn manual_gbz_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let start_pos = reference_path.as_ref().unwrap().0;
-                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context);
+                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
             }
             QueryType::Nodes(nodes) => {
-                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context);
+                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -757,7 +757,7 @@ fn manual_db_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let graph_pos = reference_path.as_ref().unwrap().0.graph_pos();
-                let result = subgraph.around_position(GraphReference::Db(&mut graph), graph_pos, query.context);
+                let result = subgraph.around_position(GraphReference::Db(&mut graph), graph_pos, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -769,13 +769,13 @@ fn manual_db_queries() {
                 }
                 reference_path = Some(result.unwrap());
                 let start_pos = reference_path.as_ref().unwrap().0;
-                let result = subgraph.around_interval(GraphReference::Db(&mut graph), start_pos, *len, query.context);
+                let result = subgraph.around_interval(GraphReference::Db(&mut graph), start_pos, *len, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
             }
             QueryType::Nodes(nodes) => {
-                let result = subgraph.around_nodes(GraphReference::Db(&mut graph), nodes, query.context);
+                let result = subgraph.around_nodes(GraphReference::Db(&mut graph), nodes, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -810,11 +810,11 @@ fn duplicate_gbz_queries() {
                     panic!("Query {} failed: {}", query, err);
                 }
                 let graph_pos = result.unwrap().0.graph_pos();
-                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context);
+                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context);
+                let result = subgraph.around_position(GraphReference::Gbz(&graph), graph_pos, query.context());
                 match result {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
@@ -826,22 +826,22 @@ fn duplicate_gbz_queries() {
                     panic!("Query {} failed: {}", query, err);
                 }
                 let start_pos = result.unwrap().0;
-                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context);
+                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context);
+                let result = subgraph.around_interval(GraphReference::Gbz(&graph), start_pos, *len, query.context());
                 match result {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
                 }
             }
             QueryType::Nodes(nodes) => {
-                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context);
+                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context);
+                let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context());
                 match result {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
