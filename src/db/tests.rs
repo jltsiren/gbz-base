@@ -277,7 +277,7 @@ fn large_test_case() {
 
 //-----------------------------------------------------------------------------
 
-// FIXME handle empty paths
+// TODO: handle empty paths
 #[test]
 fn get_path() {
     // Load the graph.

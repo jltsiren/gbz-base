@@ -1,6 +1,6 @@
 //! Queries for extracting a subgraph from GBZ-base or a GBZ graph.
 
-use gbwt::FullPathName;
+use gbwt::{support, FullPathName};
 
 use std::collections::BTreeSet;
 use std::fmt::Display;
@@ -36,9 +36,11 @@ pub(super) enum QueryType {
     // Path name and offset in bp stored in the fragment field.
     PathOffset(FullPathName),
     // Starting position as in `PathOffset` and length in bp.
-    PathInterval((FullPathName, usize)),
+    PathInterval(FullPathName, usize),
     // Set of node identifiers.
     Nodes(BTreeSet<usize>),
+    // Subgraph between two handles in the same chain, with an optional safety limit for the number of nodes extracted.
+    Between((usize, usize), Option<usize>),
 }
 
 //-----------------------------------------------------------------------------
@@ -112,7 +114,7 @@ impl SubgraphQuery {
         let mut path_name = path_name.clone();
         path_name.fragment = interval.start;
         SubgraphQuery {
-            query_type: QueryType::PathInterval((path_name, interval.len())),
+            query_type: QueryType::PathInterval(path_name, interval.len()),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
@@ -123,6 +125,20 @@ impl SubgraphQuery {
     pub fn nodes(nodes: impl IntoIterator<Item = usize>) -> Self {
         SubgraphQuery {
             query_type: QueryType::Nodes(nodes.into_iter().collect()),
+            context: Self::DEFAULT_CONTEXT,
+            snarls: Self::DEFAULT_SNARLS,
+            output: Self::DEFAULT_OUTPUT,
+        }
+    }
+
+    /// Creates a query that extracts a subgraph between two handles in the same chain.
+    ///
+    /// This query ignores context length and the snarl extraction flag.
+    /// An optional safety limit for the size of the subgraph in nodes can be provided.
+    /// If the nodes are not in the same chain in the given order, the subgraph can otherwise be arbitrarily large.
+    pub fn between(start: usize, end: usize, limit: Option<usize>) -> Self {
+        SubgraphQuery {
+            query_type: QueryType::Between((start, end), limit),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
@@ -188,8 +204,18 @@ impl Display for SubgraphQuery {
         };
         match self.query_type() {
             QueryType::PathOffset(path_name) => write!(f, "(path {}, context {}, {})", path_name, context_str, self.output),
-            QueryType::PathInterval((path_name, len)) => write!(f, "(path {}, len {}, context {}, {})", path_name, len, context_str, self.output),
+            QueryType::PathInterval(path_name, len) => write!(f, "(path {}, len {}, context {}, {})", path_name, len, context_str, self.output),
             QueryType::Nodes(nodes) => write!(f, "(nodes {:#?}, context {}, {})", nodes, context_str, self.output),
+            QueryType::Between((start, end), limit) => {
+                let (start_id, start_o) = support::decode_node(*start);
+                let (end_id, end_o) = support::decode_node(*end);
+                let limit_str = if let Some(limit) = limit {
+                    format!(", limit {}", limit)
+                } else {
+                    String::new()
+                };
+                write!(f, "(between ({} {}) and ({} {}){}, {})", start_id, start_o, end_id, end_o, limit_str, self.output)
+            },
         }
     }
 }

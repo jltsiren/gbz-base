@@ -1,7 +1,9 @@
-use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Subgraph, SubgraphQuery, HaplotypeOutput, Chains};
+use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Chains};
+use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
 use gbz_base::{GAFBase, ReadSet};
 
-use gbwt::{FullPathName, GBZ, REF_SAMPLE};
+use gbwt::{FullPathName, Orientation, GBZ, REF_SAMPLE};
+use gbwt::support;
 
 use simple_sds::serialize;
 
@@ -115,9 +117,11 @@ impl Config {
         opts.optopt("", "sample", "sample name (default: no sample name)", "STR");
         opts.optopt("", "contig", "contig name (required for -o and -i)", "STR");
         opts.optopt("o", "offset", "sequence offset", "INT");
-        opts.optopt("i", "interval", "sequence interval", "INT..INT");
+        opts.optopt("i", "interval", "half-open sequence interval", "INT..INT");
         opts.optmulti("n", "node", "node identifier (may repeat)", "INT");
-        let context_desc = format!("context length in bp (default: {})", Self::DEFAULT_CONTEXT);
+        opts.optopt("b", "between", "subgraph between boundary nodes", "INT[+-]:INT[+-]");
+        opts.optopt("", "limit", "safety limit for the number of nodes in -b", "INT");
+        let context_desc = format!("context length in bp (not for -b; default: {})", Self::DEFAULT_CONTEXT);
         opts.optopt("", "context", &context_desc, "INT");
         opts.optflag("", "snarls", "include nodes in covered top-level snarls");
         opts.optopt("", "chains", "top-level chains file (for --snarls with a GBZ graph)", "FILE");
@@ -130,7 +134,7 @@ impl Config {
         opts.optflag("", "contained", "output only reads that are fully within the subgraph");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
-        let header = format!("Usage: {} [options] graph.gbz[.db]\n\nQuery type must be speficied using one of -o, -i, and -n.", program);
+        let header = format!("Usage: {} [options] graph.gbz[.db]\n\nQuery type must be speficied using one of -o, -i, -n, and -b.", program);
         if matches.opt_present("help") {
             eprint!("{}", opts.usage(&header));
             process::exit(0);
@@ -169,39 +173,74 @@ impl Config {
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {
         let mut parts = s.split("..");
         let start = parts.next().ok_or(format!("Invalid interval: {}", s))?;
-        let start = start.parse::<usize>().map_err(|x| format!("{}", x))?;
+        let start = start.parse::<usize>().map_err(|x| format!("Failed to parse interval start: {}", x))?;
         let end = parts.next().ok_or(format!("Invalid interval: {}", s))?;
-        let end = end.parse::<usize>().map_err(|x| format!("{}", x))?;
+        let end = end.parse::<usize>().map_err(|x| format!("Failed to parse interval end: {}", x))?;
         if parts.next().is_some() {
             return Err(format!("Invalid interval: {}", s));
         }
         Ok(start..end)
     }
 
+    // Parses a node id that may be followed by a + or a -.
+    fn parse_handle(s: &str) -> Result<usize, String> {
+        let mut len = s.len();
+        let orientation = if s.ends_with('+') {
+            len -= 1;
+            Orientation::Forward
+        } else if s.ends_with('-') {
+            len -= 1;
+            Orientation::Reverse
+        } else {
+            Orientation::Forward
+        };
+        let id = s[..len].parse::<usize>().map_err(|x| format!("Failed to parse (oriented) node: {}", x))?;
+        Ok(support::encode_node(id, orientation))
+    }
+
+    fn parse_between(s: &str) -> Result<(usize, usize), String> {
+        let mut parts = s.split(':');
+        let start = parts.next().ok_or(format!("Invalid pair of (oriented) nodes: {}", s))?;
+        let start = Self::parse_handle(start)?;
+        let end = parts.next().ok_or(format!("Invalid pair of (oriented) nodes: {}", s))?;
+        let end = Self::parse_handle(end)?;
+        if parts.next().is_some() {
+            return Err(format!("Invalid pair of (oriented) nodes: {}", s));
+        }
+        Ok((start, end))
+    }
+
     fn parse_integer(s: &str, option: &str) -> Result<usize, String> {
-        s.parse::<usize>().map_err(|x| format!("--{}: {}", option, x))
+        s.parse::<usize>().map_err(|x| format!("Failed to parse --{}: {}", option, x))
     }
 
     fn parse_query(matches: &getopts::Matches) -> Result<SubgraphQuery, String> {
         let mut count = 0;
-        if matches.opt_present("offset") { count += 1; }
-        if matches.opt_present("interval") { count += 1; }
+        let mut needs_path_name = false;
+        if matches.opt_present("offset") { count += 1; needs_path_name = true; }
+        if matches.opt_present("interval") { count += 1; needs_path_name = true; }
         if matches.opt_present("node") { count += 1; }
+        if matches.opt_present("between") { count += 1; }
         if count != 1 {
-            return Err("Exactly one of --offset, --interval, and --node must be provided".to_string());
+            return Err("Exactly one of --offset, --interval, --node, and --between must be provided".to_string());
         }
 
-        let path_name = if matches.opt_present("node") {
-            None
-        } else {
+        let path_name = if needs_path_name {
             let sample = matches.opt_str("sample").unwrap_or(String::from(REF_SAMPLE));
             let contig = matches.opt_str("contig").ok_or(String::from("Contig name must be provided with --contig"))?;
             Some(FullPathName::reference(&sample, &contig))
+        } else {
+            None
         };
         let context = if let Some(s) = matches.opt_str("context") {
             Self::parse_integer(&s, "context")?
         } else {
             Self::DEFAULT_CONTEXT
+        };
+        let limit = if let Some(s) = matches.opt_str("limit") {
+            Some(Self::parse_integer(&s, "limit")?)
+        } else {
+            None
         };
         let snarls = matches.opt_present("snarls");
         let mut output = HaplotypeOutput::All;
@@ -219,6 +258,9 @@ impl Config {
         else if let Some(s) = matches.opt_str("interval") {
             let interval = Self::parse_interval(&s)?;
             SubgraphQuery::path_interval(&path_name.unwrap(), interval)
+        } else if let Some(s) = matches.opt_str("between") {
+            let (start, end) = Self::parse_between(&s)?;
+            SubgraphQuery::between(start, end, limit)
         } else {
             let node_strings = matches.opt_strs("node");
             let mut nodes = Vec::with_capacity(node_strings.len());

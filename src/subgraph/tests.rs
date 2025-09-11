@@ -465,8 +465,12 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
         SubgraphQuery::nodes([14]).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
         SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::ReferenceOnly),
         SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        // Path interval corresponding to a snarl without and with the snarl.
         SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(false).with_output(HaplotypeOutput::All),
         SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(true).with_output(HaplotypeOutput::All),
+        // A snarl in both orientations.
+        SubgraphQuery::between(support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward), None).with_output(HaplotypeOutput::All),
+        SubgraphQuery::between(support::encode_node(14, Orientation::Reverse), support::encode_node(11, Orientation::Reverse), None).with_output(HaplotypeOutput::All),
     ];
     let truth = vec![
         (vec![12, 13, 14, 15, 16], 3),
@@ -476,6 +480,8 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
         (vec![22, 23, 24, 25], 2),
         (vec![14, 15, 17], 4),
         (vec![14, 15, 16, 17], 3),
+        (vec![11, 12, 13, 14], 3),
+        (vec![11, 12, 13, 14], 3),
     ];
     (queries, truth)
 }
@@ -733,8 +739,8 @@ fn manual_gbz_queries() {
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-            }
-            QueryType::PathInterval((query_pos, len)) => {
+            },
+            QueryType::PathInterval(query_pos, len) => {
                 let result = subgraph.path_pos_from_gbz(&graph, &path_index, query_pos);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
@@ -745,13 +751,19 @@ fn manual_gbz_queries() {
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-            }
+            },
             QueryType::Nodes(nodes) => {
                 let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-            }
+            },
+            QueryType::Between((start, end), limit) => {
+                let result = subgraph.nodes_between(GraphReference::Gbz(&graph), *start, *end, *limit);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            },
         }
 
         if query.snarls() {
@@ -798,8 +810,8 @@ fn manual_db_queries() {
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-            }
-            QueryType::PathInterval((query_pos, len)) => {
+            },
+            QueryType::PathInterval(query_pos, len) => {
                 let result = subgraph.path_pos_from_db(&mut graph, query_pos);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
@@ -810,13 +822,19 @@ fn manual_db_queries() {
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-            }
+            },
             QueryType::Nodes(nodes) => {
                 let result = subgraph.around_nodes(GraphReference::Db(&mut graph), nodes, query.context());
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-            }
+            },
+            QueryType::Between((start, end), limit) => {
+                let result = subgraph.nodes_between(GraphReference::Db(&mut graph), *start, *end, *limit);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+            },
         }
 
         if query.snarls() {
@@ -863,8 +881,8 @@ fn duplicate_gbz_queries() {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
                 }
-            }
-            QueryType::PathInterval((query_pos, len)) => {
+            },
+            QueryType::PathInterval(query_pos, len) => {
                 let result = subgraph.path_pos_from_gbz(&graph, &path_index, query_pos);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
@@ -879,7 +897,7 @@ fn duplicate_gbz_queries() {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
                 }
-            }
+            },
             QueryType::Nodes(nodes) => {
                 let result = subgraph.around_nodes(GraphReference::Gbz(&graph), nodes, query.context());
                 if let Err(err) = result {
@@ -890,7 +908,18 @@ fn duplicate_gbz_queries() {
                     Ok(result) => assert_eq!(result, (0, 0), "Duplicate query {} inserted/deleted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
                 }
-            }
+            },
+            QueryType::Between((start, end), limit) => {
+                let result = subgraph.nodes_between(GraphReference::Gbz(&graph), *start, *end, *limit);
+                if let Err(err) = result {
+                    panic!("Query {} failed: {}", query, err);
+                }
+                let result = subgraph.nodes_between(GraphReference::Gbz(&graph), *start, *end, *limit);
+                match result {
+                    Ok(result) => assert_eq!(result, 0, "Duplicate query {} inserted nodes", query),
+                    Err(err) => panic!("Duplicate query {} failed: {}", query, err),
+                }
+            },
         }
     }
 }

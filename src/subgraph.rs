@@ -47,6 +47,7 @@ pub mod query;
 /// * [`Subgraph::around_position`] for a context around a graph position.
 /// * [`Subgraph::around_interval`] for a context around path interval.
 /// * [`Subgraph::around_nodes`] for a context around a set of nodes.
+/// * [`Subgraph::nodes_between`] for all nodes and snarls in an interval of a chain.
 /// * [`Subgraph::extract_snarls`] to include all nodes in top-level snarls with boundary nodes in the current subgraph.
 ///
 /// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are integrated methods for extracting a subgraph with paths using a [`SubgraphQuery`].
@@ -593,11 +594,21 @@ impl Subgraph {
         Ok((inserted, removed))
     }
 
-    // FIXME: tests
-    // FIXME make public; add as a new query type
-    // FIXME: add a safety limit for the number of nodes in case this is not a snarl
-    // Inserts all nodes between the given two handles.
-    fn nodes_between(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize) -> Result<usize, String> {
+    // FIXME: tests with limit, examples
+    /// Inserts all nodes between the given two handles into the subgraph.
+    ///
+    /// If `start` and `end` are in the same chain in the given order, this will insert all nodes and snarls between them.
+    /// Otherwise the behavior will be unpredictable and it is recommended to set a safety limit to avoid excessive memory usage.
+    /// Removes all path information.
+    /// Returns the number of inserted nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: A GBZ-compatible graph.
+    /// * `start`: Start handle (inclusive).
+    /// * `end`: End handle (inclusive).
+    /// * `limit`: Optional safety limit on the number of inserted nodes.
+    pub fn nodes_between(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize, limit: Option<usize>) -> Result<usize, String> {
         self.clear_paths();
 
         // Active handles. We proceed to their successors but not predecessors.
@@ -615,6 +626,13 @@ impl Subgraph {
             let curr = active.pop().unwrap();
             let (node_id, orientation) = support::decode_node(curr);
             if !self.has_node(node_id) {
+                if let Some(limit) = limit {
+                    if inserted >= limit {
+                        let (start_id, start_o) = support::decode_node(start);
+                        let (end_id, end_o) = support::decode_node(end);
+                        return Err(format!("Found more than {} new nodes between ({}, {}) and ({}, {})", limit, start_id, start_o, end_id, end_o));
+                    }
+                }
                 self.add_node_internal(&mut graph, node_id)?;
                 inserted += 1;
             }
@@ -681,10 +699,10 @@ impl Subgraph {
         for (start, end) in snarls {
             match &mut graph {
                 GraphReference::Gbz(graph) => {
-                    inserted += self.nodes_between(GraphReference::Gbz(graph), start, end)?;
+                    inserted += self.nodes_between(GraphReference::Gbz(graph), start, end, None)?;
                 }
                 GraphReference::Db(graph) => {
-                    inserted += self.nodes_between(GraphReference::Db(graph), start, end)?;
+                    inserted += self.nodes_between(GraphReference::Db(graph), start, end, None)?;
                 }
             }
         }
@@ -706,9 +724,12 @@ impl Subgraph {
     ///
     /// # Errors
     ///
-    /// Returns an error if the query or the graph is invalid.
-    /// Returns an error if the graph does not contain the queried position.
-    /// Returns an error if a path index is required but not provided, or if the query path has not been indexed.
+    /// Returns an error, if:
+    ///
+    /// * The query or the graph is invalid.
+    /// * The graph does not contain the queried position.
+    /// * A path index is required but not provided, or if the query path has not been indexed.
+    ///
     /// If an error occurs, the subgraph may contain arbitrary nodes but no paths.
     ///
     /// # Examples
@@ -760,8 +781,8 @@ impl Subgraph {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
-            QueryType::PathInterval((query_pos, len)) => {
+            },
+            QueryType::PathInterval(query_pos, len) => {
                 let path_index = path_index.ok_or(
                     String::from("Path index is required for path-based queries")
                 )?;
@@ -771,7 +792,7 @@ impl Subgraph {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
+            },
             QueryType::Nodes(nodes) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
@@ -781,7 +802,14 @@ impl Subgraph {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
                 self.extract_paths(None, query.output())?;
-            }
+            },
+            QueryType::Between((start, end), limit) => {
+                if query.output() == HaplotypeOutput::ReferenceOnly {
+                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                }
+                self.nodes_between(GraphReference::Gbz(graph), *start, *end, *limit)?;
+                self.extract_paths(None, query.output())?;
+            },
         }
 
         Ok(())
@@ -794,9 +822,12 @@ impl Subgraph {
     ///
     /// # Errors
     ///
-    /// Returns an error if the query or the graph is invalid or if there is a database error.
-    /// Returns an error if the graph does not contain the queried position.
-    /// Returns an error if the query path has not been indexed.
+    /// Returns an error, if:
+    ///
+    /// * The query or the graph is invalid or if there is a database error.
+    /// * The graph does not contain the queried position.
+    /// * A path index is required but not provided, or if the query path has not been indexed.
+    ///
     /// If an error occurs, the subgraph may contain arbitrary nodes but no paths.
     ///
     /// # Examples
@@ -843,15 +874,15 @@ impl Subgraph {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
-            QueryType::PathInterval((query_pos, len)) => {
+            },
+            QueryType::PathInterval(query_pos, len) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
                 self.around_interval(GraphReference::Db(graph), reference_path.0, *len, query.context())?;
                 if query.snarls() {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
+            },
             QueryType::Nodes(nodes) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
@@ -861,7 +892,14 @@ impl Subgraph {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
                 self.extract_paths(None, query.output())?;
-            }
+            },
+            QueryType::Between((start, end), limit) => {
+                if query.output() == HaplotypeOutput::ReferenceOnly {
+                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                }
+                self.nodes_between(GraphReference::Db(graph), *start, *end, *limit)?;
+                self.extract_paths(None, query.output())?;
+            },
         }
 
         Ok(())
@@ -975,7 +1013,7 @@ impl Subgraph {
             }
         }
 
-        // FIXME: Check for infinite loops.
+        // TODO: Check for infinite loops.
         // Extract all paths and note if one of them passes through `ref_pos`.
         // `ref_offset` is the offset of the node containing `ref_pos`.
         let mut ref_offset: Option<usize> = None;
