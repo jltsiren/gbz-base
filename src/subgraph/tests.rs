@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::GBZBase;
-use crate::formats;
+use crate::{formats, utils};
 
 use simple_sds::serialize;
 
@@ -357,6 +357,15 @@ fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathInde
     (graph, path_index.unwrap())
 }
 
+fn load_chains(filename: &'static str) -> Chains {
+    let chains_file = utils::get_test_data(filename);
+    let chains = Chains::from_file(&chains_file);
+    if let Err(err) = chains {
+        panic!("Failed to load chains from {}: {}", chains_file.display(), err);
+    }
+    chains.unwrap()
+}
+
 fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_count: usize, test_case: &str) {
     // Counts.
     assert_eq!(subgraph.nodes(), true_nodes.len(), "Wrong number of nodes for {}", test_case);
@@ -408,17 +417,33 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
     for node_id in graph.node_iter() {
         for orientation in [Orientation::Forward, Orientation::Reverse] {
             if subgraph.has_node(node_id) {
+                // Subgraph successors.
                 let graph_succ = graph.successors(node_id, orientation).unwrap();
                 let subgraph_succ = subgraph.successors(node_id, orientation);
                 assert!(subgraph_succ.is_some(), "Subgraph {} does not contain successors for node {} ({})", test_case, node_id, orientation);
                 let subgraph_succ = subgraph_succ.unwrap();
                 assert!(graph_succ.filter(|(id, _)| subgraph.has_node(*id)).eq(subgraph_succ), "Subgraph {} has wrong successors for node {} ({})", test_case, node_id, orientation);
 
+                // Supergraph successors.
+                let graph_succ = graph.successors(node_id, orientation).unwrap();
+                let subgraph_succ = subgraph.supergraph_successors(node_id, orientation);
+                assert!(subgraph_succ.is_some(), "Subgraph {} does not contain supergraph successors for node {} ({})", test_case, node_id, orientation);
+                let subgraph_succ = subgraph_succ.unwrap();
+                assert!(subgraph_succ.eq(graph_succ), "Subgraph {} has wrong supergraph successors for node {} ({})", test_case, node_id, orientation);
+
+                // Subgraph predecessors.
                 let graph_pred = graph.predecessors(node_id, orientation).unwrap();
                 let subgraph_pred = subgraph.predecessors(node_id, orientation);
                 assert!(subgraph_pred.is_some(), "Subgraph {} does not contain predecessors for node {} ({})", test_case, node_id, orientation);
                 let subgraph_pred = subgraph_pred.unwrap();
                 assert!(graph_pred.filter(|(id, _)| subgraph.has_node(*id)).eq(subgraph_pred), "Subgraph {} has wrong predecessors for node {} ({})", test_case, node_id, orientation);
+
+                // Supergraph predecessors.
+                let graph_pred = graph.predecessors(node_id, orientation).unwrap();
+                let subgraph_pred = subgraph.supergraph_predecessors(node_id, orientation);
+                assert!(subgraph_pred.is_some(), "Subgraph {} does not contain supergraph predecessors for node {} ({})", test_case, node_id, orientation);
+                let subgraph_pred = subgraph_pred.unwrap();
+                assert!(subgraph_pred.eq(graph_pred), "Subgraph {} has wrong supergraph predecessors for node {} ({})", test_case, node_id, orientation);
             } else {
                 assert!(subgraph.successors(node_id, orientation).is_none(), "Subgraph {} contains successors for node {} ({})", test_case, node_id, orientation);
                 assert!(subgraph.predecessors(node_id, orientation).is_none(), "Subgraph {} contains predecessors for node {} ({})", test_case, node_id, orientation);
@@ -429,7 +454,6 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
 
 //-----------------------------------------------------------------------------
 
-// FIXME: add snarls
 // TODO: Add a multi-node query.
 // For each query, returns (true nodes, path count).
 fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
@@ -441,6 +465,8 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
         SubgraphQuery::nodes([14]).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
         SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::ReferenceOnly),
         SubgraphQuery::path_offset(&path_b, 2).with_context(1).with_snarls(false).with_output(HaplotypeOutput::Distinct),
+        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(false).with_output(HaplotypeOutput::All),
+        SubgraphQuery::path_interval(&path_a, 2..5).with_context(0).with_snarls(true).with_output(HaplotypeOutput::All),
     ];
     let truth = vec![
         (vec![12, 13, 14, 15, 16], 3),
@@ -448,6 +474,8 @@ fn queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
         (vec![12, 13, 14, 15, 16], 2),
         (vec![12, 13, 14, 15, 16], 1),
         (vec![22, 23, 24, 25], 2),
+        (vec![14, 15, 17], 4),
+        (vec![14, 15, 16, 17], 3),
     ];
     (queries, truth)
 }
@@ -647,10 +675,11 @@ fn random_nodes() {
 #[test]
 fn subgraph_from_gbz() {
     let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let chains = load_chains("example.chains");
     let (queries, truth) = queries_and_truth();
     for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
         let mut subgraph = Subgraph::new();
-        let result = subgraph.from_gbz(&graph, Some(&path_index), None, query);
+        let result = subgraph.from_gbz(&graph, Some(&path_index), Some(&chains), query);
         if let Err(err) = result {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
@@ -662,9 +691,9 @@ fn subgraph_from_gbz() {
 fn subgraph_from_db() {
     let gbz_file = support::get_test_data("example.gbz");
     let gbz_graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    let chains_file = None;
+    let chains_file = utils::get_test_data("example.chains");
     let db_file = serialize::temp_file_name("subgraph-from-db");
-    let result = GBZBase::create_from_files(&gbz_file, chains_file, &db_file);
+    let result = GBZBase::create_from_files(&gbz_file, Some(&chains_file), &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     let mut database = GBZBase::open(&db_file).unwrap();
     let mut graph = GraphInterface::new(&mut database).unwrap();
@@ -687,6 +716,7 @@ fn subgraph_from_db() {
 #[test]
 fn manual_gbz_queries() {
     let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let chains = load_chains("example.chains");
     let (queries, truth) = queries_and_truth();
     for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
         let mut subgraph = Subgraph::new();
@@ -724,6 +754,13 @@ fn manual_gbz_queries() {
             }
         }
 
+        if query.snarls() {
+            let result = subgraph.extract_snarls(GraphReference::Gbz(&graph), Some(&chains));
+            if let Err(err) = result {
+                panic!("Query {} failed: {}", query, err);
+            }
+        }
+
         // We do not have paths yet.
         assert_eq!(subgraph.paths(), 0, "Subgraph {} has paths", query);
         let result = subgraph.extract_paths(reference_path, query.output());
@@ -738,9 +775,9 @@ fn manual_gbz_queries() {
 fn manual_db_queries() {
     let gbz_file = support::get_test_data("example.gbz");
     let gbz_graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    let chains_file= None;
+    let chains_file= utils::get_test_data("example.chains");
     let db_file = serialize::temp_file_name("subgraph-from-db");
-    let result = GBZBase::create_from_files(&gbz_file, chains_file, &db_file);
+    let result = GBZBase::create_from_files(&gbz_file, Some(&chains_file), &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     let mut database = GBZBase::open(&db_file).unwrap();
     let mut graph = GraphInterface::new(&mut database).unwrap();
@@ -779,6 +816,13 @@ fn manual_db_queries() {
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
+            }
+        }
+
+        if query.snarls() {
+            let result = subgraph.extract_snarls(GraphReference::Db(&mut graph), None);
+            if let Err(err) = result {
+                panic!("Query {} failed: {}", query, err);
             }
         }
 

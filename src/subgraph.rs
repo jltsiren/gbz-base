@@ -619,7 +619,7 @@ impl Subgraph {
                 inserted += 1;
             }
 
-            for (next_id, next_o) in self.successors(node_id, orientation).unwrap() {
+            for (next_id, next_o) in self.supergraph_successors(node_id, orientation).unwrap() {
                 if visited.contains(&next_id) {
                     continue;
                 }
@@ -633,7 +633,6 @@ impl Subgraph {
         Ok(inserted)
     }
 
-    // FIXME: examples, tests
     /// Extracts nodes in top-level snarls covered by the current subgraph.
     ///
     /// Returns the number of inserted nodes.
@@ -645,6 +644,35 @@ impl Subgraph {
     /// # Errors
     ///
     /// Passes through errors from accessing the graph.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbwt::{GBZ, Orientation};
+    /// use gbwt::support;
+    /// use gbz_base::{Chains, Subgraph, GraphReference};
+    /// use gbz_base::utils;
+    /// use simple_sds::serialize;
+    /// use std::collections::BTreeSet;
+    ///
+    /// let graph_file = support::get_test_data("example.gbz");
+    /// let graph: GBZ = serialize::load_from(&graph_file).unwrap();
+    /// let chains_file = utils::get_test_data("example.chains");
+    /// let chains = Chains::from_file(&chains_file).unwrap();
+    ///
+    /// // Extract the boundary nodes of a snarl as the initial subgraph.
+    /// let mut subgraph = Subgraph::new();
+    /// let nodes: BTreeSet<usize> = [14, 17].into_iter().collect();
+    /// let result = subgraph.around_nodes(GraphReference::Gbz(&graph), &nodes, 0);
+    /// assert!(result.is_ok());
+    /// assert!(subgraph.node_iter().eq(nodes.iter().copied()));
+    ///
+    /// // Now extract the snarl between the boundary nodes.
+    /// let result = subgraph.extract_snarls(GraphReference::Gbz(&graph), Some(&chains));
+    /// assert!(result.is_ok());
+    /// let snarl_nodes = [14, 15, 16, 17];
+    /// assert!(subgraph.node_iter().eq(snarl_nodes.iter().copied()));
+    /// ```
     pub fn extract_snarls(&mut self, graph: GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<usize, String> {
         let snarls = self.covered_snarls(chains);
 
@@ -664,7 +692,6 @@ impl Subgraph {
         Ok(inserted)
     }
 
-    // FIXME: snarls: test
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
@@ -760,7 +787,6 @@ impl Subgraph {
         Ok(())
     }
 
-    // FIXME: snarls: test
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
@@ -1214,11 +1240,29 @@ impl Subgraph {
         Some(EdgeIter::new(self, record, false))
     }
 
+    /// Returns an iterator over the successors of an oriented node in the supergraph, or [`None`] if there is no such node.
+    ///
+    /// This is otherwise the same as [`Self::successors`], but this also lists successors not in the subgraph.
+    pub fn supergraph_successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
+        let handle = support::encode_node(node_id, orientation);
+        let record = self.records.get(&handle)?;
+        Some(EdgeIter::in_supergraph(self, record, false))
+    }
+
     /// Returns an iterator over the predecessors of an oriented node, or [`None`] if there is no such node.
     pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
         let handle = support::encode_node(node_id, orientation.flip());
         let record = self.records.get(&handle)?;
         Some(EdgeIter::new(self, record, true))
+    }
+
+    /// Returns an iterator over the predecessors of an oriented node in the supergraph, or [`None`] if there is no such node.
+    ///
+    /// This is otherwise the same as [`Self::predecessors`], but this also lists predecessors not in the subgraph.
+    pub fn supergraph_predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
+        let handle = support::encode_node(node_id, orientation.flip());
+        let record = self.records.get(&handle)?;
+        Some(EdgeIter::in_supergraph(self, record, true))
     }
 
     // Returns the record for the given node handle, or [`None`] if the node is not in the subgraph.
@@ -1794,6 +1838,8 @@ pub struct EdgeIter<'a> {
     limit: usize,
     // Flip the orientation in the iterated values.
     flip: bool,
+    // Iterate over the edges in the supergraph, not the subgraph.
+    supergraph: bool,
 }
 
 
@@ -1811,6 +1857,23 @@ impl<'a> EdgeIter<'a> {
             next: 0,
             limit,
             flip,
+            supergraph: false,
+        }
+    }
+
+    /// Creates a new iterator over the successors of the record in the supergraph.
+    ///
+    /// This is otherwise the same as [`Self::new`], but this also lists successors not in the subgraph.
+    pub fn in_supergraph(parent: &'a Subgraph, record: &'a GBZRecord, flip: bool) -> Self {
+        let successors = record.edges_slice();
+        let limit = successors.len();
+        EdgeIter {
+            parent,
+            successors,
+            next: 0,
+            limit,
+            flip,
+            supergraph: true,
         }
     }
 }
@@ -1822,7 +1885,7 @@ impl<'a> Iterator for EdgeIter<'a> {
         while self.next < self.limit {
             let handle = self.successors[self.next].node;
             self.next += 1;
-            if self.parent.has_handle(handle) {
+            if self.supergraph || self.parent.has_handle(handle) {
                 let node_id = support::node_id(handle);
                 let orientation = if self.flip {
                     support::node_orientation(handle).flip()
@@ -1841,7 +1904,7 @@ impl<'a> DoubleEndedIterator for EdgeIter<'a> {
         while self.next < self.limit {
             let handle = self.successors[self.limit - 1].node;
             self.limit -= 1;
-            if self.parent.has_handle(handle) {
+            if self.supergraph || self.parent.has_handle(handle) {
                 let node_id = support::node_id(handle);
                 let orientation = if self.flip {
                     support::node_orientation(handle).flip()
