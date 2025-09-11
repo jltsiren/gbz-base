@@ -258,7 +258,7 @@ fn large_test_case() {
     let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
     let chains_file = utils::get_test_data("micb-kir3dl1.chains");
-    let chains = Chains::from_file(&chains_file).unwrap();
+    let chains = Chains::load_from(&chains_file).unwrap();
 
     // Create and open the database and create a graph interface.
     let db_file = create_database_from_graph(&graph, &chains);
@@ -410,7 +410,7 @@ fn visited_positions(gbwt: &GBWT, path_handle: usize) -> HashSet<Pos> {
 fn check_indexed_positions(gbz_file: &PathBuf, chains_file: Option<&PathBuf>, ref_samples: Vec<String>) {
     let graph: GBZ = serialize::load_from(gbz_file).unwrap();
     let chains = if let Some(chains_file) = chains_file {
-        Chains::from_file(chains_file).unwrap()
+        Chains::load_from(chains_file).unwrap()
     } else {
         Chains::new()
     };

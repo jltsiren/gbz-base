@@ -658,7 +658,7 @@ impl Subgraph {
     /// let graph_file = support::get_test_data("example.gbz");
     /// let graph: GBZ = serialize::load_from(&graph_file).unwrap();
     /// let chains_file = utils::get_test_data("example.chains");
-    /// let chains = Chains::from_file(&chains_file).unwrap();
+    /// let chains = Chains::load_from(&chains_file).unwrap();
     ///
     /// // Extract the boundary nodes of a snarl as the initial subgraph.
     /// let mut subgraph = Subgraph::new();

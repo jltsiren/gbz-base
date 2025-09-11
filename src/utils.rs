@@ -209,7 +209,7 @@ pub fn encoded_length(sequence_length: usize) -> usize {
 /// use gbwt::support::{self, Orientation};
 ///
 /// let filename = utils::get_test_data("micb-kir3dl1.chains");
-/// let chains = Chains::from_file(&filename);
+/// let chains = Chains::load_from(&filename);
 /// assert!(chains.is_ok());
 /// let chains = chains.unwrap();
 ///
@@ -288,7 +288,7 @@ impl Chains {
     /// # Errors
     ///
     /// Returns an error if the file cannot be opened or [`Self::deserialize`] fails.
-    pub fn from_file(filename: &Path) -> Result<Self, String> {
+    pub fn load_from(filename: &Path) -> Result<Self, String> {
         let mut file = File::open(&filename).map_err(|x|
             format!("Failed to open chains file {}: {}", filename.display(), x)
         )?;
@@ -432,7 +432,7 @@ mod tests {
     fn chains_nonempty() {
         let chains_file = get_test_data("micb-kir3dl1.chains");
         let data = load_chains(&chains_file);
-        let chains = Chains::from_file(&chains_file);
+        let chains = Chains::load_from(&chains_file);
         if let Err(msg) = chains {
             panic!("Failed to read chains from {}: {}", chains_file.display(), msg);
         }

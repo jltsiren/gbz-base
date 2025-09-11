@@ -359,7 +359,7 @@ fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathInde
 
 fn load_chains(filename: &'static str) -> Chains {
     let chains_file = utils::get_test_data(filename);
-    let chains = Chains::from_file(&chains_file);
+    let chains = Chains::load_from(&chains_file);
     if let Err(err) = chains {
         panic!("Failed to load chains from {}: {}", chains_file.display(), err);
     }

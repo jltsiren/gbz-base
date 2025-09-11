@@ -214,7 +214,7 @@ impl GBZBase {
         let graph: GBZ = serialize::load_from(&gbz_file).map_err(|x| x.to_string())?;
         let chains = if let Some(filename) = chains_file {
             eprintln!("Loading top-level chain file {}", filename.display());
-            Chains::from_file(filename)?
+            Chains::load_from(filename)?
         } else {
             Chains::new()
         };
