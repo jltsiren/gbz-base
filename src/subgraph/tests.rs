@@ -347,9 +347,17 @@ fn align_with_prefix_with_suffix() {
 // TODO: We should also have a graph with fragmented reference paths for testing.
 // TODO: We should also have a graph with longer nodes for testing.
 
-fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathIndex) {
+fn gbz_from(filename: &'static str) -> GBZ {
     let gbz_file = support::get_test_data(filename);
-    let graph: GBZ = serialize::load_from(gbz_file).unwrap();
+    let graph = serialize::load_from(&gbz_file);
+    if let Err(err) = graph {
+        panic!("Failed to load GBZ graph from {}: {}", gbz_file.display(), err);
+    }
+    graph.unwrap()
+}
+
+fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathIndex) {
+    let graph = gbz_from(filename);
     let path_index = PathIndex::new(&graph, interval, false);
     if let Err(err) = path_index {
         panic!("Failed to create path index with interval {}: {}", interval, err);
@@ -759,7 +767,7 @@ fn manual_gbz_queries() {
                 }
             },
             QueryType::Between((start, end), limit) => {
-                let result = subgraph.nodes_between(GraphReference::Gbz(&graph), *start, *end, *limit);
+                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end, *limit);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -830,7 +838,7 @@ fn manual_db_queries() {
                 }
             },
             QueryType::Between((start, end), limit) => {
-                let result = subgraph.nodes_between(GraphReference::Db(&mut graph), *start, *end, *limit);
+                let result = subgraph.between_nodes(GraphReference::Db(&mut graph), *start, *end, *limit);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
@@ -910,16 +918,86 @@ fn duplicate_gbz_queries() {
                 }
             },
             QueryType::Between((start, end), limit) => {
-                let result = subgraph.nodes_between(GraphReference::Gbz(&graph), *start, *end, *limit);
+                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end, *limit);
                 if let Err(err) = result {
                     panic!("Query {} failed: {}", query, err);
                 }
-                let result = subgraph.nodes_between(GraphReference::Gbz(&graph), *start, *end, *limit);
+                let result = subgraph.between_nodes(GraphReference::Gbz(&graph), *start, *end, *limit);
                 match result {
                     Ok(result) => assert_eq!(result, 0, "Duplicate query {} inserted nodes", query),
                     Err(err) => panic!("Duplicate query {} failed: {}", query, err),
                 }
             },
+        }
+    }
+}
+
+#[test]
+fn covered_snarls() {
+    let graph = gbz_from("example.gbz");
+    let chains = load_chains("example.chains");
+
+    // (nodes, snarls)
+    let a_first = (support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward));
+    let a_second = (support::encode_node(14, Orientation::Forward), support::encode_node(17, Orientation::Forward));
+    let b_first = (support::encode_node(22, Orientation::Reverse), support::encode_node(23, Orientation::Forward));
+    let b_second = (support::encode_node(23, Orientation::Forward), support::encode_node(24, Orientation::Reverse));
+    let queries = vec![
+        (vec![], vec![]),
+        (vec![11, 14], vec![a_first]),
+        (vec![11, 14, 17], vec![a_first, a_second]),
+        (vec![12, 13, 14], vec![]),
+        (vec![11, 14, 16], vec![a_first]),
+        (vec![21, 24], vec![]),
+        (vec![22, 23], vec![b_first]),
+        (vec![23, 24], vec![b_second]),
+    ];
+
+    for (nodes, snarls) in queries {
+        let mut subgraph = Subgraph::new();
+        let mut query = String::from("(");
+        for (i, &node_id) in nodes.iter().enumerate() {
+            if i > 0 {
+                query.push_str(", ");
+            }
+            query.push_str(&node_id.to_string());
+        }
+        query.push_str(")");
+        for &node_id in nodes.iter() {
+            let result = subgraph.add_node_from_gbz(&graph, node_id);
+            if let Err(err) = result {
+                panic!("Failed to add node {} in query {}: {}", node_id, query, err);
+            }
+        }
+        let covered = subgraph.covered_snarls(Some(&chains));
+        assert!(covered.iter().eq(snarls.iter()), "Wrong snarls covered by query {}: found {:?}, expected {:?}", query, covered, snarls);
+    }
+}
+
+#[test]
+fn between_nodes_with_limit() {
+    let graph = gbz_from("example.gbz");
+    let (start_id, start_o) = (11, Orientation::Forward);
+    let start = support::encode_node(start_id, start_o);
+    let (end_id, end_o) = (14, Orientation::Forward);
+    let end = support::encode_node(end_id, end_o);
+    let expected: usize = 4;
+
+    for limit in 0..=expected {
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.between_nodes(GraphReference::Gbz(&graph), start, end, Some(limit));
+        if limit < expected {
+            if let Ok(inserted) = result {
+                panic!("Found {} nodes between ({} {}) and ({} {}) with limit {}; expected {}",
+                    inserted, start_id, start_o, end_id, end_o, limit, expected
+                );
+            }
+        } else {
+            if let Err(err) = result {
+                panic!("Failed to extract subgraph between ({} {}) and ({} {}) with limit {}; expected {}: {}",
+                    start_id, start_o, end_id, end_o, limit, expected, err
+                );
+            }
         }
     }
 }

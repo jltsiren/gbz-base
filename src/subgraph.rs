@@ -47,7 +47,7 @@ pub mod query;
 /// * [`Subgraph::around_position`] for a context around a graph position.
 /// * [`Subgraph::around_interval`] for a context around path interval.
 /// * [`Subgraph::around_nodes`] for a context around a set of nodes.
-/// * [`Subgraph::nodes_between`] for all nodes and snarls in an interval of a chain.
+/// * [`Subgraph::between_nodes`] for all nodes and snarls in an interval of a chain.
 /// * [`Subgraph::extract_snarls`] to include all nodes in top-level snarls with boundary nodes in the current subgraph.
 ///
 /// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are integrated methods for extracting a subgraph with paths using a [`SubgraphQuery`].
@@ -594,7 +594,6 @@ impl Subgraph {
         Ok((inserted, removed))
     }
 
-    // FIXME: tests with limit, examples
     /// Inserts all nodes between the given two handles into the subgraph.
     ///
     /// If `start` and `end` are in the same chain in the given order, this will insert all nodes and snarls between them.
@@ -608,7 +607,28 @@ impl Subgraph {
     /// * `start`: Start handle (inclusive).
     /// * `end`: End handle (inclusive).
     /// * `limit`: Optional safety limit on the number of inserted nodes.
-    pub fn nodes_between(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize, limit: Option<usize>) -> Result<usize, String> {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbz_base::{GBZRecord, Subgraph, GraphReference};
+    /// use gbwt::{GBZ, Orientation};
+    /// use gbwt::support;
+    /// use simple_sds::serialize;
+    ///
+    /// let graph_file = support::get_test_data("example.gbz");
+    /// let graph: GBZ = serialize::load_from(&graph_file).unwrap();
+    ///
+    /// let start = support::encode_node(14, Orientation::Forward);
+    /// let end = support::encode_node(17, Orientation::Forward);
+    /// let mut subgraph = Subgraph::new();
+    /// let result = subgraph.between_nodes(GraphReference::Gbz(&graph), start, end, None);
+    /// assert_eq!(result, Ok(4));
+    ///
+    /// let expected_nodes = [14, 15, 16, 17];
+    /// assert!(subgraph.node_iter().eq(expected_nodes.iter().copied()));
+    /// ```
+    pub fn between_nodes(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize, limit: Option<usize>) -> Result<usize, String> {
         self.clear_paths();
 
         // Active handles. We proceed to their successors but not predecessors.
@@ -699,10 +719,10 @@ impl Subgraph {
         for (start, end) in snarls {
             match &mut graph {
                 GraphReference::Gbz(graph) => {
-                    inserted += self.nodes_between(GraphReference::Gbz(graph), start, end, None)?;
+                    inserted += self.between_nodes(GraphReference::Gbz(graph), start, end, None)?;
                 }
                 GraphReference::Db(graph) => {
-                    inserted += self.nodes_between(GraphReference::Db(graph), start, end, None)?;
+                    inserted += self.between_nodes(GraphReference::Db(graph), start, end, None)?;
                 }
             }
         }
@@ -807,7 +827,7 @@ impl Subgraph {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
-                self.nodes_between(GraphReference::Gbz(graph), *start, *end, *limit)?;
+                self.between_nodes(GraphReference::Gbz(graph), *start, *end, *limit)?;
                 self.extract_paths(None, query.output())?;
             },
         }
@@ -897,7 +917,7 @@ impl Subgraph {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
-                self.nodes_between(GraphReference::Db(graph), *start, *end, *limit)?;
+                self.between_nodes(GraphReference::Db(graph), *start, *end, *limit)?;
                 self.extract_paths(None, query.output())?;
             },
         }
@@ -1315,8 +1335,6 @@ impl Subgraph {
         self.paths.len()
     }
 
-
-    // FIXME: tests
     /// Returns the top-level snarls covered by the current subgraph.
     ///
     /// Each snarl is reported as a pair of handles `(start, end)` of its boundary nodes.
