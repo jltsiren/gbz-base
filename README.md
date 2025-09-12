@@ -117,6 +117,38 @@ All other paths will be listed as unknown haplotypes.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
 * `--format json`: Extract the subgraph in JSON format instead of GFA.
 
+### Snarl-based queries
+
+Queries based on paths and nodes find the query position and then extract a greedy context around it.
+This does not always result in a meaningful subgraph.
+Nodes outside the region of interest will be included, if the shortest path to them is within the context.
+Nodes within the region of interest may be excluded, if the region contains large enough variants.
+
+Snarl-based queries avoid these issues:
+
+```sh
+# Snarl-based query.
+query --between 12345:12401 graph.db > out.gfa
+```
+
+The query specifies two boundary nodes, which are assumed to be in the same chain in the snarl decomposition.
+If no orientation is provided  (e.g. `12345+` or `12401-`), the boundary nodes are assumed to be in the forward orientation.
+The query extracts all nodes and snarls in the chain between (and including) the boundary nodes but no greedy context.
+
+If the boundary nodes are not in the same chain or they are given in the wrong order, the outcome is unpredictable.
+To avoid extracting most of the chromosome, a safety limit for the number of nodes may be given with `--limit N`.
+If the limit is exceeded, the query will fail.
+
+Other queries can also be made snarl-aware:
+
+```sh
+query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
+```
+
+After extracting a subgraph, the query determines all top-level snarls that have their boundary nodes in the extracted subgraph.
+Then it ensures that those snarls are fully in the subgraph.
+This requires either a GBZ-base built with top-level chains (see above) or a GBZ graph with a chains file provided with `--chains FILE`.
+
 ### Extracting alignments
 
 If you have a GBZ-base for a graph and a GAF-base for reads aligned to the graph, you can extract the reads aligned to the subgraph:
