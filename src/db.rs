@@ -1667,6 +1667,11 @@ impl ReadSet {
         self.reads.iter()
     }
 
+    // Returns the record for the given handle, or [`None`] if there is no such record.
+    pub(crate) fn record(&self, handle: usize) -> Option<&GBZRecord> {
+        self.nodes.get(&handle)
+    }
+
     // Extracts the target sequence for the given alignment.
     fn target_sequence(&self, alignment: &Alignment) -> Result<Vec<u8>, String> {
         let target_path = alignment.target_path();

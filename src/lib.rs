@@ -54,6 +54,7 @@ pub mod subgraph;
 pub mod utils;
 
 pub use alignment::{Alignment, AlignmentBlock};
+pub use alignment::mapping::Mapping;
 pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface, GraphReference};
 pub use db::{GAFBase, GAFBaseParams, ReadSet};
 pub use path_index::PathIndex;
