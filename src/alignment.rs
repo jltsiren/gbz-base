@@ -40,6 +40,7 @@ use crate::utils;
 
 use std::io::{Read, Write};
 use std::ops::Range;
+use std::sync::Arc;
 use std::{cmp, str};
 
 use zstd::stream::Encoder as ZstdEncoder;
@@ -726,8 +727,10 @@ impl Alignment {
     /// Returns [`None`] if the read is unaligned or a valid iterator cannot be built.
     /// The iterator requires a difference string and an explicitly stored target path.
     /// It may stop early if the alignment is invalid.
-    /// A [`ReadSet`] containing this alignment is needed for determining node lengths.
-    pub fn iter<'a>(&'a self, read_set: &'a ReadSet) -> Option<AlignmentIter<'a>> {
+    ///
+    /// The iterator needs a function that provides the sequence length for each node.
+    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`ReadSet`].
+    pub fn iter<'a>(&'a self, sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>) -> Option<AlignmentIter<'a>> {
         if self.is_unaligned() || !self.has_target_path() || self.difference.is_empty() {
             return None;
         }
@@ -738,7 +741,7 @@ impl Alignment {
 
         let mut iter = AlignmentIter {
             parent: self,
-            read_set,
+            sequence_len,
             seq_offset: self.seq_interval.start,
             path_offset: self.path_interval.start,
             path_vec_offset: 0,
@@ -749,12 +752,12 @@ impl Alignment {
 
         // In some edge cases, there may be unused nodes at the start of the target path.
         let mut handle = target_path[iter.path_vec_offset];
-        let mut record  = read_set.record(handle)?;
-        while iter.path_node_offset >= record.sequence_len() {
-            iter.path_node_offset -= record.sequence_len();
+        let mut node_len = (*iter.sequence_len)(handle)?;
+        while iter.path_node_offset >= node_len {
+            iter.path_node_offset -= node_len;
             iter.path_vec_offset += 1;
             handle = *target_path.get(iter.path_vec_offset)?;
-            record = read_set.record(handle)?;
+            node_len = (*iter.sequence_len)(handle)?;
         }
 
         Some(iter)
@@ -827,7 +830,8 @@ impl Alignment {
         }
 
         let mut aln: Option<Alignment> = None; // The alignment we are currently building.
-        let iter = self.iter(read_set).ok_or(String::from("Cannot build alignment iterator"))?;
+        let sequence_len = Arc::new(|handle| read_set.sequence_len(handle));
+        let iter = self.iter(sequence_len).ok_or(String::from("Cannot build alignment iterator"))?;
         for mapping in iter {
             if !subgraph.has_handle(mapping.handle) {
                 if let Some(prev) = aln {
@@ -878,11 +882,16 @@ pub struct PairedRead {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: document, tests, examples
-#[derive(Clone, Debug)]
+// FIXME: tests, examples
+/// An iterator over an [`Alignment`] as a sequence of [`Mapping`] objects.
+///
+/// This iterator assumes that the alignment is valid, and it may stop early if it is not.
+/// It requires that the alignment stores the target path explicitly and has a difference string.
+/// Insertions at node boundaries are assigned to the left.
+#[derive(Clone)]
 pub struct AlignmentIter<'a> {
     parent: &'a Alignment,
-    read_set: &'a ReadSet,
+    sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>,
     // Position in the query sequence.
     seq_offset: usize,
     // Position in the target sequence.
@@ -915,18 +924,17 @@ impl<'a> Iterator for AlignmentIter<'a> {
         // of the next node, as the next node may not exist.
         let target_path = self.parent.target_path()?;
         let mut handle = *target_path.get(self.path_vec_offset)?;
-        let mut record = self.read_set.record(handle)?;
-        if self.path_node_offset >= record.sequence_len() && edit_left > 0 {
+        let mut node_len = (*self.sequence_len)(handle)?;
+        if self.path_node_offset >= node_len && edit_left > 0 {
             self.path_vec_offset += 1;
             self.path_node_offset = 0;
             handle = *target_path.get(self.path_vec_offset)?;
-            record = self.read_set.record(handle)?;
+            node_len = (*self.sequence_len)(handle)?;
         }
-        let node_left = record.sequence_len() - self.path_node_offset;
+        let node_left = node_len - self.path_node_offset;
 
         // Take the offsets for the mapping before we update them.
         let seq_offset = self.seq_offset;
-        let node_len = record.sequence_len();
         let node_offset = self.path_node_offset;
 
         // Now determine the actual edit.

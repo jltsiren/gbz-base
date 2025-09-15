@@ -1667,9 +1667,11 @@ impl ReadSet {
         self.reads.iter()
     }
 
-    // Returns the record for the given handle, or [`None`] if there is no such record.
-    pub(crate) fn record(&self, handle: usize) -> Option<&GBZRecord> {
-        self.nodes.get(&handle)
+    // TODO: Make public?
+    // Returns the sequence length for the given handle, or [`None`] if there is no such node.
+    #[inline]
+    pub(crate) fn sequence_len(&self, handle: usize) -> Option<usize> {
+        self.nodes.get(&handle).map(|record| record.sequence_len())
     }
 
     // Extracts the target sequence for the given alignment.
