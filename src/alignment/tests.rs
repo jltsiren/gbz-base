@@ -374,3 +374,152 @@ fn alignment_real_gzipped() {
 
 //-----------------------------------------------------------------------------
 
+fn check_alignment_iter(aln: &Alignment, truth: &[Mapping], expect_fail: bool) {
+    // This is a convenient hack.
+    let sequence_len = Arc::new(|handle| Some(handle));
+
+    let iter = aln.iter(sequence_len);
+    if expect_fail {
+        assert!(iter.is_none(), "Expected no iterator for {}", aln.name);
+        return;
+    }
+
+    assert!(iter.is_some(), "Failed to build the iterator for {}", aln.name);
+    let mut iter = iter.unwrap();
+    for (i, expected) in truth.iter().enumerate() {
+        let actual = iter.next().unwrap();
+        assert_eq!(actual, *expected, "Alignment mismatch at index {} of {}: {:?} != {:?}", i, aln.name, actual, expected);
+    }
+}
+
+// Creates a perfect alignment that matches a single node entirely.
+fn perfect_alignment(name: &str, seq_len: usize, with_path: bool, with_difference: bool) -> Alignment {
+    let mut aln = empty_alignment(name, seq_len);
+    aln.seq_interval = 0..seq_len;
+    if with_path {
+        aln.path = TargetPath::Path(vec![seq_len]);
+    } else {
+        aln.path = TargetPath::StartPosition(Pos::new(seq_len, 0));
+    }
+    aln.path_len = seq_len;
+    aln.path_interval = 0..seq_len;
+    aln.matches = seq_len;
+    if with_difference {
+        aln.difference.push(Difference::Match(seq_len));
+    }
+    aln
+}
+
+fn create_alignment(
+    name: &str,
+    seq_len: usize, seq_start: usize,
+    path: Vec<usize>, path_start: usize,
+    difference: Vec<Difference>
+) -> Alignment {
+    let mut seq_end = seq_start;
+    let mut path_end = path_start;
+    let mut matches = 0;
+    let mut edits = 0;
+    for op in difference.iter() {
+        seq_end += op.query_len();
+        path_end += op.target_len();
+        if let Difference::Match(len) = op {
+            matches += len;
+        } else {
+            edits += cmp::max(op.query_len(), op.target_len());
+        }
+    }
+
+    let mut aln = empty_alignment(name, seq_len);
+    aln.seq_interval = seq_start..seq_end;
+    aln.path_len = path.iter().sum();
+    aln.path = TargetPath::Path(path);
+    aln.path_interval = path_start..path_end;
+    aln.matches = matches;
+    aln.edits = edits;
+    aln.difference = difference;
+    aln
+}
+
+//-----------------------------------------------------------------------------
+
+// Tests for `Alignment`: Iterator.
+
+#[test]
+fn alignment_iter_special_cases() {
+    let aln = empty_alignment("empty", 0);
+    let truth: Vec<Mapping> = Vec::new();
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = empty_alignment("unaligned", 150);
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = perfect_alignment("no-target-path", 150, false, true);
+    check_alignment_iter(&aln, &truth, true);
+
+    let aln = perfect_alignment("no-difference-string", 150, true, false);
+    check_alignment_iter(&aln, &truth, true);
+}
+
+#[test]
+fn alignment_iter_perfect() {
+    let aln = perfect_alignment("single-node", 100, true, true);
+    let truth = vec![Mapping::new(0, 100, 100, 0, Difference::Match(100))];
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = create_alignment(
+        "multi-node",
+        100, 0,
+        vec![40, 60], 0,
+        vec![Difference::Match(100)]
+    );
+    let truth = vec![
+        Mapping::new(0, 40, 40, 0, Difference::Match(40)),
+        Mapping::new(40, 60, 60, 0, Difference::Match(60)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = create_alignment(
+        "contained-single-node",
+        100, 0,
+        vec![50, 60], 5,
+        vec![Difference::Match(100)]
+    );
+    let truth = vec![
+        Mapping::new(0, 50, 50, 5, Difference::Match(45)),
+        Mapping::new(45, 60, 60, 0, Difference::Match(55)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = create_alignment(
+        "contained-multi-node",
+        100, 0,
+        vec![30, 40, 50], 10,
+        vec![Difference::Match(100)]
+    );
+    let truth = vec![
+        Mapping::new(0, 30, 30, 10, Difference::Match(20)),
+        Mapping::new(20, 40, 40, 0, Difference::Match(40)),
+        Mapping::new(60, 50, 50, 0, Difference::Match(40)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+}
+
+// full alignment: ops within nodes / start at last base / end at first base / cross boundaries
+
+// partial alignment: start at second / middle base
+
+// partial alignment: end at first / middle base
+
+// partial alignment: first/last node not used
+
+// insertions at node boundaries
+
+// Real alignments: iterator reports mappings for correct query/target intervals
+
+//-----------------------------------------------------------------------------
+
+// Tests for `Alignment`: Clipping to a subgraph.
+
+//-----------------------------------------------------------------------------
+

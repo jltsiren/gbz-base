@@ -731,11 +731,14 @@ impl Alignment {
     /// The iterator needs a function that provides the sequence length for each node.
     /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`ReadSet`].
     pub fn iter<'a>(&'a self, sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>) -> Option<AlignmentIter<'a>> {
-        if self.is_unaligned() || !self.has_target_path() || self.difference.is_empty() {
+        if !self.has_target_path() {
             return None;
         }
         let target_path = self.target_path().unwrap();
-        if target_path.is_empty() {
+        if target_path.is_empty() != self.is_unaligned() {
+            return None;
+        }
+        if self.difference.is_empty() != self.is_unaligned() {
             return None;
         }
 
@@ -749,9 +752,12 @@ impl Alignment {
             diff_vec_offset: 0,
             diff_op_offset: 0,
         };
+        if self.is_unaligned() {
+            return Some(iter);
+        }
 
         // In some edge cases, there may be unused nodes at the start of the target path.
-        let mut handle = target_path[iter.path_vec_offset];
+        let mut handle = *target_path.get(iter.path_vec_offset)?;
         let mut node_len = (*iter.sequence_len)(handle)?;
         while iter.path_node_offset >= node_len {
             iter.path_node_offset -= node_len;
