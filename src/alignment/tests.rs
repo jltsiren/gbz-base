@@ -2,6 +2,7 @@ use super::*;
 
 use crate::utils;
 
+use gbwt::GBZ;
 use simple_sds::serialize;
 
 use std::io::BufRead;
@@ -459,6 +460,22 @@ fn alignment_iter_special_cases() {
 
     let aln = perfect_alignment("no-difference-string", 150, true, false);
     check_alignment_iter(&aln, &truth, true);
+
+    let aln = create_alignment(
+        "insertion-only",
+        7, 0,
+        vec![], 0,
+        vec![Difference::Insertion(b"GATTACA".to_vec())]
+    );
+    check_alignment_iter(&aln, &truth, true);
+
+    let aln = create_alignment(
+        "insertion-only-with-path",
+        7, 0,
+        vec![30], 0,
+        vec![Difference::Insertion(b"GATTACA".to_vec())]
+    );
+    check_alignment_iter(&aln, &truth, true);
 }
 
 #[test]
@@ -505,17 +522,222 @@ fn alignment_iter_perfect() {
     check_alignment_iter(&aln, &truth, false);
 }
 
-// full alignment: ops within nodes / start at last base / end at first base / cross boundaries
+#[test]
+fn alignment_iter_full() {
+    let aln = create_alignment(
+        "mappings-within-nodes",
+        100, 0,
+        vec![30, 40, 50], 0,
+        vec![
+            Difference::Match(20), Difference::Deletion(10),
+            Difference::Match(35), Difference::Insertion(b"AC".to_vec()), Difference::Match(5),
+            Difference::Mismatch(b'T'), Difference::Match(37)
+        ]
+    );
+    let truth = vec![
+        Mapping::new(0, 30, 30, 0, Difference::Match(20)),
+        Mapping::new(20, 30, 30, 20, Difference::Deletion(10)),
+        Mapping::new(20, 40, 40, 0, Difference::Match(35)),
+        Mapping::new(55, 40, 40, 35, Difference::Insertion(b"AC".to_vec())),
+        Mapping::new(57, 40, 40, 35, Difference::Match(5)),
+        Mapping::new(62, 50, 50, 0, Difference::Mismatch(b'T')),
+        Mapping::new(63, 50, 50, 1, Difference::Match(37)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
 
-// partial alignment: start at second / middle base
+    let aln = create_alignment(
+        "multi-node-mappings",
+        100, 0,
+        vec![10, 20, 30, 40, 50], 9,
+        vec![
+            Difference::Match(2),
+            Difference::Mismatch(b'A'), Difference::Match(50),
+            Difference::Deletion(10), Difference::Match(47)
+        ]
+    );
+    let truth = vec![
+        Mapping::new(0, 10, 10, 9, Difference::Match(1)),
+        Mapping::new(1, 20, 20, 0, Difference::Match(1)),
+        Mapping::new(2, 20, 20, 1, Difference::Mismatch(b'A')),
+        Mapping::new(3, 20, 20, 2, Difference::Match(18)),
+        Mapping::new(21, 30, 30, 0, Difference::Match(30)),
+        Mapping::new(51, 40, 40, 0, Difference::Match(2)),
+        Mapping::new(53, 40, 40, 2, Difference::Deletion(10)),
+        Mapping::new(53, 40, 40, 12, Difference::Match(28)),
+        Mapping::new(81, 50, 50, 0, Difference::Match(19)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+}
 
-// partial alignment: end at first / middle base
+#[test]
+fn alignment_iter_partial() {
+    let aln = create_alignment(
+        "second-to-first",
+        100, 10,
+        vec![80, 30], 1,
+        vec![Difference::Match(40), Difference::Insertion(b"GATTACA".to_vec()), Difference::Match(40)]
+    );
+    let truth = vec![
+        Mapping::new(10, 80, 80, 1, Difference::Match(40)),
+        Mapping::new(50, 80, 80, 41, Difference::Insertion(b"GATTACA".to_vec())),
+        Mapping::new(57, 80, 80, 41, Difference::Match(39)),
+        Mapping::new(96, 30, 30, 0, Difference::Match(1)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
 
-// partial alignment: first/last node not used
+    let aln = create_alignment(
+        "middle-to-middle",
+        100, 10,
+        vec![30, 40, 50], 15,
+        vec![Difference::Match(35), Difference::Mismatch(b'A'), Difference::Match(44)]
+    );
+    let truth = vec![
+        Mapping::new(10, 30, 30, 15, Difference::Match(15)),
+        Mapping::new(25, 40, 40, 0, Difference::Match(20)),
+        Mapping::new(45, 40, 40, 20, Difference::Mismatch(b'A')),
+        Mapping::new(46, 40, 40, 21, Difference::Match(19)),
+        Mapping::new(65, 50, 50, 0, Difference::Match(25)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
 
-// insertions at node boundaries
+    let aln = create_alignment(
+        "last-to-second-to-last",
+        100, 10,
+        vec![40, 30, 50], 39,
+        vec![
+            Difference::Match(45),
+            Difference::Insertion(b"GATTACA".to_vec()), Difference::Deletion(6),
+            Difference::Match(28)
+        ]
+    );
+    let truth = vec![
+        Mapping::new(10, 40, 40, 39, Difference::Match(1)),
+        Mapping::new(11, 30, 30, 0, Difference::Match(30)),
+        Mapping::new(41, 50, 50, 0, Difference::Match(14)),
+        Mapping::new(55, 50, 50, 14, Difference::Insertion(b"GATTACA".to_vec())),
+        Mapping::new(62, 50, 50, 14, Difference::Deletion(6)),
+        Mapping::new(62, 50, 50, 20, Difference::Match(28)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
 
-// Real alignments: iterator reports mappings for correct query/target intervals
+    // This is the middle-to-middle test case, but with an unused node at the start and the end.
+    let aln = create_alignment(
+        "unused-nodes",
+        100, 10,
+        vec![20, 30, 40, 50, 15], 35,
+        vec![Difference::Match(35), Difference::Mismatch(b'A'), Difference::Match(44)]
+    );
+    let truth = vec![
+        Mapping::new(10, 30, 30, 15, Difference::Match(15)),
+        Mapping::new(25, 40, 40, 0, Difference::Match(20)),
+        Mapping::new(45, 40, 40, 20, Difference::Mismatch(b'A')),
+        Mapping::new(46, 40, 40, 21, Difference::Match(19)),
+        Mapping::new(65, 50, 50, 0, Difference::Match(25)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+}
+
+// Insertions at node boundaries are supposed to be assigned to the end of the previous node.
+// Except at the start of the node or if the previous node is not used in the alignment.
+#[test]
+fn alignment_iter_insertions() {
+    let aln = create_alignment(
+        "at-start",
+        100, 0,
+        vec![50, 48], 0,
+        vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(98)]
+    );
+    let truth = vec![
+        Mapping::new(0, 50, 50, 0, Difference::Insertion(b"AC".to_vec())),
+        Mapping::new(2, 50, 50, 0, Difference::Match(50)),
+        Mapping::new(52, 48, 48, 0, Difference::Match(48)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = create_alignment(
+        "at-start-with-unused",
+        100, 0,
+        vec![10, 50, 48], 10,
+        vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(98)]
+    );
+    let truth = vec![
+        Mapping::new(0, 50, 50, 0, Difference::Insertion(b"AC".to_vec())),
+        Mapping::new(2, 50, 50, 0, Difference::Match(50)),
+        Mapping::new(52, 48, 48, 0, Difference::Match(48)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = create_alignment(
+        "at-end",
+        100, 0,
+        vec![50, 48], 0,
+        vec![Difference::Match(98), Difference::Insertion(b"AC".to_vec())]
+    );
+    let truth = vec![
+        Mapping::new(0, 50, 50, 0, Difference::Match(50)),
+        Mapping::new(50, 48, 48, 0, Difference::Match(48)),
+        Mapping::new(98, 48, 48, 48, Difference::Insertion(b"AC".to_vec())),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = create_alignment(
+        "at-end-with-unused",
+        100, 0,
+        vec![50, 48, 10], 0,
+        vec![Difference::Match(98), Difference::Insertion(b"AC".to_vec())]
+    );
+    let truth = vec![
+        Mapping::new(0, 50, 50, 0, Difference::Match(50)),
+        Mapping::new(50, 48, 48, 0, Difference::Match(48)),
+        Mapping::new(98, 48, 48, 48, Difference::Insertion(b"AC".to_vec())),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+
+    let aln = create_alignment(
+        "in-the-midle",
+        100, 0,
+        vec![50, 48], 0,
+        vec![Difference::Match(50), Difference::Insertion(b"AC".to_vec()), Difference::Match(48)]
+    );
+    let truth = vec![
+        Mapping::new(0, 50, 50, 0, Difference::Match(50)),
+        Mapping::new(50, 50, 50, 50, Difference::Insertion(b"AC".to_vec())),
+        Mapping::new(52, 48, 48, 0, Difference::Match(48)),
+    ];
+    check_alignment_iter(&aln, &truth, false);
+}
+
+#[test]
+fn alignment_iter_real() {
+    // Get the alignments.
+    let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let alignments = parse_alignments(&gaf_file, false);
+
+    // Load the graph.
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+
+    let sequence_len = Arc::new(|handle| {
+        let (node_id, _) = support::decode_node(handle);
+        graph.sequence_len(node_id)
+    });
+
+    // We don't know what to expect, except that we want to iterate over the entire query/target intervals.
+    for (i, aln) in alignments.iter().enumerate() {
+        let iter = aln.iter(sequence_len.clone());
+        assert!(iter.is_some(), "Failed to build the iterator for alignment {}", i + 1);
+        let iter = iter.unwrap();
+
+        let mut seq_offset = aln.seq_interval.start;
+        let mut path_offset = aln.path_interval.start;
+        for mapping in iter {
+            seq_offset += mapping.seq_interval.len();
+            path_offset += mapping.node_interval.len();
+        }
+        assert_eq!(seq_offset, aln.seq_interval.end, "Failed to reach the end of the query interval in alignment {}", i + 1);
+        assert_eq!(path_offset, aln.path_interval.end, "Failed to reach the end of the target interval in alignment {}", i + 1);
+    }
+}
 
 //-----------------------------------------------------------------------------
 

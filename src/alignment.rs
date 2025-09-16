@@ -656,9 +656,10 @@ impl Alignment {
 impl Alignment {
     /// Returns `true` if the read is unaligned.
     ///
+    /// An aligned read has a non-empty query interval aligned to a non-empty target interval.
     /// NOTE: An empty sequence is by definition unaligned.
     pub fn is_unaligned(&self) -> bool {
-        self.seq_interval.is_empty()
+        self.seq_interval.is_empty() || self.path_interval.is_empty()
     }
 
     /// Returns `true` if this is a perfect alignment of the entire read.
@@ -721,10 +722,9 @@ impl Alignment {
         }
     }
 
-    // FIXME: example
     /// Returns an iterator over the alignment as a sequence of mappings.
     ///
-    /// Returns [`None`] if the read is unaligned or a valid iterator cannot be built.
+    /// Returns [`None`] if a valid iterator cannot be built.
     /// The iterator requires a difference string and an explicitly stored target path.
     /// It may stop early if the alignment is invalid.
     ///
@@ -888,7 +888,7 @@ pub struct PairedRead {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: tests, examples
+// FIXME: examples
 /// An iterator over an [`Alignment`] as a sequence of [`Mapping`] objects.
 ///
 /// This iterator assumes that the alignment is valid, and it may stop early if it is not.
@@ -949,9 +949,8 @@ impl<'a> Iterator for AlignmentIter<'a> {
             Difference::Match(_) => Difference::Match(edit_len),
             Difference::Mismatch(base) => Difference::Mismatch(*base),
             Difference::Insertion(seq) => {
-                let start = self.diff_op_offset;
-                let end = start + edit_len;
-                Difference::Insertion(seq[start..end].to_vec())
+                // We can always take the full insertion within the current node.
+                Difference::Insertion(seq.clone())
             },
             Difference::Deletion(_) => Difference::Deletion(edit_len),
             Difference::End => {
