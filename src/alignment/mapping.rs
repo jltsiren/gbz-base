@@ -9,21 +9,26 @@ use std::ops::Range;
 /// An alignment between a substring of a query sequence and a single node using a single edit operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mapping {
-    /// Aligned interval of the query sequence.
-    pub seq_interval: Range<usize>,
-    /// Handle of the target node.
-    pub handle: usize,
-    /// Length of the target node.
-    pub node_len: usize,
-    /// Aligned interval of the target node.
-    pub node_interval: Range<usize>,
-    /// Edit operation.
-    pub edit: Difference,
+    // Aligned interval of the query sequence.
+    seq_interval: Range<usize>,
+    // Handle of the target node.
+    handle: usize,
+    // Length of the target node.
+    node_len: usize,
+    // Aligned interval of the target node.
+    node_interval: Range<usize>,
+    // Edit operation.
+    edit: Difference,
 }
 
 impl Mapping {
     /// Creates a new mapping starting at the given position.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the edit extends past the end of the node.
     pub fn new(seq_offset: usize, handle: usize, node_len: usize, node_offset: usize, edit: Difference) -> Self {
+        assert!(node_offset + edit.target_len() <= node_len, "The edit extends past the end of the node");
         Self {
             seq_interval: seq_offset..seq_offset + edit.query_len(),
             handle,
@@ -31,6 +36,66 @@ impl Mapping {
             node_interval: node_offset..node_offset + edit.target_len(),
             edit,
         }
+    }
+
+    /// Returns the aligned interval of the query sequence.
+    #[inline]
+    pub fn seq_interval(&self) -> &Range<usize> {
+        &self.seq_interval
+    }
+
+    /// Returns the length of the query interval.
+    #[inline]
+    pub fn query_len(&self) -> usize {
+        self.seq_interval.len()
+    }
+
+    /// Returns the handle of the target node.
+    #[inline]
+    pub fn handle(&self) -> usize {
+        self.handle
+    }
+
+    /// Returns the length of the target node.
+    #[inline]
+    pub fn node_len(&self) -> usize {
+        self.node_len
+    }
+
+    /// Returns the aligned interval of the target node.
+    #[inline]
+    pub fn node_interval(&self) -> &Range<usize> {
+        &self.node_interval
+    }
+
+    /// Returns the length of the target interval.
+    #[inline]
+    pub fn target_len(&self) -> usize {
+        self.node_interval.len()
+    }
+
+    /// Returns the edit operation.
+    #[inline]
+    pub fn edit(&self) -> &Difference {
+        &self.edit
+    }
+
+    /// Returns `true` this mapping follows the given one in the same node.
+    #[inline]
+    pub fn follows(&self, other: &Self) -> bool {
+        self.handle == other.handle && self.node_interval.start == other.node_interval.end
+    }
+
+    /// Returns `true` if this mapping is at the start of the target node.
+    #[inline]
+    pub fn is_at_start(&self) -> bool {
+        self.node_interval.start == 0
+    }
+
+    /// Returns `true` if this mapping is at the end of the target node.
+    #[inline]
+    pub fn is_at_end(&self) -> bool {
+        self.node_interval.end == self.node_len
     }
 }
 
@@ -53,7 +118,7 @@ impl Mapping {
 /// # Examples
 ///
 /// ```
-/// use gbz_base::alignment::mapping::Difference;
+/// use gbz_base::Difference;
 ///
 /// let with_gaps = b":48-CAT:44+GATTACA:51";
 /// let ops = Difference::parse(with_gaps);

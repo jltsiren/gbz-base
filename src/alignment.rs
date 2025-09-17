@@ -33,8 +33,7 @@
 //! The order of optional fields is not preserved.
 //! Compression with [`AlignmentBlock`] discards unsupported optional fields.
 
-use crate::{ReadSet, Subgraph, Mapping};
-use crate::alignment::mapping::Difference;
+use crate::{ReadSet, Subgraph, Mapping, Difference};
 use crate::formats::{self, TypedField};
 use crate::utils;
 
@@ -200,6 +199,8 @@ impl Alignment {
     pub fn new() -> Self {
         Alignment::default()
     }
+
+    // TODO: From a name and a sequence of mappings.
 
     // Parses a string field from a GAF field.
     fn parse_string(field: &[u8], field_name: &str) -> Result<String, String> {
@@ -686,9 +687,17 @@ impl Alignment {
         }
     }
 
-    /// Returns true if the target path is stored explicitly.
+    /// Returns `true` if the target path is stored explicitly.
     pub fn has_target_path(&self) -> bool {
         matches!(self.path, TargetPath::Path(_))
+    }
+
+    /// Returns `true` if the target path is stored explicitly and is non-empty.
+    pub fn has_non_empty_target_path(&self) -> bool {
+        match &self.path {
+            TargetPath::Path(path) => !path.is_empty(),
+            TargetPath::StartPosition(_) => false,
+        }
     }
 
     /// Returns the target path if it is stored explicitly.
@@ -771,25 +780,19 @@ impl Alignment {
 
     // Creates a new fragment of this alignment corresponding to the given mapping.
     fn create_fragment(&self, mapping: Mapping, fragment_id: usize) -> Alignment {
-        let base_quality = {
-            let start = cmp::min(mapping.seq_interval.start, self.base_quality.len());
-            let end = cmp::min(mapping.seq_interval.end, self.base_quality.len());
-            self.base_quality[start..end].to_vec()
-        };
-
         let mut aln = Alignment {
             name: self.name.clone(),
             seq_len: self.seq_len,
-            seq_interval: mapping.seq_interval,
-            path: TargetPath::Path(vec![mapping.handle]),
-            path_len: mapping.node_len,
-            path_interval: mapping.node_interval,
+            seq_interval: mapping.seq_interval().clone(),
+            path: TargetPath::Path(vec![mapping.handle()]),
+            path_len: mapping.node_len(),
+            path_interval: mapping.node_interval().clone(),
             matches: self.matches,
             edits: self.edits,
             mapq: self.mapq,
             score: self.score,
-            base_quality,
-            difference: vec![mapping.edit],
+            base_quality: self.base_quality.clone(),
+            difference: vec![mapping.edit().clone()],
             pair: self.pair.clone(),
             optional: self.optional.clone(),
         };
@@ -798,40 +801,75 @@ impl Alignment {
         aln
     }
 
-    // Extends the given fragment of this alignment with the next mapping.
-    fn extend_fragment(&self, fragment: &mut Alignment, mapping: Mapping) -> Result<(), String> {
-        if fragment.difference.is_empty() {
+    // Extends the given fragment with the next mapping.
+    fn extend(&mut self, mapping: Mapping) -> Result<(), String> {
+        if self.difference.is_empty() {
             return Err(String::from("Cannot extend a fragment without a difference string"));
         }
 
-        if mapping.seq_interval.start != fragment.seq_interval.end {
+        // Update the query sequence.
+        if mapping.seq_interval().start != self.seq_interval.end {
             return Err(String::from("Cannot append a non-contiguous query interval"));
         }
-        fragment.seq_interval.end = mapping.seq_interval.end;
-
-        if let TargetPath::Path(path) = &mut fragment.path {
-            path.push(mapping.handle);
-        } else {
-            return Err(String::from("Cannot append to an alignment without an explicit target path"));
+        if mapping.seq_interval().end > self.seq_len {
+            return Err(String::from("Cannot extend a fragment beyond the query sequence length"));
         }
-        if fragment.path_interval.end != fragment.path_len || mapping.node_interval.start != 0 {
+        self.seq_interval.end = mapping.seq_interval().end;
+
+        // Determine how we are extending the alignment.
+        let target_path = self.target_path().ok_or(
+            "Cannot extend a fragment without an explicit target path"
+        )?;
+        let last_node = *target_path.last().ok_or(
+            "Cannot extend a fragment with an empty target path"
+        )?;
+        let path_left = self.path_len.saturating_sub(self.path_interval.end);
+        let reverse_offset = mapping.node_len().saturating_sub(mapping.node_interval().start);
+        let continues_in_same_node = mapping.handle() == last_node && reverse_offset == path_left;
+        let starts_a_new_node = path_left == 0 && mapping.node_interval().start == 0;
+
+        // Update the target path.
+        if starts_a_new_node {
+            if let TargetPath::Path(path) = &mut self.path {
+                path.push(mapping.handle());
+            } else {
+                unreachable!();
+            }
+            self.path_len += mapping.node_len();
+        } else if !continues_in_same_node {
             return Err(String::from("Cannot append a non-contiguous target interval"));
         }
-        fragment.path_len += mapping.node_len;
-        fragment.path_interval.end += mapping.node_interval.end;
+        self.path_interval.end += mapping.target_len();
 
-        fragment.base_quality.extend_from_slice(&self.base_quality[mapping.seq_interval]);
-        if !fragment.difference.last_mut().unwrap().try_merge(&mapping.edit) {
-            fragment.difference.push(mapping.edit);
+        // Update the difference string, merging the edit with the last edit if possible.
+        if !self.difference.last_mut().unwrap().try_merge(mapping.edit()) {
+            self.difference.push(mapping.edit().clone());
         }
 
         Ok(())
     }
 
-    // FIXME: document, test, examples
+    // FIXME: test, examples
+    /// Clips the alignment into fragments that are fully contained in the given subgraph.
+    ///
+    /// Returns an empty vector if the read is unaligned or lacks an explicit non-empty target path or a difference string.
+    /// There will be one alignment fragment for every maximal subpath in the subgraph.
+    /// The fragments have the same name, pair, optional fields, and statistics as the original alignment.
+    /// Only the aligned intervals and difference strings depend on the fragment.
+    /// Fragments of the same alignment are identified by a fragment index stored as an optional field `fi:i`.
+    ///
+    /// # Arguments
+    ///
+    /// * `read_set`: A read set containing this alignment. Used for determining node lengths.
+    /// * `subgraph`: The subgraph to clip the alignment to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an [`AlignmentIter`] cannot be created.
+    /// May return an error if the alignment is invalid and the iterator returns non-consecutive mappings.
     pub fn clip(&self, read_set: &ReadSet, subgraph: &Subgraph) -> Result<Vec<Alignment>, String> {
         let mut result = Vec::new();
-        if self.is_unaligned() || !self.has_target_path() || self.difference.is_empty() {
+        if self.is_unaligned() || !self.has_non_empty_target_path() || self.difference.is_empty() {
             return Ok(result);
         }
 
@@ -839,7 +877,7 @@ impl Alignment {
         let sequence_len = Arc::new(|handle| read_set.sequence_len(handle));
         let iter = self.iter(sequence_len).ok_or(String::from("Cannot build alignment iterator"))?;
         for mapping in iter {
-            if !subgraph.has_handle(mapping.handle) {
+            if !subgraph.has_handle(mapping.handle()) {
                 if let Some(prev) = aln {
                     result.push(prev);
                     aln = None;
@@ -848,7 +886,7 @@ impl Alignment {
             }
 
             if let Some(aln) = &mut aln {
-                self.extend_fragment(aln, mapping)?;
+                aln.extend(mapping)?;
             } else {
                 aln = Some(Self::create_fragment(&self, mapping, result.len() + 1));
             }
@@ -888,12 +926,53 @@ pub struct PairedRead {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: examples
 /// An iterator over an [`Alignment`] as a sequence of [`Mapping`] objects.
 ///
 /// This iterator assumes that the alignment is valid, and it may stop early if it is not.
 /// It requires that the alignment stores the target path explicitly and has a difference string.
 /// Insertions at node boundaries are assigned to the left.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{Alignment, Mapping, Difference};
+/// use gbz_base::alignment::TargetPath;
+/// use std::sync::Arc;
+///
+/// // Construct an alignment.
+/// let mut aln = Alignment::new();
+/// aln.seq_len = 15;
+/// aln.seq_interval = 0..15;
+/// aln.path = TargetPath::Path(vec![1, 2, 3]);
+/// aln.path_len = 15;
+/// aln.path_interval = 0..15;
+/// aln.matches = 14;
+/// aln.edits = 1;
+/// aln.difference = vec![
+///     Difference::Match(6),
+///     Difference::Mismatch(b'A'),
+///     Difference::Match(8),
+/// ];
+///
+/// // We use this in place of a graph for node lengths.
+/// let node_lengths = vec![0, 4, 6, 5];
+/// let sequence_len = Arc::new(|handle| node_lengths.get(handle).copied());
+///
+/// // This is what we expect from the iterator.
+/// let truth = vec![
+///     Mapping::new(0, 1, node_lengths[1], 0, Difference::Match(4)),
+///     Mapping::new(4, 2, node_lengths[2], 0, Difference::Match(2)),
+///     Mapping::new(6, 2, node_lengths[2], 2, Difference::Mismatch(b'A')),
+///     Mapping::new(7, 2, node_lengths[2], 3, Difference::Match(3)),
+///     Mapping::new(10, 3, node_lengths[3], 0, Difference::Match(5)),
+/// ];
+///
+/// // Iterator creation may fail if the alignment is invalid.
+/// let iter = aln.iter(sequence_len);
+/// assert!(iter.is_some());
+/// let iter = iter.unwrap();
+/// assert!(iter.eq(truth.iter().cloned()));
+/// ```
 #[derive(Clone)]
 pub struct AlignmentIter<'a> {
     parent: &'a Alignment,

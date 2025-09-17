@@ -214,6 +214,7 @@ fn alignment_default() {
     assert_eq!(default.seq_len, 0, "A default alignment should have a sequence length of 0");
     assert!(default.seq_interval.is_empty(), "A default alignment should have an empty sequence interval");
     assert!(default.has_target_path(), "A default alignment should have a target path");
+    assert!(!default.has_non_empty_target_path(), "A default alignment should not have a non-empty target path");
     assert!(default.target_path().unwrap().is_empty(), "A default alignment should have an empty target path");
     assert_eq!(default.path_len, 0, "A default alignment should have a target path length of 0");
     assert!(default.path_interval.is_empty(), "A default alignment should have an empty target path interval");
@@ -263,6 +264,7 @@ fn alignment_operations() {
 
     // We have a GBWT start position.
     assert!(!aln.has_target_path(), "GBWT start position should not be a target path");
+    assert!(!aln.has_non_empty_target_path(), "GBWT start position should not be a non-empty target path");
     assert!(aln.target_path().is_none(), "GBWT start position should not be returned as a target path");
     assert!(aln.min_handle().is_none(), "GBWT start position should not have a minimum handle");
     assert!(aln.max_handle().is_none(), "GBWT start position should not have a maximum handle");
@@ -276,6 +278,7 @@ fn alignment_operations() {
     let max_handle = correct_path.iter().max().cloned();
     aln.set_target_path(correct_path.clone());
     assert!(aln.has_target_path(), "Target path should exist after setting it");
+    assert!(aln.has_non_empty_target_path(), "Target path should be non-empty after setting it");
     assert_eq!(aln.target_path(), Some(correct_path.as_slice()), "Target path should match the set path");
     assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the set path");
     assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the set path");
@@ -287,6 +290,7 @@ fn alignment_operations() {
     ];
     aln.set_target_path(wrong_path);
     assert!(aln.has_target_path(), "Target path should still exist after setting it again");
+    assert!(aln.has_non_empty_target_path(), "Target path should still be non-empty after setting it again");
     assert_eq!(aln.target_path(), Some(correct_path.as_slice()), "Target path should match the existing path");
     assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the existing path");
     assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the existing path");
@@ -330,7 +334,7 @@ fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
 
 //-----------------------------------------------------------------------------
 
-// Tests for `Alignment`: integration.
+// Tests for `Alignment`: encode/decode integration.
 // This is the haplotype sampling test case from vg.
 
 fn integration_test(gaf_file: &'static str, gbwt_file: &'static str, block_size: usize) {
@@ -376,7 +380,7 @@ fn alignment_real_gzipped() {
 //-----------------------------------------------------------------------------
 
 fn check_alignment_iter(aln: &Alignment, truth: &[Mapping], expect_fail: bool) {
-    // This is a convenient hack.
+    // This is a convenient hack. We don't need a graph when the handle is also the node length.
     let sequence_len = Arc::new(|handle| Some(handle));
 
     let iter = aln.iter(sequence_len);
@@ -638,7 +642,7 @@ fn alignment_iter_partial() {
 }
 
 // Insertions at node boundaries are supposed to be assigned to the end of the previous node.
-// Except at the start of the node or if the previous node is not used in the alignment.
+// Except at the start of the alignment or if the previous node is not used in the alignment.
 #[test]
 fn alignment_iter_insertions() {
     let aln = create_alignment(
@@ -731,8 +735,8 @@ fn alignment_iter_real() {
         let mut seq_offset = aln.seq_interval.start;
         let mut path_offset = aln.path_interval.start;
         for mapping in iter {
-            seq_offset += mapping.seq_interval.len();
-            path_offset += mapping.node_interval.len();
+            seq_offset += mapping.seq_interval().len();
+            path_offset += mapping.node_interval().len();
         }
         assert_eq!(seq_offset, aln.seq_interval.end, "Failed to reach the end of the query interval in alignment {}", i + 1);
         assert_eq!(path_offset, aln.path_interval.end, "Failed to reach the end of the target interval in alignment {}", i + 1);
@@ -742,6 +746,20 @@ fn alignment_iter_real() {
 //-----------------------------------------------------------------------------
 
 // Tests for `Alignment`: Clipping to a subgraph.
+
+// empty alignment
+
+// unaligned
+
+// fully in subgraph
+
+// outside subgraph
+
+// in two parts
+
+// ends missing
+
+// real reads
 
 //-----------------------------------------------------------------------------
 
