@@ -721,12 +721,9 @@ impl Alignment {
         self.path = TargetPath::Path(path);
     }
 
-    // TODO: Should this update an existing target path?
-    /// Sets the given path as the target path, if the path is currently a GBWT starting position.
+    /// Sets the given path as the target path.
     pub fn set_target_path(&mut self, path: Vec<usize>) {
-        if let TargetPath::StartPosition(_) = self.path {
-            self.path = TargetPath::Path(path);
-        }
+        self.path = TargetPath::Path(path);
     }
 
     /// Returns an iterator over the alignment as a sequence of mappings.
@@ -736,7 +733,7 @@ impl Alignment {
     /// It may stop early if the alignment is invalid.
     ///
     /// The iterator needs a function that provides the sequence length for each node.
-    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`ReadSet`].
+    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
     pub fn iter<'a>(&'a self, sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>) -> Option<AlignmentIter<'a>> {
         if !self.has_target_path() {
             return None;
@@ -868,7 +865,6 @@ impl Alignment {
         Ok(())
     }
 
-    // FIXME: examples
     /// Clips the alignment into fragments that are fully contained in the given subgraph.
     ///
     /// Returns an empty vector if the read is unaligned or lacks an explicit non-empty target path or a difference string.
@@ -877,23 +873,78 @@ impl Alignment {
     /// Only the aligned intervals and difference strings depend on the fragment.
     /// Fragments of the same alignment are identified by a fragment index stored as an optional field `fi:i`.
     ///
-    /// # Arguments
-    ///
-    /// * `subgraph`: The subgraph to clip the alignment to.
-    /// * `sequence_len`: A function that returns the sequence length for the node with the given handle.
+    /// Clipping requires a function that returns the sequence length for the node with the given handle.
+    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
     ///
     /// # Errors
     ///
     /// Returns an error if an [`AlignmentIter`] cannot be created.
     /// May return an error if the alignment is invalid and the iterator returns non-consecutive mappings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbwt::{GBZ, Orientation};
+    /// use gbwt::support;
+    /// use gbz_base::{Alignment, Difference, Subgraph};
+    /// use gbz_base::utils;
+    /// use simple_sds::serialize;
+    /// use std::sync::Arc;
+    ///
+    /// let gbz_filename = utils::get_test_data("micb-kir3dl1.gbz");
+    /// let graph: GBZ = serialize::load_from(&gbz_filename).unwrap();
+    ///
+    /// // Create a perfect alignment with node lengths of 68 bp, 1 bp, and 6 bp.
+    /// let mut aln = Alignment::new();
+    /// aln.seq_len = 50;
+    /// aln.seq_interval = 0..50;
+    /// let target_path = vec![
+    ///     support::encode_node(13, Orientation::Forward),
+    ///     support::encode_node(14, Orientation::Forward),
+    ///     support::encode_node(16, Orientation::Forward),
+    /// ];
+    /// aln.set_target_path(target_path.clone());
+    /// aln.path_len = 75;
+    /// aln.path_interval = 20..70;
+    /// aln.matches = 50;
+    /// aln.difference.push(Difference::Match(50));
+    ///
+    /// // Create a subgraph without the middle node.
+    /// let mut subgraph = Subgraph::new();
+    /// let _ = subgraph.add_node_from_gbz(&graph, 13);
+    /// let _ = subgraph.add_node_from_gbz(&graph, 16);
+    ///
+    /// // Clip the alignment to the subgraph.
+    /// let sequence_len = Arc::new(|handle| {
+    ///     let (node_id, _) = support::decode_node(handle);
+    ///     graph.sequence_len(node_id)
+    /// });
+    /// let result = aln.clip(&subgraph, sequence_len.clone());
+    /// assert!(result.is_ok());
+    /// let clipped = result.unwrap();
+    ///
+    /// // We should have two fragments.
+    /// assert_eq!(clipped.len(), 2);
+    /// assert_eq!(clipped[0].seq_interval, 0..48);
+    /// assert_eq!(clipped[0].target_path().unwrap(), &target_path[0..1]);
+    /// assert_eq!(clipped[0].path_interval, 20..68);
+    /// assert_eq!(clipped[0].difference, vec![Difference::Match(48)]);
+    /// assert_eq!(clipped[1].seq_interval, 49..50);
+    /// assert_eq!(clipped[1].target_path().unwrap(), &target_path[2..3]);
+    /// assert_eq!(clipped[1].path_interval, 0..1);
+    /// assert_eq!(clipped[1].difference, vec![Difference::Match(1)]);
+    /// ```
     pub fn clip<'a>(&self, subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) -> Result<Vec<Alignment>, String> {
         let mut result = Vec::new();
         if self.is_unaligned() || !self.has_non_empty_target_path() || self.difference.is_empty() {
+            eprintln!("Unaligned: {}", self.is_unaligned());
+            eprintln!("Has non-empty target path: {}", self.has_non_empty_target_path());
+            eprintln!("Difference is empty: {}", self.difference.is_empty());
             return Ok(result);
         }
 
         let mut aln: Option<Alignment> = None; // The alignment we are currently building.
-        let iter = self.iter(sequence_len).ok_or(String::from("Cannot build alignment iterator"))?;
+        let iter = self.iter(sequence_len).ok_or(String::from("Cannot build an alignment iterator"))?;
         for mapping in iter {
             if !subgraph.has_handle(mapping.handle()) {
                 if let Some(prev) = aln {
@@ -956,14 +1007,13 @@ pub struct PairedRead {
 ///
 /// ```
 /// use gbz_base::{Alignment, Mapping, Difference};
-/// use gbz_base::alignment::TargetPath;
 /// use std::sync::Arc;
 ///
 /// // Construct an alignment.
 /// let mut aln = Alignment::new();
 /// aln.seq_len = 15;
 /// aln.seq_interval = 0..15;
-/// aln.path = TargetPath::Path(vec![1, 2, 3]);
+/// aln.set_target_path(vec![1, 2, 3]);
 /// aln.path_len = 15;
 /// aln.path_interval = 0..15;
 /// aln.matches = 14;

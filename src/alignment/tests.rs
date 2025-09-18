@@ -288,17 +288,19 @@ fn alignment_operations() {
     assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the set path");
     assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the set path");
 
-    // Setting it again should not change the existing target path.
-    let wrong_path = vec![
+    // Setting it again should update the target path.
+    let new_path = vec![
         support::encode_node(1, Orientation::Forward),
         support::encode_node(3, Orientation::Forward),
     ];
-    aln.set_target_path(wrong_path);
+    let min_handle = new_path.iter().min().cloned();
+    let max_handle = new_path.iter().max().cloned();
+    aln.set_target_path(new_path.clone());
     assert!(aln.has_target_path(), "Target path should still exist after setting it again");
     assert!(aln.has_non_empty_target_path(), "Target path should still be non-empty after setting it again");
-    assert_eq!(aln.target_path(), Some(correct_path.as_slice()), "Target path should match the existing path");
-    assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the existing path");
-    assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the existing path");
+    assert_eq!(aln.target_path(), Some(new_path.as_slice()), "Target path should match the new path");
+    assert_eq!(aln.min_handle(), min_handle, "Minimum handle should match the new path");
+    assert_eq!(aln.max_handle(), max_handle, "Maximum handle should match the new path");
 }
 
 //-----------------------------------------------------------------------------
