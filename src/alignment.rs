@@ -33,7 +33,7 @@
 //! The order of optional fields is not preserved.
 //! Compression with [`AlignmentBlock`] discards unsupported optional fields.
 
-use crate::{ReadSet, Subgraph, Mapping, Difference};
+use crate::{Subgraph, Mapping, Difference};
 use crate::formats::{self, TypedField};
 use crate::utils;
 
@@ -199,8 +199,6 @@ impl Alignment {
     pub fn new() -> Self {
         Alignment::default()
     }
-
-    // TODO: From a name and a sequence of mappings.
 
     // Parses a string field from a GAF field.
     fn parse_string(field: &[u8], field_name: &str) -> Result<String, String> {
@@ -778,21 +776,21 @@ impl Alignment {
         Some(iter)
     }
 
-    // Creates a new fragment of this alignment corresponding to the given mapping.
-    fn create_fragment(&self, mapping: Mapping, fragment_id: usize) -> Alignment {
+    // Creates an empty fragment of this alignment.
+    fn empty_fragment(&self, fragment_id: usize) -> Alignment {
         let mut aln = Alignment {
             name: self.name.clone(),
             seq_len: self.seq_len,
-            seq_interval: mapping.seq_interval().clone(),
-            path: TargetPath::Path(vec![mapping.handle()]),
-            path_len: mapping.node_len(),
-            path_interval: mapping.node_interval().clone(),
+            seq_interval: 0..0,
+            path: TargetPath::Path(Vec::new()),
+            path_len: 0,
+            path_interval: 0..0,
             matches: self.matches,
             edits: self.edits,
             mapq: self.mapq,
             score: self.score,
             base_quality: self.base_quality.clone(),
-            difference: vec![mapping.edit().clone()],
+            difference: Vec::new(),
             pair: self.pair.clone(),
             optional: self.optional.clone(),
         };
@@ -801,32 +799,45 @@ impl Alignment {
         aln
     }
 
-    // Extends the given fragment with the next mapping.
+    // Extends the given fragment with the next mapping of the same original alignment.
     fn extend(&mut self, mapping: Mapping) -> Result<(), String> {
-        if self.difference.is_empty() {
-            return Err(String::from("Cannot extend a fragment without a difference string"));
+        // Start by updating the difference string.
+        if self.is_unaligned() {
+            if !self.difference.is_empty() {
+                return Err(String::from("Cannot extend an unaligned fragment with a non-empty difference string"));
+            }
+            self.difference.push(mapping.edit().clone());
+        } else {
+            if self.difference.is_empty() {
+                return Err(String::from("Cannot extend an aligned fragment without a difference string"));
+            }
+            if !self.difference.last_mut().unwrap().try_merge(mapping.edit()) {
+                self.difference.push(mapping.edit().clone());
+            }
         }
 
         // Update the query sequence.
-        if mapping.seq_interval().start != self.seq_interval.end {
-            return Err(String::from("Cannot append a non-contiguous query interval"));
-        }
         if mapping.seq_interval().end > self.seq_len {
             return Err(String::from("Cannot extend a fragment beyond the query sequence length"));
         }
-        self.seq_interval.end = mapping.seq_interval().end;
+        if self.is_unaligned() {
+            self.seq_interval = mapping.seq_interval().clone();
+        } else {
+            if mapping.seq_interval().start != self.seq_interval.end {
+                return Err(String::from("Cannot append a non-contiguous query interval"));
+            }
+            self.seq_interval.end = mapping.seq_interval().end;
+        }
 
         // Determine how we are extending the alignment.
         let target_path = self.target_path().ok_or(
             "Cannot extend a fragment without an explicit target path"
         )?;
-        let last_node = *target_path.last().ok_or(
-            "Cannot extend a fragment with an empty target path"
-        )?;
+        let last_node = target_path.last().copied();
         let path_left = self.path_len.saturating_sub(self.path_interval.end);
         let reverse_offset = mapping.node_len().saturating_sub(mapping.node_interval().start);
-        let continues_in_same_node = mapping.handle() == last_node && reverse_offset == path_left;
-        let starts_a_new_node = path_left == 0 && mapping.node_interval().start == 0;
+        let continues_in_same_node = Some(mapping.handle()) == last_node && reverse_offset == path_left;
+        let starts_a_new_node = path_left == 0 && mapping.is_at_start();
 
         // Update the target path.
         if starts_a_new_node {
@@ -840,11 +851,6 @@ impl Alignment {
             return Err(String::from("Cannot append a non-contiguous target interval"));
         }
         self.path_interval.end += mapping.target_len();
-
-        // Update the difference string, merging the edit with the last edit if possible.
-        if !self.difference.last_mut().unwrap().try_merge(mapping.edit()) {
-            self.difference.push(mapping.edit().clone());
-        }
 
         Ok(())
     }
@@ -860,21 +866,20 @@ impl Alignment {
     ///
     /// # Arguments
     ///
-    /// * `read_set`: A read set containing this alignment. Used for determining node lengths.
     /// * `subgraph`: The subgraph to clip the alignment to.
+    /// * `sequence_len`: A function that returns the sequence length for the node with the given handle.
     ///
     /// # Errors
     ///
     /// Returns an error if an [`AlignmentIter`] cannot be created.
     /// May return an error if the alignment is invalid and the iterator returns non-consecutive mappings.
-    pub fn clip(&self, read_set: &ReadSet, subgraph: &Subgraph) -> Result<Vec<Alignment>, String> {
+    pub fn clip<'a>(&self, subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) -> Result<Vec<Alignment>, String> {
         let mut result = Vec::new();
         if self.is_unaligned() || !self.has_non_empty_target_path() || self.difference.is_empty() {
             return Ok(result);
         }
 
         let mut aln: Option<Alignment> = None; // The alignment we are currently building.
-        let sequence_len = Arc::new(|handle| read_set.sequence_len(handle));
         let iter = self.iter(sequence_len).ok_or(String::from("Cannot build alignment iterator"))?;
         for mapping in iter {
             if !subgraph.has_handle(mapping.handle()) {
@@ -888,7 +893,9 @@ impl Alignment {
             if let Some(aln) = &mut aln {
                 aln.extend(mapping)?;
             } else {
-                aln = Some(Self::create_fragment(&self, mapping, result.len() + 1));
+                let mut curr = self.empty_fragment(result.len() + 1);
+                curr.extend(mapping)?;
+                aln = Some(curr);
             }
         }
         if let Some(aln) = aln {

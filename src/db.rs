@@ -1556,7 +1556,7 @@ impl ReadSet {
         Ok(())
     }
 
-    // TODO: Better long read algorithm for the overlapping case: extend paths in a bidirectional GBWT.
+    // FIXME: reads: Clip / Noclip / Contained
     /// Extracts a set of reads overlapping with the subgraph.
     ///
     /// The extracted reads will be in the same order as in the database.
@@ -1665,13 +1665,6 @@ impl ReadSet {
     /// Returns an iterator over the reads in the set.
     pub fn iter(&self) -> impl Iterator<Item = &Alignment> {
         self.reads.iter()
-    }
-
-    // TODO: Make public?
-    // Returns the sequence length for the given handle, or [`None`] if there is no such node.
-    #[inline]
-    pub(crate) fn sequence_len(&self, handle: usize) -> Option<usize> {
-        self.nodes.get(&handle).map(|record| record.sequence_len())
     }
 
     // Extracts the target sequence for the given alignment.

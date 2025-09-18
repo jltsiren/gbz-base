@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::Subgraph;
 use crate::utils;
 
 use gbwt::GBZ;
@@ -415,11 +416,13 @@ fn perfect_alignment(name: &str, seq_len: usize, with_path: bool, with_differenc
     aln
 }
 
+// TODO: Make this a public constructor for Alignment? But then we need node lengths.
 fn create_alignment(
     name: &str,
     seq_len: usize, seq_start: usize,
     path: Vec<usize>, path_start: usize,
-    difference: Vec<Difference>
+    difference: Vec<Difference>,
+    sequence_len: Option<Arc<dyn Fn(usize) -> Option<usize> + '_>>
 ) -> Alignment {
     let mut seq_end = seq_start;
     let mut path_end = path_start;
@@ -437,7 +440,14 @@ fn create_alignment(
 
     let mut aln = empty_alignment(name, seq_len);
     aln.seq_interval = seq_start..seq_end;
-    aln.path_len = path.iter().sum();
+
+    let sequence_len = if let Some(func) = sequence_len {
+        func
+    } else {
+        Arc::new(|handle| Some(handle))
+    };
+    aln.path_len = path.iter().map(|&handle| sequence_len(handle).unwrap()).sum();
+
     aln.path = TargetPath::Path(path);
     aln.path_interval = path_start..path_end;
     aln.matches = matches;
@@ -469,7 +479,8 @@ fn alignment_iter_special_cases() {
         "insertion-only",
         7, 0,
         vec![], 0,
-        vec![Difference::Insertion(b"GATTACA".to_vec())]
+        vec![Difference::Insertion(b"GATTACA".to_vec())],
+        None
     );
     check_alignment_iter(&aln, &truth, true);
 
@@ -477,7 +488,8 @@ fn alignment_iter_special_cases() {
         "insertion-only-with-path",
         7, 0,
         vec![30], 0,
-        vec![Difference::Insertion(b"GATTACA".to_vec())]
+        vec![Difference::Insertion(b"GATTACA".to_vec())],
+        None
     );
     check_alignment_iter(&aln, &truth, true);
 }
@@ -492,7 +504,8 @@ fn alignment_iter_perfect() {
         "multi-node",
         100, 0,
         vec![40, 60], 0,
-        vec![Difference::Match(100)]
+        vec![Difference::Match(100)],
+        None
     );
     let truth = vec![
         Mapping::new(0, 40, 40, 0, Difference::Match(40)),
@@ -504,7 +517,8 @@ fn alignment_iter_perfect() {
         "contained-single-node",
         100, 0,
         vec![50, 60], 5,
-        vec![Difference::Match(100)]
+        vec![Difference::Match(100)],
+        None
     );
     let truth = vec![
         Mapping::new(0, 50, 50, 5, Difference::Match(45)),
@@ -516,7 +530,8 @@ fn alignment_iter_perfect() {
         "contained-multi-node",
         100, 0,
         vec![30, 40, 50], 10,
-        vec![Difference::Match(100)]
+        vec![Difference::Match(100)],
+        None
     );
     let truth = vec![
         Mapping::new(0, 30, 30, 10, Difference::Match(20)),
@@ -536,7 +551,8 @@ fn alignment_iter_full() {
             Difference::Match(20), Difference::Deletion(10),
             Difference::Match(35), Difference::Insertion(b"AC".to_vec()), Difference::Match(5),
             Difference::Mismatch(b'T'), Difference::Match(37)
-        ]
+        ],
+        None
     );
     let truth = vec![
         Mapping::new(0, 30, 30, 0, Difference::Match(20)),
@@ -557,7 +573,8 @@ fn alignment_iter_full() {
             Difference::Match(2),
             Difference::Mismatch(b'A'), Difference::Match(50),
             Difference::Deletion(10), Difference::Match(47)
-        ]
+        ],
+        None
     );
     let truth = vec![
         Mapping::new(0, 10, 10, 9, Difference::Match(1)),
@@ -579,7 +596,8 @@ fn alignment_iter_partial() {
         "second-to-first",
         100, 10,
         vec![80, 30], 1,
-        vec![Difference::Match(40), Difference::Insertion(b"GATTACA".to_vec()), Difference::Match(40)]
+        vec![Difference::Match(40), Difference::Insertion(b"GATTACA".to_vec()), Difference::Match(40)],
+        None
     );
     let truth = vec![
         Mapping::new(10, 80, 80, 1, Difference::Match(40)),
@@ -593,7 +611,8 @@ fn alignment_iter_partial() {
         "middle-to-middle",
         100, 10,
         vec![30, 40, 50], 15,
-        vec![Difference::Match(35), Difference::Mismatch(b'A'), Difference::Match(44)]
+        vec![Difference::Match(35), Difference::Mismatch(b'A'), Difference::Match(44)],
+        None
     );
     let truth = vec![
         Mapping::new(10, 30, 30, 15, Difference::Match(15)),
@@ -612,7 +631,8 @@ fn alignment_iter_partial() {
             Difference::Match(45),
             Difference::Insertion(b"GATTACA".to_vec()), Difference::Deletion(6),
             Difference::Match(28)
-        ]
+        ],
+        None
     );
     let truth = vec![
         Mapping::new(10, 40, 40, 39, Difference::Match(1)),
@@ -629,7 +649,8 @@ fn alignment_iter_partial() {
         "unused-nodes",
         100, 10,
         vec![20, 30, 40, 50, 15], 35,
-        vec![Difference::Match(35), Difference::Mismatch(b'A'), Difference::Match(44)]
+        vec![Difference::Match(35), Difference::Mismatch(b'A'), Difference::Match(44)],
+        None
     );
     let truth = vec![
         Mapping::new(10, 30, 30, 15, Difference::Match(15)),
@@ -649,7 +670,8 @@ fn alignment_iter_insertions() {
         "at-start",
         100, 0,
         vec![50, 48], 0,
-        vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(98)]
+        vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(98)],
+        None
     );
     let truth = vec![
         Mapping::new(0, 50, 50, 0, Difference::Insertion(b"AC".to_vec())),
@@ -662,7 +684,8 @@ fn alignment_iter_insertions() {
         "at-start-with-unused",
         100, 0,
         vec![10, 50, 48], 10,
-        vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(98)]
+        vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(98)],
+        None
     );
     let truth = vec![
         Mapping::new(0, 50, 50, 0, Difference::Insertion(b"AC".to_vec())),
@@ -675,7 +698,8 @@ fn alignment_iter_insertions() {
         "at-end",
         100, 0,
         vec![50, 48], 0,
-        vec![Difference::Match(98), Difference::Insertion(b"AC".to_vec())]
+        vec![Difference::Match(98), Difference::Insertion(b"AC".to_vec())],
+        None
     );
     let truth = vec![
         Mapping::new(0, 50, 50, 0, Difference::Match(50)),
@@ -688,7 +712,8 @@ fn alignment_iter_insertions() {
         "at-end-with-unused",
         100, 0,
         vec![50, 48, 10], 0,
-        vec![Difference::Match(98), Difference::Insertion(b"AC".to_vec())]
+        vec![Difference::Match(98), Difference::Insertion(b"AC".to_vec())],
+        None
     );
     let truth = vec![
         Mapping::new(0, 50, 50, 0, Difference::Match(50)),
@@ -701,7 +726,8 @@ fn alignment_iter_insertions() {
         "in-the-midle",
         100, 0,
         vec![50, 48], 0,
-        vec![Difference::Match(50), Difference::Insertion(b"AC".to_vec()), Difference::Match(48)]
+        vec![Difference::Match(50), Difference::Insertion(b"AC".to_vec()), Difference::Match(48)],
+        None
     );
     let truth = vec![
         Mapping::new(0, 50, 50, 0, Difference::Match(50)),
@@ -745,19 +771,201 @@ fn alignment_iter_real() {
 
 //-----------------------------------------------------------------------------
 
+fn gbz_from(filename: &'static str) -> GBZ {
+    let gbz_file = support::get_test_data(filename);
+    let graph = serialize::load_from(&gbz_file);
+    if let Err(err) = graph {
+        panic!("Failed to load GBZ graph from {}: {}", gbz_file.display(), err);
+    }
+    graph.unwrap()
+}
+
+fn extract_subgraph(graph: &GBZ, nodes: &[usize]) -> Subgraph {
+    let mut subgraph = Subgraph::new();
+    for &node_id in nodes {
+        let result = subgraph.add_node_from_gbz(graph, node_id);
+        if let Err(err) = result {
+            panic!("Failed to add node {} to the subgraph: {}", node_id, err);
+        }
+    }
+    subgraph
+}
+
+fn clip_alignment<'a>(aln: &Alignment, subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) -> Vec<Alignment> {
+    let clipped = aln.clip(subgraph, sequence_len);
+    if let Err(err) = clipped {
+        panic!("Failed to clip alignment {}: {}", aln.name, err);
+    }
+    clipped.unwrap()
+}
+
+fn add_fragment_ids(truth: &mut [Vec<Alignment>]) {
+    for fragments in truth.iter_mut() {
+        for (i, aln) in fragments.iter_mut().enumerate() {
+            aln.optional.push(TypedField::Int([b'f', b'i'], (i + 1) as isize));
+        }
+    }
+}
+
+fn clip_and_check<'a>(
+    alignments: &[Alignment], truth: &[Vec<Alignment>],
+    subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>
+) {
+    for (aln, true_fragments) in alignments.iter().zip(truth.iter()) {
+        let clipped = clip_alignment(aln, &subgraph, sequence_len.clone());
+        assert_eq!(clipped.len(), true_fragments.len(), "Wrong number of fragments for {}", aln.name);
+        for (i, (fragment, true_fragment)) in clipped.iter().zip(true_fragments.iter()).enumerate() {
+            assert_eq!(fragment.name, true_fragment.name, "Wrong name for fragment {} of {}", i + 1, aln.name);
+            assert_eq!(fragment.seq_len, true_fragment.seq_len, "Wrong query length for fragment {} of {}", i + 1, aln.name);
+            assert_eq!(fragment.seq_interval, true_fragment.seq_interval, "Wrong query interval for fragment {} of {}", i + 1, aln.name);
+            assert_eq!(fragment.path, true_fragment.path, "Wrong target path for fragment {} of {}", i + 1, aln.name);
+            assert_eq!(fragment.path_len, true_fragment.path_len, "Wrong target length for fragment {} of {}", i + 1, aln.name);
+            assert_eq!(fragment.path_interval, true_fragment.path_interval, "Wrong target interval for fragment {} of {}", i + 1, aln.name);
+            assert_eq!(fragment.difference, true_fragment.difference, "Wrong difference string for fragment {} of {}", i + 1, aln.name);
+            assert_eq!(fragment.optional, true_fragment.optional, "Wrong optional fields for fragment {} of {}", i + 1, aln.name);
+            // assert_eq!(fragment, true_fragment, "Wrong fragment {} for {}", i + 1, aln.name);
+            // The statistics are currently for the entire alignment, while the truth may have them for the fragment.
+        }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 // Tests for `Alignment`: Clipping to a subgraph.
 
-// empty alignment
+#[test]
+fn alignment_clip_unaligned() {
+    let graph = gbz_from("example.gbz");
+    let subgraph = extract_subgraph(&graph, &[11, 14]);
+    let sequence_len = Arc::new(|handle| {
+        let (node_id, _) = support::decode_node(handle);
+        graph.sequence_len(node_id)
+    });
 
-// unaligned
+    let alignments = vec![
+        empty_alignment("empty", 0),
+        empty_alignment("unaligned", 100),
+    ];
 
-// fully in subgraph
+    for aln in alignments.iter() {
+        let clipped = clip_alignment(aln, &subgraph, sequence_len.clone());
+        assert!(clipped.is_empty(), "Clipping created fragments for {}", aln.name);
+    }
+}
 
-// outside subgraph
+#[test]
+fn alignment_clip_aligned() {
+    let graph = gbz_from("example.gbz");
+    let subgraph = extract_subgraph(&graph, &[11, 12, 14, 17]);
+    let sequence_len = Arc::new(|handle| {
+        let (node_id, _) = support::decode_node(handle);
+        graph.sequence_len(node_id)
+    });
 
-// in two parts
+    let alignments = vec![
+        create_alignment(
+            "in-subgraph",
+            3, 0,
+            vec![
+                support::encode_node(11, Orientation::Forward),
+                support::encode_node(12, Orientation::Forward),
+                support::encode_node(14, Orientation::Forward),
+            ], 0,
+            vec![Difference::Match(3)],
+            Some(sequence_len.clone())
+        ),
+        create_alignment(
+            "outside-subgraph",
+            3, 0,
+            vec![
+                support::encode_node(21, Orientation::Forward),
+                support::encode_node(22, Orientation::Forward),
+                support::encode_node(23, Orientation::Forward),
+            ], 0,
+            vec![Difference::Match(3)],
+            Some(sequence_len.clone())
+        ),
+        create_alignment(
+            "in-two-parts",
+            5, 0,
+            vec![
+                support::encode_node(11, Orientation::Forward),
+                support::encode_node(12, Orientation::Forward),
+                support::encode_node(14, Orientation::Forward),
+                support::encode_node(15, Orientation::Forward),
+                support::encode_node(17, Orientation::Forward),
+            ], 0,
+            vec![Difference::Match(3), Difference::Mismatch(b'A'), Difference::Match(1)],
+            Some(sequence_len.clone())
+        ),
+        create_alignment(
+            "missing-ends",
+            3, 0,
+            vec![
+                support::encode_node(13, Orientation::Forward),
+                support::encode_node(14, Orientation::Forward),
+                support::encode_node(16, Orientation::Forward),
+            ], 0,
+            vec![Difference::Match(3)],
+            Some(sequence_len.clone())
+        ),
+    ];
 
-// ends missing
+    let mut truth = vec![
+        vec![
+            create_alignment(
+                "in-subgraph",
+                3, 0,
+                vec![
+                    support::encode_node(11, Orientation::Forward),
+                    support::encode_node(12, Orientation::Forward),
+                    support::encode_node(14, Orientation::Forward),
+                ], 0,
+                vec![Difference::Match(3)],
+                Some(sequence_len.clone())
+            ),
+        ],
+        vec![], // "outside-subgraph"
+        vec![
+            create_alignment(
+                "in-two-parts",
+                5, 0,
+                vec![
+                    support::encode_node(11, Orientation::Forward),
+                    support::encode_node(12, Orientation::Forward),
+                    support::encode_node(14, Orientation::Forward),
+                ], 0,
+                vec![Difference::Match(3)],
+                Some(sequence_len.clone())
+            ),
+            create_alignment(
+                "in-two-parts",
+                5, 4,
+                vec![
+                    support::encode_node(17, Orientation::Forward),
+                ], 0,
+                vec![Difference::Match(1)],
+                Some(sequence_len.clone())
+            ),
+        ],
+        vec![
+            create_alignment(
+                "missing-ends",
+                3, 1,
+                vec![
+                    support::encode_node(14, Orientation::Forward),
+                ], 0,
+                vec![Difference::Match(1)],
+                Some(sequence_len.clone())
+            ),
+        ],
+    ];
+    add_fragment_ids(&mut truth);
+
+    clip_and_check(&alignments, &truth, &subgraph, sequence_len);
+}
+
+// with longer nodes
 
 // real reads
 
