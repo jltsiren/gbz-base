@@ -1,13 +1,17 @@
 use super::*;
 
-use crate::Subgraph;
+use crate::{Subgraph, SubgraphQuery, GraphReference};
 use crate::utils;
 
 use gbwt::GBZ;
 use simple_sds::serialize;
 
+use rand::Rng;
+
+use std::collections::{HashMap, BTreeSet};
 use std::io::BufRead;
 use std::path::PathBuf;
+use std::vec;
 
 //-----------------------------------------------------------------------------
 
@@ -829,6 +833,50 @@ fn clip_and_check<'a>(
     }
 }
 
+fn check_fragment(aln: &Alignment, fragment_id: usize, clipped: &[Alignment], true_subpath: &[usize]) {
+    assert!(fragment_id < clipped.len(), "Missing fragment {} of alignment {}", fragment_id + 1, aln.name);
+    let fragment = &clipped[fragment_id];
+    let fragment_path = fragment.target_path().unwrap();
+    assert_eq!(fragment_path, true_subpath, "Wrong subpath for fragment {} of alignment {}", fragment_id + 1, aln.name);
+}
+
+fn clip_and_check_real<'a>(alignments: &[Alignment], subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) {
+    for aln in alignments.iter() {
+        let clipped = clip_alignment(aln, subgraph, sequence_len.clone());
+        if aln.is_unaligned() {
+            assert!(clipped.is_empty(), "Clipping created fragments for unaligned read {}", aln.name);
+            continue;
+        }
+
+        // We have a target path, because clipping was successful.
+        let target_path = aln.target_path().unwrap();
+        let mut curr: Option<Range<usize>> = None; // Interval of `target_path` in the subgraph.
+        let mut fragment_id = 0;
+        for (i, &handle) in target_path.iter().enumerate() {
+            if subgraph.has_handle(handle) {
+                if let Some(range) = curr.as_mut() {
+                    range.end = i + 1;
+                } else {
+                    curr = Some(i..(i + 1));
+                }
+            } else {
+                if let Some(range) = curr.take() {
+                    let true_subpath = &target_path[range];
+                    check_fragment(aln, fragment_id, &clipped, true_subpath);
+                    fragment_id += 1;
+                }
+            }
+        }
+        if let Some(range) = curr.take() {
+            let true_subpath = &target_path[range];
+            check_fragment(aln, fragment_id, &clipped, true_subpath);
+            fragment_id += 1;
+        }
+
+        assert_eq!(fragment_id, clipped.len(), "Clipped alignment {} has fewer than expected fragments", aln.name);
+    }
+}
+
 //-----------------------------------------------------------------------------
 
 // Tests for `Alignment`: Clipping to a subgraph.
@@ -967,7 +1015,142 @@ fn alignment_clip_aligned() {
 
 // with longer nodes
 
+#[test]
+fn alignment_clip_long_nodes() {
+    let graph = gbz_from("example.gbz");
+    let subgraph = extract_subgraph(&graph, &[11, 12, 14, 17]);
+
+    // Alignment iteration/clipping does not use the graph. We can therefore pretend
+    // that the nodes are longer than they actually are.
+    let mut node_len = HashMap::new();
+    for node_id in graph.node_iter() {
+        for orientation in [Orientation::Forward, Orientation::Reverse] {
+            let handle = support::encode_node(node_id, orientation);
+            node_len.insert(handle, node_id - 10);
+        }
+    }
+    let sequence_len = Arc::new(|handle| {
+        node_len.get(&handle).cloned()
+    });
+
+    let alignments = vec![
+        create_alignment(
+            "upper-path",
+            19, 2,
+            vec![
+                support::encode_node(11, Orientation::Forward),
+                support::encode_node(12, Orientation::Forward),
+                support::encode_node(14, Orientation::Forward),
+                support::encode_node(15, Orientation::Forward),
+                support::encode_node(17, Orientation::Forward),
+            ], 0,
+            vec![
+                Difference::Match(4), Difference::Deletion(2),
+                Difference::Match(6), Difference::Insertion(b"GA".to_vec()), // Insertion at the end of node 15.
+                Difference::Match(5),
+            ],
+            Some(sequence_len.clone())
+        ),
+        create_alignment(
+            "lower-path",
+            21, 1,
+            vec![
+                support::encode_node(13, Orientation::Forward),
+                support::encode_node(14, Orientation::Forward),
+                support::encode_node(16, Orientation::Forward),
+                support::encode_node(17, Orientation::Forward),
+            ], 2,
+            vec![
+                Difference::Match(5), Difference::Insertion(b"GA".to_vec()), // Insertion at the end of node 14.
+                Difference::Match(7), Difference::Mismatch(b'T'),
+                Difference::Match(5),
+            ],
+            Some(sequence_len.clone())
+        ),
+    ];
+
+    let mut truth = vec![
+        vec![
+            create_alignment(
+                "upper-path",
+                19, 2,
+                vec![
+                    support::encode_node(11, Orientation::Forward),
+                    support::encode_node(12, Orientation::Forward),
+                    support::encode_node(14, Orientation::Forward),
+                ], 0,
+                vec![Difference::Match(4), Difference::Deletion(2), Difference::Match(1)],
+                Some(sequence_len.clone())
+            ),
+            create_alignment(
+                "upper-path",
+                19, 14,
+                vec![support::encode_node(17, Orientation::Forward)], 0,
+                vec![Difference::Match(5)],
+                Some(sequence_len.clone())
+            ),
+        ],
+        vec![
+            create_alignment(
+                "lower-path",
+                21, 2,
+                vec![support::encode_node(14, Orientation::Forward)], 0,
+                vec![Difference::Match(4), Difference::Insertion(b"GA".to_vec())],
+                Some(sequence_len.clone())
+            ),
+            create_alignment(
+                "lower-path",
+                21, 14,
+                vec![support::encode_node(17, Orientation::Forward)], 0,
+                vec![Difference::Match(1), Difference::Mismatch(b'T'), Difference::Match(5)],
+                Some(sequence_len.clone())
+            ),
+        ],
+    ];
+    add_fragment_ids(&mut truth);
+
+    clip_and_check(&alignments, &truth, &subgraph, sequence_len);
+}
+
 // real reads
+#[test]
+fn alignment_clip_real() {
+    // Get the alignments.
+    let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let alignments = parse_alignments(&gaf_file, false);
+
+    // Load the graph.
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+
+    let sequence_len = Arc::new(|handle| {
+        let (node_id, _) = support::decode_node(handle);
+        graph.sequence_len(node_id)
+    });
+
+    // Subgraph queries for the default context around 10 random nodes.
+    let node_ids: Vec<usize> = graph.node_iter().collect();
+    let mut queries = Vec::new();
+    let mut rng = rand::thread_rng();
+    for _ in 0..10 {
+        let node_id = node_ids[rng.gen_range(0..node_ids.len())];
+        let mut query = BTreeSet::new();
+        query.insert(node_id);
+        queries.push(query);
+    }
+
+    // Execute the queries and try clipping every alignment to the resulting subgraph.
+    for query in queries.iter() {
+        let mut subgraph = Subgraph::new();
+        let result = subgraph.around_nodes(
+            GraphReference::Gbz(&graph), query, SubgraphQuery::DEFAULT_CONTEXT
+        );
+        if let Err(err) = result {
+            panic!("Failed to extract the subgraph around nodes {:?}: {}", query, err);
+        }
+        clip_and_check_real(&alignments, &subgraph, sequence_len.clone());
+    }
+}
 
 //-----------------------------------------------------------------------------
 

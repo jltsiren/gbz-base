@@ -802,7 +802,8 @@ impl Alignment {
     // Extends the given fragment with the next mapping of the same original alignment.
     fn extend(&mut self, mapping: Mapping) -> Result<(), String> {
         // Start by updating the difference string.
-        if self.is_unaligned() {
+        if self.seq_interval.is_empty() && self.path_interval.is_empty() {
+            // If we started with a gap, `is_unaligned()` would be true.
             if !self.difference.is_empty() {
                 return Err(String::from("Cannot extend an unaligned fragment with a non-empty difference string"));
             }
@@ -829,6 +830,7 @@ impl Alignment {
             self.seq_interval.end = mapping.seq_interval().end;
         }
 
+        // TODO: enum?
         // Determine how we are extending the alignment.
         let target_path = self.target_path().ok_or(
             "Cannot extend a fragment without an explicit target path"
@@ -836,26 +838,37 @@ impl Alignment {
         let last_node = target_path.last().copied();
         let path_left = self.path_len.saturating_sub(self.path_interval.end);
         let reverse_offset = mapping.node_len().saturating_sub(mapping.node_interval().start);
+        let first_mapping = last_node.is_none();
         let continues_in_same_node = Some(mapping.handle()) == last_node && reverse_offset == path_left;
         let starts_a_new_node = path_left == 0 && mapping.is_at_start();
 
         // Update the target path.
-        if starts_a_new_node {
+        if first_mapping {
             if let TargetPath::Path(path) = &mut self.path {
                 path.push(mapping.handle());
             } else {
                 unreachable!();
             }
             self.path_len += mapping.node_len();
-        } else if !continues_in_same_node {
+            self.path_interval = mapping.node_interval().clone();
+        } else if starts_a_new_node {
+            if let TargetPath::Path(path) = &mut self.path {
+                path.push(mapping.handle());
+            } else {
+                unreachable!();
+            }
+            self.path_len += mapping.node_len();
+            self.path_interval.end += mapping.target_len();
+        } else if continues_in_same_node {
+            self.path_interval.end += mapping.target_len();
+        } else {
             return Err(String::from("Cannot append a non-contiguous target interval"));
         }
-        self.path_interval.end += mapping.target_len();
 
         Ok(())
     }
 
-    // FIXME: test, examples
+    // FIXME: examples
     /// Clips the alignment into fragments that are fully contained in the given subgraph.
     ///
     /// Returns an empty vector if the read is unaligned or lacks an explicit non-empty target path or a difference string.
