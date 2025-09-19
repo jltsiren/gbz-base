@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::GBZBase;
-use crate::{formats, utils};
+use crate::{formats, internal, utils};
 
 use simple_sds::serialize;
 
@@ -347,33 +347,6 @@ fn align_with_prefix_with_suffix() {
 // TODO: We should also have a graph with fragmented reference paths for testing.
 // TODO: We should also have a graph with longer nodes for testing.
 
-fn gbz_from(filename: &'static str) -> GBZ {
-    let gbz_file = support::get_test_data(filename);
-    let graph = serialize::load_from(&gbz_file);
-    if let Err(err) = graph {
-        panic!("Failed to load GBZ graph from {}: {}", gbz_file.display(), err);
-    }
-    graph.unwrap()
-}
-
-fn gbz_and_path_index(filename: &'static str, interval: usize) -> (GBZ, PathIndex) {
-    let graph = gbz_from(filename);
-    let path_index = PathIndex::new(&graph, interval, false);
-    if let Err(err) = path_index {
-        panic!("Failed to create path index with interval {}: {}", interval, err);
-    }
-    (graph, path_index.unwrap())
-}
-
-fn load_chains(filename: &'static str) -> Chains {
-    let chains_file = utils::get_test_data(filename);
-    let chains = Chains::load_from(&chains_file);
-    if let Err(err) = chains {
-        panic!("Failed to load chains from {}: {}", chains_file.display(), err);
-    }
-    chains.unwrap()
-}
-
 fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_count: usize, test_case: &str) {
     // Counts.
     assert_eq!(subgraph.nodes(), true_nodes.len(), "Wrong number of nodes for {}", test_case);
@@ -688,8 +661,8 @@ fn random_nodes() {
 
 #[test]
 fn subgraph_from_gbz() {
-    let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
-    let chains = load_chains("example.chains");
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let chains = internal::load_chains("example.chains");
     let (queries, truth) = queries_and_truth();
     for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
         let mut subgraph = Subgraph::new();
@@ -729,8 +702,8 @@ fn subgraph_from_db() {
 
 #[test]
 fn manual_gbz_queries() {
-    let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
-    let chains = load_chains("example.chains");
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let chains = internal::load_chains("example.chains");
     let (queries, truth) = queries_and_truth();
     for (query, (true_nodes, path_count)) in queries.iter().zip(truth.iter()) {
         let mut subgraph = Subgraph::new();
@@ -869,7 +842,7 @@ fn manual_db_queries() {
 
 #[test]
 fn duplicate_gbz_queries() {
-    let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
     let (queries, _) = queries_and_truth();
     for query in queries {
         let mut subgraph = Subgraph::new();
@@ -934,8 +907,8 @@ fn duplicate_gbz_queries() {
 
 #[test]
 fn covered_snarls() {
-    let graph = gbz_from("example.gbz");
-    let chains = load_chains("example.chains");
+    let graph = internal::load_gbz("example.gbz");
+    let chains = internal::load_chains("example.chains");
 
     // (nodes, snarls)
     let a_first = (support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward));
@@ -976,7 +949,7 @@ fn covered_snarls() {
 
 #[test]
 fn between_nodes_with_limit() {
-    let graph = gbz_from("example.gbz");
+    let graph = internal::load_gbz("example.gbz");
     let (start_id, start_o) = (11, Orientation::Forward);
     let start = support::encode_node(start_id, start_o);
     let (end_id, end_o) = (14, Orientation::Forward);
@@ -1008,7 +981,7 @@ fn between_nodes_with_limit() {
 
 #[test]
 fn gfa_output() {
-    let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
     for cigar in [false, true] {
         let (queries, gfas) = queries_and_gfas(cigar);
         for (query, truth) in queries.iter().zip(gfas.iter()) {
@@ -1029,7 +1002,7 @@ fn gfa_output() {
 
 #[test]
 fn json_output() {
-    let (graph, path_index) = gbz_and_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
     for cigar in [false, true] {
         let (queries, jsons) = queries_and_jsons(cigar);
         for (query, truth) in queries.iter().zip(jsons.iter()) {
