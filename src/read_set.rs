@@ -9,10 +9,35 @@ use gbwt::bwt::Record;
 use rusqlite::{Row, OptionalExtension};
 
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::io::Write;
+use std::sync::Arc;
 
 #[cfg(test)]
 mod tests;
+
+//-----------------------------------------------------------------------------
+
+/// Output options for alignments in a subgraph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AlignmentOutput {
+    /// Reads overlapping with the subgraph.
+    Overlapping,
+    /// Overlapping reads clipped to the subgraph.
+    Clipped,
+    /// Reads fully contained within the subgraph.
+    Contained,
+}
+
+impl Display for AlignmentOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            AlignmentOutput::Overlapping => write!(f, "overlapping"),
+            AlignmentOutput::Clipped => write!(f, "clipped"),
+            AlignmentOutput::Contained => write!(f, "contained"),
+        }
+    }
+}
 
 //-----------------------------------------------------------------------------
 
@@ -74,6 +99,8 @@ pub struct ReadSet {
     // GBZ records from the GAF GBWT, with sequence from the graph/subgraph.
     nodes: BTreeMap<usize, GBZRecord>,
     reads: Vec<Alignment>,
+    // Number of alignments before clipping.
+    unclipped: usize,
     blocks: usize,
 }
 
@@ -143,7 +170,6 @@ impl ReadSet {
         Ok(())
     }
 
-    // FIXME: reads: Clip / Noclip / Contained
     /// Extracts a set of reads overlapping with the subgraph.
     ///
     /// The extracted reads will be in the same order as in the database.
@@ -154,16 +180,17 @@ impl ReadSet {
     /// * `graph`: A GBZ-compatible graph.
     /// * `subgraph`: The subgraph used as the query region.
     /// * `database`: A database storing reads aligned to the graph.
-    /// * `contained`: If `true`, only reads that are fully within the subgraph are returned.
+    /// * `output`: Which reads to include in the read set.
     ///
     /// # Errors
     ///
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
-    pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, contained: bool) -> Result<Self, String> {
+    pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, output: AlignmentOutput) -> Result<Self, String> {
         let mut read_set = ReadSet {
             nodes: BTreeMap::new(),
             reads: Vec::new(),
+            unclipped: 0,
             blocks: 0,
         };
 
@@ -215,9 +242,21 @@ impl ReadSet {
         while let Some(row) = rows.next().map_err(|x| x.to_string())? {
             let block = Self::decompress_block(row)?;
             for mut alignment in block {
-                read_set.set_target_path(&mut alignment, subgraph, &mut get_record, contained)?;
+                read_set.set_target_path(&mut alignment, subgraph, &mut get_record, output == AlignmentOutput::Contained)?;
                 if alignment.has_target_path() {
-                    read_set.reads.push(alignment);
+                    if output == AlignmentOutput::Clipped {
+                        let sequence_len = Arc::new(|handle| {
+                            let record = read_set.nodes.get(&handle)?;
+                            Some(record.sequence().len())
+                        });
+                        let clipped = alignment.clip(subgraph, sequence_len)?;
+                        for aln in clipped.into_iter() {
+                            read_set.reads.push(aln);
+                        }
+                    } else {
+                        read_set.reads.push(alignment);
+                    }
+                    read_set.unclipped += 1;
                 }
             }
             read_set.blocks += 1;
@@ -226,17 +265,26 @@ impl ReadSet {
         Ok(read_set)
     }
 
-    /// Returns the number of reads in the set.
+    /// Returns the number of alignment fragments in the set.
+    #[inline]
     pub fn len(&self) -> usize {
         self.reads.len()
     }
 
     /// Returns `true` if the set is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.reads.is_empty()
     }
 
+    /// Returns the original number of alignments (before clipping) in the set.
+    #[inline]
+    pub fn unclipped(&self) -> usize {
+        self.unclipped
+    }
+
     /// Returns the number of alignment blocks decompressed when creating the read set.
+    #[inline]
     pub fn blocks(&self) -> usize {
         self.blocks
     }
@@ -245,11 +293,13 @@ impl ReadSet {
     ///
     /// Each record corresponds to an oriented node, and the opposite orientation may not be present.
     /// This includes all node records encountered while tracing the alignments, even when the alignment was not included in the read set.
+    #[inline]
     pub fn node_records(&self) -> usize {
         self.nodes.len()
     }
 
     /// Returns an iterator over the reads in the set.
+    #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &Alignment> {
         self.reads.iter()
     }

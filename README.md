@@ -2,7 +2,7 @@
 
 This is a prototype for SQLite-based file formats for:
 
-* Pangenome graphs in [GBZ graph](https://github.com/jltsiren/gbwtgraph/blob/master/SERIALIZATION.md).
+* Pangenome graphs in [GBZ format](https://github.com/jltsiren/gbwtgraph/blob/master/SERIALIZATION.md).
 * Sequence alignments to a pangenome graph in [GAF format](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md).
 
 The formats are intended for interactive applications, where you want to access parts of the graph immediately without loading the entire graph into memory.
@@ -159,8 +159,8 @@ query --sample GRCh38 --contig chr12 --offset 1234567 \
     graph.db > out.gfa
 ```
 
-By default, this extracts all alignments overlapping with the subgraph.
-Use option `--contained` to extract only alignments fully within the subgraph.
+By default, this extracts all alignments overlapping with the subgraph and clips them to the subgraph.
+Use option `--alignments overlapping` to avoid clipping or `--alignments contained` to select only alignments fully within the subgraph.
 
 The GBZ-base can be for the graph the reads were aligned to, or for any supergraph.
 For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be used with reads aligned to a corresponding frequency-filtered or personalized (haplotype-sampled) graph.

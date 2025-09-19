@@ -13,10 +13,8 @@ use std::ops::Range;
 pub enum HaplotypeOutput {
     /// Output all haplotypes as separate paths.
     All,
-
     /// Output only distinct haplotypes with the number of duplicates stored in the weight field.
     Distinct,
-
     /// Output only the reference path.
     ReferenceOnly,
 }

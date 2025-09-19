@@ -1,6 +1,6 @@
 use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Chains};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
-use gbz_base::{GAFBase, ReadSet};
+use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
 
 use gbwt::{FullPathName, Orientation, GBZ, REF_SAMPLE};
 use gbwt::support;
@@ -73,8 +73,18 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
 
     let gaf_base_file = config.gaf_base.as_ref().unwrap();
     let gaf_base = GAFBase::open(gaf_base_file)?;
-    let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.contained)?;
-    eprintln!("Extracted {} reads in {} alignment blocks with {} node records", read_set.len(), read_set.blocks(), read_set.node_records());
+    let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.alignment_output)?;
+    if config.alignment_output == AlignmentOutput::Clipped {
+        eprintln!(
+            "Extracted {} fragments for {} reads in {} alignment blocks with {} node records",
+            read_set.len(), read_set.unclipped(), read_set.blocks(), read_set.node_records()
+        );
+    } else {
+        eprintln!(
+            "Extracted {} reads in {} alignment blocks with {} node records",
+            read_set.len(), read_set.blocks(), read_set.node_records()
+        );
+    }
 
     let gaf_output_file = config.gaf_output.as_ref().unwrap();
     let mut options = OpenOptions::new();
@@ -101,7 +111,7 @@ struct Config {
     format: OutputFormat,
     gaf_base: Option<String>,
     gaf_output: Option<String>,
-    contained: bool,
+    alignment_output: AlignmentOutput,
 }
 
 impl Config {
@@ -128,10 +138,10 @@ impl Config {
         opts.optflag("", "distinct", "output distinct haplotypes with weights");
         opts.optflag("", "reference-only", "output the reference but no other haplotypes");
         opts.optflag("", "cigar", "output CIGAR strings for the haplotypes");
-        opts.optopt("", "format", "output format (gfa or json, default: gfa)", "STR");
+        opts.optopt("", "format", "output format (gfa or json; default: gfa)", "STR");
         opts.optopt("", "gaf-base", "GAF-base file (for GAF output)", "FILE");
         opts.optopt("", "gaf-output", "GAF output file (for GAF output)", "FILE");
-        opts.optflag("", "contained", "output only reads that are fully within the subgraph");
+        opts.optopt("", "alignments", "alignment selection (overlapping, clipped, or contained; default: clipped)", "STR");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let header = format!("Usage: {} [options] graph.gbz[.db]\n\nQuery type must be speficied using one of -o, -i, -n, and -b.", program);
@@ -161,9 +171,19 @@ impl Config {
 
         let gaf_base = matches.opt_str("gaf-base");
         let gaf_output = matches.opt_str("gaf-output");
-        let contained = matches.opt_present("contained");
 
-        Ok(Config { filename, query, chains, cigar, format, gaf_base, gaf_output, contained })
+        let alignment_output = if let Some(s) = matches.opt_str("alignments") {
+            match s.to_lowercase().as_str() {
+                "overlapping" => AlignmentOutput::Overlapping,
+                "clipped" => AlignmentOutput::Clipped,
+                "contained" => AlignmentOutput::Contained,
+                _ => return Err(format!("Invalid alignment selection: {}", s)),
+            }
+        } else {
+            AlignmentOutput::Clipped
+        };
+
+        Ok(Config { filename, query, chains, cigar, format, gaf_base, gaf_output, alignment_output })
     }
 
     fn write_gaf(&self) -> bool {
