@@ -2,13 +2,18 @@
 //!
 //! This module provides functionality for extracting a subgraph around a specific position or interval of a specific path.
 //! The subgraph contains all nodes within a given context and all edges between them.
+//! It can also be extended to include all nodes in top-level snarls with boundary nodes already in the subgraph.
 //! All other paths within the subgraph can also be extracted, but they will not have any true metadata associated with them.
 
-use crate::{GBZRecord, GBZPath, GraphInterface, GraphReference, PathIndex};
+use crate::{GBZRecord, GBZPath};
+use crate::{GraphInterface, GraphReference};
+use crate::{PathIndex, Chains};
+use crate::{SubgraphQuery, HaplotypeOutput};
+use crate::subgraph::query::QueryType;
 use crate::formats::{self, WalkMetadata, JSONValue};
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, BTreeMap, BTreeSet};
+use std::collections::{BinaryHeap, BTreeMap, BTreeSet, HashSet};
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::iter::FusedIterator;
@@ -23,145 +28,7 @@ use gbwt::{algorithms, support};
 #[cfg(test)]
 mod tests;
 
-//-----------------------------------------------------------------------------
-
-/// Output options for the haplotypes in the subgraph.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum HaplotypeOutput {
-    /// Output all haplotypes as separate paths.
-    All,
-
-    /// Output only distinct haplotypes with the number of duplicates stored in the weight field.
-    Distinct,
-
-    /// Output only the reference path.
-    ReferenceOnly,
-}
-
-impl Display for HaplotypeOutput {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            HaplotypeOutput::All => write!(f, "all"),
-            HaplotypeOutput::Distinct => write!(f, "distinct"),
-            HaplotypeOutput::ReferenceOnly => write!(f, "reference only"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum QueryType {
-    // Path name and offset in bp stored in the fragment field.
-    PathOffset(FullPathName),
-    // Starting position as in `PathOffset` and length in bp.
-    PathInterval((FullPathName, usize)),
-    // Set of node identifiers.
-    Nodes(BTreeSet<usize>),
-}
-
-// but we first need to implement context extraction based on an interval.
-/// Arguments for extracting a subgraph.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SubgraphQuery {
-    query_type: QueryType,
-
-    // Context size around the reference position (in bp).
-    context: usize,
-
-    // How to output the haplotypes.
-    output: HaplotypeOutput,
-}
-
-impl SubgraphQuery {
-    /// Creates a query that retrieves a subgraph around a path offset.
-    ///
-    /// The reference path should be specified by using a sample name, a contig name, and optionally a haplotype number.
-    /// The fragment field should not be used.
-    /// If the reference haplotype is fragmented, the query will try to find the right fragment.
-    ///
-    /// # Arguments
-    ///
-    /// * `path_name`: Name of the reference path.
-    /// * `offset`: Position in the reference path (in bp).
-    /// * `context`: Context length around the reference position (in bp).
-    /// * `output`: How to output the haplotypes.
-    pub fn path_offset(path_name: &FullPathName, offset: usize, context: usize, output: HaplotypeOutput) -> Self {
-        let mut path_name = path_name.clone();
-        path_name.fragment = offset;
-        SubgraphQuery {
-            query_type: QueryType::PathOffset(path_name),
-            context,
-            output,
-        }
-    }
-
-    /// Cretes a query that retrieves a subgraph around a path interval.
-    ///
-    /// The reference path should be specified by using a sample name, a contig name, and optionally a haplotype number.
-    /// The fragment field should not be used.
-    /// If the reference haplotype is fragmented, the query will try to find the right fragment.
-    ///
-    /// # Arguments
-    ///
-    /// * `path_name`: Name of the reference path.
-    /// * `interval`: Interval of the reference path (in bp).
-    /// * `context`: Context length around the reference interval (in bp).
-    /// * `output`: How to output the haplotypes.
-    pub fn path_interval(path_name: &FullPathName, interval: Range<usize>, context: usize, output: HaplotypeOutput) -> Self {
-        let mut path_name = path_name.clone();
-        path_name.fragment = interval.start;
-        SubgraphQuery {
-            query_type: QueryType::PathInterval((path_name, interval.len())),
-            context,
-            output,
-        }
-    }
-
-    /// Creates a query that retrieves a subgraph around a set of nodes.
-    ///
-    /// # Arguments
-    ///
-    /// * `nodes`: Set of node identifiers.
-    /// * `context`: Context length around the reference nodes (in bp).
-    /// * `output`: How to output the haplotypes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `output` is [`HaplotypeOutput::ReferenceOnly`].
-    pub fn nodes(nodes: impl IntoIterator<Item = usize>, context: usize, output: HaplotypeOutput) -> Self {
-        if output == HaplotypeOutput::ReferenceOnly {
-            panic!("Cannot output a reference path in a node-based query");
-        }
-        SubgraphQuery {
-            query_type: QueryType::Nodes(nodes.into_iter().collect()),
-            context,
-            output,
-        }
-    }
-
-    fn query_type(&self) -> &QueryType {
-        &self.query_type
-    }
-
-    /// Returns the context length (in bp) for the query.
-    pub fn context(&self) -> usize {
-        self.context
-    }
-
-    /// Returns the output format for the query.
-    pub fn output(&self) -> HaplotypeOutput {
-        self.output
-    }
-}
-
-impl Display for SubgraphQuery {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self.query_type() {
-            QueryType::PathOffset(path_name) => write!(f, "(path {}, context {}, {})", path_name, self.context, self.output),
-            QueryType::PathInterval((path_name, len)) => write!(f, "(path {}, len {}, context {}, {})", path_name, len, self.context, self.output),
-            QueryType::Nodes(nodes) => write!(f, "(nodes {:#?}, context {}, {})", nodes, self.context, self.output),
-        }
-    }
-}
+pub mod query;
 
 //-----------------------------------------------------------------------------
 
@@ -180,6 +47,8 @@ impl Display for SubgraphQuery {
 /// * [`Subgraph::around_position`] for a context around a graph position.
 /// * [`Subgraph::around_interval`] for a context around path interval.
 /// * [`Subgraph::around_nodes`] for a context around a set of nodes.
+/// * [`Subgraph::between_nodes`] for all nodes and snarls in an interval of a chain.
+/// * [`Subgraph::extract_snarls`] to include all nodes in top-level snarls with boundary nodes in the current subgraph.
 ///
 /// [`Subgraph::from_gbz`] and [`Subgraph::from_db`] are integrated methods for extracting a subgraph with paths using a [`SubgraphQuery`].
 ///
@@ -380,7 +249,7 @@ impl Subgraph {
     /// // Create the database.
     /// let gbz_file = support::get_test_data("example.gbz");
     /// let db_file = serialize::temp_file_name("subgraph");
-    /// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    /// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
     /// assert!(result.is_ok());
     ///
     /// // Open the database and create a graph interface.
@@ -725,6 +594,142 @@ impl Subgraph {
         Ok((inserted, removed))
     }
 
+    /// Inserts all nodes between the given two handles into the subgraph.
+    ///
+    /// If `start` and `end` are in the same chain in the given order, this will insert all nodes and snarls between them.
+    /// Otherwise the behavior will be unpredictable and it is recommended to set a safety limit to avoid excessive memory usage.
+    /// Removes all path information.
+    /// Returns the number of inserted nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: A GBZ-compatible graph.
+    /// * `start`: Start handle (inclusive).
+    /// * `end`: End handle (inclusive).
+    /// * `limit`: Optional safety limit on the number of inserted nodes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbz_base::{GBZRecord, Subgraph, GraphReference};
+    /// use gbwt::{GBZ, Orientation};
+    /// use gbwt::support;
+    /// use simple_sds::serialize;
+    ///
+    /// let graph_file = support::get_test_data("example.gbz");
+    /// let graph: GBZ = serialize::load_from(&graph_file).unwrap();
+    ///
+    /// let start = support::encode_node(14, Orientation::Forward);
+    /// let end = support::encode_node(17, Orientation::Forward);
+    /// let mut subgraph = Subgraph::new();
+    /// let result = subgraph.between_nodes(GraphReference::Gbz(&graph), start, end, None);
+    /// assert_eq!(result, Ok(4));
+    ///
+    /// let expected_nodes = [14, 15, 16, 17];
+    /// assert!(subgraph.node_iter().eq(expected_nodes.iter().copied()));
+    /// ```
+    pub fn between_nodes(&mut self, graph: GraphReference<'_, '_>, start: usize, end: usize, limit: Option<usize>) -> Result<usize, String> {
+        self.clear_paths();
+
+        // Active handles. We proceed to their successors but not predecessors.
+        let mut active = vec![start, support::flip_node(end)];
+        // Visited node identifiers.
+        let mut visited = HashSet::new();
+        visited.insert(support::decode_node(start).0);
+        visited.insert(support::decode_node(end).0);
+
+        // Determine node ids between the boundary nodes, inclusive.
+        // Add them to the subgraph if they are not already present.
+        let mut graph = graph;
+        let mut inserted = 0;
+        while !active.is_empty() {
+            let curr = active.pop().unwrap();
+            let (node_id, orientation) = support::decode_node(curr);
+            if !self.has_node(node_id) {
+                if let Some(limit) = limit {
+                    if inserted >= limit {
+                        let (start_id, start_o) = support::decode_node(start);
+                        let (end_id, end_o) = support::decode_node(end);
+                        return Err(format!("Found more than {} new nodes between ({}, {}) and ({}, {})", limit, start_id, start_o, end_id, end_o));
+                    }
+                }
+                self.add_node_internal(&mut graph, node_id)?;
+                inserted += 1;
+            }
+
+            for (next_id, next_o) in self.supergraph_successors(node_id, orientation).unwrap() {
+                if visited.contains(&next_id) {
+                    continue;
+                }
+                let fw_handle = support::encode_node(next_id, next_o);
+                let rev_handle = support::flip_node(fw_handle);
+                active.push(fw_handle); active.push(rev_handle);
+                visited.insert(next_id);
+            }
+        }
+
+        Ok(inserted)
+    }
+
+    /// Extracts nodes in top-level snarls covered by the current subgraph.
+    ///
+    /// Returns the number of inserted nodes.
+    /// Removes all path information.
+    /// If a chains are provided, this will use them for determining the top-level snarls.
+    /// Otherwise the links stored in node records are used.
+    /// Note that chains must be always provided when the subgraph has been extracted from a [`GBZ`] graph.
+    ///
+    /// # Errors
+    ///
+    /// Passes through errors from accessing the graph.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbwt::{GBZ, Orientation};
+    /// use gbwt::support;
+    /// use gbz_base::{Chains, Subgraph, GraphReference};
+    /// use gbz_base::utils;
+    /// use simple_sds::serialize;
+    /// use std::collections::BTreeSet;
+    ///
+    /// let graph_file = support::get_test_data("example.gbz");
+    /// let graph: GBZ = serialize::load_from(&graph_file).unwrap();
+    /// let chains_file = utils::get_test_data("example.chains");
+    /// let chains = Chains::load_from(&chains_file).unwrap();
+    ///
+    /// // Extract the boundary nodes of a snarl as the initial subgraph.
+    /// let mut subgraph = Subgraph::new();
+    /// let nodes: BTreeSet<usize> = [14, 17].into_iter().collect();
+    /// let result = subgraph.around_nodes(GraphReference::Gbz(&graph), &nodes, 0);
+    /// assert!(result.is_ok());
+    /// assert!(subgraph.node_iter().eq(nodes.iter().copied()));
+    ///
+    /// // Now extract the snarl between the boundary nodes.
+    /// let result = subgraph.extract_snarls(GraphReference::Gbz(&graph), Some(&chains));
+    /// assert!(result.is_ok());
+    /// let snarl_nodes = [14, 15, 16, 17];
+    /// assert!(subgraph.node_iter().eq(snarl_nodes.iter().copied()));
+    /// ```
+    pub fn extract_snarls(&mut self, graph: GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<usize, String> {
+        let snarls = self.covered_snarls(chains);
+
+        let mut inserted = 0;
+        let mut graph = graph;
+        for (start, end) in snarls {
+            match &mut graph {
+                GraphReference::Gbz(graph) => {
+                    inserted += self.between_nodes(GraphReference::Gbz(graph), start, end, None)?;
+                }
+                GraphReference::Db(graph) => {
+                    inserted += self.between_nodes(GraphReference::Db(graph), start, end, None)?;
+                }
+            }
+        }
+
+        Ok(inserted)
+    }
+
     /// Extracts a subgraph around the given query position.
     ///
     /// Reuses existing records when possible.
@@ -734,13 +739,17 @@ impl Subgraph {
     ///
     /// * `graph`: A GBZ graph.
     /// * `path_index`: A path index for the graph, if the query is path-based.
+    /// * `chains`: A set of top-level chains, if the query extracts nodes in covered snarls.
     /// * `query`: Arguments for extracting the subgraph.
     ///
     /// # Errors
     ///
-    /// Returns an error if the query or the graph is invalid.
-    /// Returns an error if the graph does not contain the queried position.
-    /// Returns an error if a path index is required but not provided, or if the query path has not been indexed.
+    /// Returns an error, if:
+    ///
+    /// * The query or the graph is invalid.
+    /// * The graph does not contain the queried position.
+    /// * A path index is required but not provided, or if the query path has not been indexed.
+    ///
     /// If an error occurs, the subgraph may contain arbitrary nodes but no paths.
     ///
     /// # Examples
@@ -760,9 +769,9 @@ impl Subgraph {
     ///
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
-    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::path_offset(&path_name, 2).with_context(1);
     /// let mut subgraph = Subgraph::new();
-    /// let result = subgraph.from_gbz(&graph, Some(&path_index), &query);
+    /// let result = subgraph.from_gbz(&graph, Some(&path_index), None, &query);
     /// assert!(result.is_ok());
     ///
     /// // The subgraph should be centered around 1 bp node 14 of degree 4.
@@ -770,38 +779,57 @@ impl Subgraph {
     /// assert_eq!(subgraph.paths(), 3);
     ///
     /// // We get the same result using a node id.
-    /// let query = SubgraphQuery::nodes([14], 1, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::nodes([14]).with_context(1);
     /// let mut subgraph = Subgraph::new();
-    /// let result = subgraph.from_gbz(&graph, None, &query);
+    /// let result = subgraph.from_gbz(&graph, None, None, &query);
     /// assert!(result.is_ok());
     /// assert_eq!(subgraph.nodes(), 5);
     /// assert_eq!(subgraph.paths(), 3);
     /// ```
-    pub fn from_gbz(&mut self, graph: &GBZ, path_index: Option<&PathIndex>, query: &SubgraphQuery) -> Result<(), String> {
+    pub fn from_gbz(&mut self, graph: &GBZ, path_index: Option<&PathIndex>, chains: Option<&Chains>, query: &SubgraphQuery) -> Result<(), String> {
+        if query.snarls() && chains.is_none() {
+            return Err(String::from("Top-level chains are required for extracting snarls"));
+        }
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let path_index = path_index.ok_or(
                     String::from("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
-                self.around_position(GraphReference::Gbz(graph), reference_path.0.graph_pos(), query.context)?;
+                self.around_position(GraphReference::Gbz(graph), reference_path.0.graph_pos(), query.context())?;
+                if query.snarls() {
+                    self.extract_snarls(GraphReference::Gbz(graph), chains)?;
+                }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
-            QueryType::PathInterval((query_pos, len)) => {
+            },
+            QueryType::PathInterval(query_pos, len) => {
                 let path_index = path_index.ok_or(
                     String::from("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
-                self.around_interval(GraphReference::Gbz(graph), reference_path.0, *len, query.context)?;
+                self.around_interval(GraphReference::Gbz(graph), reference_path.0, *len, query.context())?;
+                if query.snarls() {
+                    self.extract_snarls(GraphReference::Gbz(graph), chains)?;
+                }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
+            },
             QueryType::Nodes(nodes) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
-                self.around_nodes(GraphReference::Gbz(graph), nodes, query.context)?;
+                self.around_nodes(GraphReference::Gbz(graph), nodes, query.context())?;
+                if query.snarls() {
+                    self.extract_snarls(GraphReference::Gbz(graph), chains)?;
+                }
                 self.extract_paths(None, query.output())?;
-            }
+            },
+            QueryType::Between((start, end), limit) => {
+                if query.output() == HaplotypeOutput::ReferenceOnly {
+                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                }
+                self.between_nodes(GraphReference::Gbz(graph), *start, *end, *limit)?;
+                self.extract_paths(None, query.output())?;
+            },
         }
 
         Ok(())
@@ -814,9 +842,12 @@ impl Subgraph {
     ///
     /// # Errors
     ///
-    /// Returns an error if the query or the graph is invalid or if there is a database error.
-    /// Returns an error if the graph does not contain the queried position.
-    /// Returns an error if the query path has not been indexed.
+    /// Returns an error, if:
+    ///
+    /// * The query or the graph is invalid or if there is a database error.
+    /// * The graph does not contain the queried position.
+    /// * A path index is required but not provided, or if the query path has not been indexed.
+    ///
     /// If an error occurs, the subgraph may contain arbitrary nodes but no paths.
     ///
     /// # Examples
@@ -831,7 +862,7 @@ impl Subgraph {
     /// // Create the database.
     /// let gbz_file = support::get_test_data("example.gbz");
     /// let db_file = serialize::temp_file_name("subgraph");
-    /// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+    /// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
     /// assert!(result.is_ok());
     ///
     /// // Open the database and create a graph interface.
@@ -840,7 +871,7 @@ impl Subgraph {
     ///
     /// // Extract a subgraph that contains an 1 bp context around path A offset 2.
     /// let path_name = FullPathName::generic("A");
-    /// let query = SubgraphQuery::path_offset(&path_name, 2, 1, HaplotypeOutput::All);
+    /// let query = SubgraphQuery::path_offset(&path_name, 2).with_context(1);
     /// let mut subgraph = Subgraph::new();
     /// let result = subgraph.from_db(&mut interface, &query);
     /// assert!(result.is_ok());
@@ -858,21 +889,37 @@ impl Subgraph {
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
-                self.around_position(GraphReference::Db(graph), reference_path.0.graph_pos(), query.context)?;
+                self.around_position(GraphReference::Db(graph), reference_path.0.graph_pos(), query.context())?;
+                if query.snarls() {
+                    self.extract_snarls(GraphReference::Db(graph), None)?;
+                }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
-            QueryType::PathInterval((query_pos, len)) => {
+            },
+            QueryType::PathInterval(query_pos, len) => {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
-                self.around_interval(GraphReference::Db(graph), reference_path.0, *len, query.context)?;
+                self.around_interval(GraphReference::Db(graph), reference_path.0, *len, query.context())?;
+                if query.snarls() {
+                    self.extract_snarls(GraphReference::Db(graph), None)?;
+                }
                 self.extract_paths(Some(reference_path), query.output())?;
-            }
+            },
             QueryType::Nodes(nodes) => {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
-                self.around_nodes(GraphReference::Db(graph), nodes, query.context)?;
+                self.around_nodes(GraphReference::Db(graph), nodes, query.context())?;
+                if query.snarls() {
+                    self.extract_snarls(GraphReference::Db(graph), None)?;
+                }
                 self.extract_paths(None, query.output())?;
-            }
+            },
+            QueryType::Between((start, end), limit) => {
+                if query.output() == HaplotypeOutput::ReferenceOnly {
+                    return Err(String::from("Cannot output a reference path in a node-based query"));
+                }
+                self.between_nodes(GraphReference::Db(graph), *start, *end, *limit)?;
+                self.extract_paths(None, query.output())?;
+            },
         }
 
         Ok(())
@@ -986,7 +1033,7 @@ impl Subgraph {
             }
         }
 
-        // FIXME: Check for infinite loops.
+        // TODO: Check for infinite loops.
         // Extract all paths and note if one of them passes through `ref_pos`.
         // `ref_offset` is the offset of the node containing `ref_pos`.
         let mut ref_offset: Option<usize> = None;
@@ -1245,17 +1292,35 @@ impl Subgraph {
     }
 
     /// Returns an iterator over the successors of an oriented node, or [`None`] if there is no such node.
-    pub fn successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
+    pub fn successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
         let handle = support::encode_node(node_id, orientation);
         let record = self.records.get(&handle)?;
         Some(EdgeIter::new(self, record, false))
     }
 
+    /// Returns an iterator over the successors of an oriented node in the supergraph, or [`None`] if there is no such node.
+    ///
+    /// This is otherwise the same as [`Self::successors`], but this also lists successors not in the subgraph.
+    pub fn supergraph_successors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
+        let handle = support::encode_node(node_id, orientation);
+        let record = self.records.get(&handle)?;
+        Some(EdgeIter::in_supergraph(self, record, false))
+    }
+
     /// Returns an iterator over the predecessors of an oriented node, or [`None`] if there is no such node.
-    pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter> {
+    pub fn predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
         let handle = support::encode_node(node_id, orientation.flip());
         let record = self.records.get(&handle)?;
         Some(EdgeIter::new(self, record, true))
+    }
+
+    /// Returns an iterator over the predecessors of an oriented node in the supergraph, or [`None`] if there is no such node.
+    ///
+    /// This is otherwise the same as [`Self::predecessors`], but this also lists predecessors not in the subgraph.
+    pub fn supergraph_predecessors(&self, node_id: usize, orientation: Orientation) -> Option<EdgeIter<'_>> {
+        let handle = support::encode_node(node_id, orientation.flip());
+        let record = self.records.get(&handle)?;
+        Some(EdgeIter::in_supergraph(self, record, true))
     }
 
     // Returns the record for the given node handle, or [`None`] if the node is not in the subgraph.
@@ -1268,6 +1333,37 @@ impl Subgraph {
     #[inline]
     pub fn paths(&self) -> usize {
         self.paths.len()
+    }
+
+    /// Returns the top-level snarls covered by the current subgraph.
+    ///
+    /// Each snarl is reported as a pair of handles `(start, end)` of its boundary nodes.
+    /// Here `start` points inside the snarl and `end` points outside the snarl.
+    /// The snarls are returned in the canonical orientation (see [`support::edge_is_canonical`]).
+    ///
+    /// By default, this uses the chain links stored in node records.
+    /// However, a [`crate::GBZBase`] does not always store top-level chains, and a [`GBZ`] graph does not have that information.
+    /// In such cases a [`Chains`] object can be provided as an override.
+    pub fn covered_snarls(&self, chains: Option<&Chains>) -> BTreeSet<(usize, usize)> {
+        let mut snarls: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for (&handle, record) in self.records.iter() {
+            let next = if let Some(chains) = chains {
+                chains.next(handle)
+            } else {
+                record.next()
+            };
+            if next.is_none() {
+                continue;
+            }
+            let next = next.unwrap();
+            if !self.has_handle(next) {
+                continue;
+            }
+            if support::encoded_edge_is_canonical(handle, next) {
+                snarls.insert((handle, next));
+            }
+        }
+        snarls
     }
 }
 
@@ -1798,6 +1894,8 @@ pub struct EdgeIter<'a> {
     limit: usize,
     // Flip the orientation in the iterated values.
     flip: bool,
+    // Iterate over the edges in the supergraph, not the subgraph.
+    supergraph: bool,
 }
 
 
@@ -1815,6 +1913,23 @@ impl<'a> EdgeIter<'a> {
             next: 0,
             limit,
             flip,
+            supergraph: false,
+        }
+    }
+
+    /// Creates a new iterator over the successors of the record in the supergraph.
+    ///
+    /// This is otherwise the same as [`Self::new`], but this also lists successors not in the subgraph.
+    pub fn in_supergraph(parent: &'a Subgraph, record: &'a GBZRecord, flip: bool) -> Self {
+        let successors = record.edges_slice();
+        let limit = successors.len();
+        EdgeIter {
+            parent,
+            successors,
+            next: 0,
+            limit,
+            flip,
+            supergraph: true,
         }
     }
 }
@@ -1826,7 +1941,7 @@ impl<'a> Iterator for EdgeIter<'a> {
         while self.next < self.limit {
             let handle = self.successors[self.next].node;
             self.next += 1;
-            if self.parent.has_handle(handle) {
+            if self.supergraph || self.parent.has_handle(handle) {
                 let node_id = support::node_id(handle);
                 let orientation = if self.flip {
                     support::node_orientation(handle).flip()
@@ -1845,7 +1960,7 @@ impl<'a> DoubleEndedIterator for EdgeIter<'a> {
         while self.next < self.limit {
             let handle = self.successors[self.limit - 1].node;
             self.limit -= 1;
-            if self.parent.has_handle(handle) {
+            if self.supergraph || self.parent.has_handle(handle) {
                 let node_id = support::node_id(handle);
                 let orientation = if self.flip {
                     support::node_orientation(handle).flip()

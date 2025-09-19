@@ -2,7 +2,7 @@
 
 This is a prototype for SQLite-based file formats for:
 
-* Pangenome graphs in [GBZ graph](https://github.com/jltsiren/gbwtgraph/blob/master/SERIALIZATION.md).
+* Pangenome graphs in [GBZ format](https://github.com/jltsiren/gbwtgraph/blob/master/SERIALIZATION.md).
 * Sequence alignments to a pangenome graph in [GAF format](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md).
 
 The formats are intended for interactive applications, where you want to access parts of the graph immediately without loading the entire graph into memory.
@@ -10,6 +10,7 @@ The formats are intended for interactive applications, where you want to access 
 Both file formats are under development and can change without warning.
 
 ## Building
+
 
 To build the package, run:
 
@@ -20,6 +21,8 @@ cargo build --release
 You will then have the `gbz2db`, `gaf2db`, and `query` tool binaries in `target/release/`.
 
 ## GBZ-base construction
+
+### Basic construction
 
 You can convert a GBZ graph `graph.gbz` into a database `graph.gbz.db` using:
 
@@ -33,6 +36,20 @@ An existing database can be overwritten with option `--overwrite`.
 
 The database will be functionally equivalent to the GBZ graph, except that it will not contain a node-to-segment translation.
 Generic paths (with sample name `_gbwt_ref`) and reference paths (samples specified in GBWT tag `reference_samples`) will be indexed for querying.
+
+### Including top-level chains
+
+A GBZ-base can optionally store links between boundary nodes in top-level chains.
+Such links enable better subgraph queries (see below).
+In order to build a database with top-level chains, you first need to extract the chains from a distance index or a snarls file.
+That requires [vg](https://github.com/vgteam/vg) version 1.69.0 or newer.
+
+Example with chains extracted from a distance index:
+
+```sh
+vg chains graph.gbz graph.dist > graph.chains
+gbz2db --chains graph.chains graph.gbz
+```
 
 ## GAF-base construction
 
@@ -100,6 +117,38 @@ All other paths will be listed as unknown haplotypes.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
 * `--format json`: Extract the subgraph in JSON format instead of GFA.
 
+### Snarl-based queries
+
+Queries based on paths and nodes find the query position and then extract a greedy context around it.
+This does not always result in a meaningful subgraph.
+Nodes outside the region of interest will be included, if the shortest path to them is within the context.
+Nodes within the region of interest may be excluded, if the region contains large enough variants.
+
+Snarl-based queries avoid these issues:
+
+```sh
+# Snarl-based query.
+query --between 12345:12401 graph.db > out.gfa
+```
+
+The query specifies two boundary nodes, which are assumed to be in the same chain in the snarl decomposition.
+If no orientation is provided  (e.g. `12345+` or `12401-`), the boundary nodes are assumed to be in the forward orientation.
+The query extracts all nodes and snarls in the chain between (and including) the boundary nodes but no greedy context.
+
+If the boundary nodes are not in the same chain or they are given in the wrong order, the outcome is unpredictable.
+To avoid extracting most of the chromosome, a safety limit for the number of nodes may be given with `--limit N`.
+If the limit is exceeded, the query will fail.
+
+Other queries can also be made snarl-aware:
+
+```sh
+query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
+```
+
+After extracting a subgraph, the query determines all top-level snarls that have their boundary nodes in the extracted subgraph.
+Then it ensures that those snarls are fully in the subgraph.
+This requires either a GBZ-base built with top-level chains (see above) or a GBZ graph with a chains file provided with `--chains FILE`.
+
 ### Extracting alignments
 
 If you have a GBZ-base for a graph and a GAF-base for reads aligned to the graph, you can extract the reads aligned to the subgraph:
@@ -110,8 +159,8 @@ query --sample GRCh38 --contig chr12 --offset 1234567 \
     graph.db > out.gfa
 ```
 
-By default, this extracts all alignments overlapping with the subgraph.
-Use option `--contained` to extract only alignments fully within the subgraph.
+By default, this extracts all alignments overlapping with the subgraph and clips them to the subgraph.
+Use option `--alignments overlapping` to avoid clipping or `--alignments contained` to select only alignments fully within the subgraph.
 
 The GBZ-base can be for the graph the reads were aligned to, or for any supergraph.
 For example, a GBZ-base for a clipped (default) Minigraph–Cactus graph can be used with reads aligned to a corresponding frequency-filtered or personalized (haplotype-sampled) graph.

@@ -23,7 +23,7 @@
 //! * `AS:i`: Alignment score.
 //! * `bq:Z`: Base quality values for the query sequence.
 //! * `cs:Z`: Difference string for the alignment.
-//! * `pd:B`: Properly paired flag.
+//! * `pd:b`: Properly paired flag.
 //! * `fn:Z`: Name of the next read in the pair.
 //! * `fp:Z`: Name of the previous read in the pair.
 //!
@@ -33,12 +33,14 @@
 //! The order of optional fields is not preserved.
 //! Compression with [`AlignmentBlock`] discards unsupported optional fields.
 
+use crate::{Subgraph, Mapping, Difference};
 use crate::formats::{self, TypedField};
 use crate::utils;
 
 use std::io::{Read, Write};
 use std::ops::Range;
-use std::str;
+use std::sync::Arc;
+use std::{cmp, str};
 
 use zstd::stream::Encoder as ZstdEncoder;
 use zstd::stream::Decoder as ZstdDecoder;
@@ -49,8 +51,11 @@ use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 #[cfg(test)]
 mod tests;
 
+pub mod mapping;
+
 //-----------------------------------------------------------------------------
 
+// TODO: add validate() against a graph, a subgraph, or a read set
 /// An alignment between a query sequence and a target path in a graph.
 ///
 /// This object corresponds either to a line in a GAF file or to a row in table `Alignments` in [`crate::GAFBase`].
@@ -650,9 +655,10 @@ impl Alignment {
 impl Alignment {
     /// Returns `true` if the read is unaligned.
     ///
+    /// An aligned read has a non-empty query interval aligned to a non-empty target interval.
     /// NOTE: An empty sequence is by definition unaligned.
     pub fn is_unaligned(&self) -> bool {
-        self.seq_interval.is_empty()
+        self.seq_interval.is_empty() || self.path_interval.is_empty()
     }
 
     /// Returns `true` if this is a perfect alignment of the entire read.
@@ -679,9 +685,17 @@ impl Alignment {
         }
     }
 
-    /// Returns true if the target path is stored explicitly.
+    /// Returns `true` if the target path is stored explicitly.
     pub fn has_target_path(&self) -> bool {
         matches!(self.path, TargetPath::Path(_))
+    }
+
+    /// Returns `true` if the target path is stored explicitly and is non-empty.
+    pub fn has_non_empty_target_path(&self) -> bool {
+        match &self.path {
+            TargetPath::Path(path) => !path.is_empty(),
+            TargetPath::StartPosition(_) => false,
+        }
     }
 
     /// Returns the target path if it is stored explicitly.
@@ -707,12 +721,252 @@ impl Alignment {
         self.path = TargetPath::Path(path);
     }
 
-    // TODO: Should this update an existing target path?
-    /// Sets the given path as the target path, if the path is currently a GBWT starting position.
+    /// Sets the given path as the target path.
     pub fn set_target_path(&mut self, path: Vec<usize>) {
-        if let TargetPath::StartPosition(_) = self.path {
-            self.path = TargetPath::Path(path);
+        self.path = TargetPath::Path(path);
+    }
+
+    /// Returns an iterator over the alignment as a sequence of mappings.
+    ///
+    /// Returns [`None`] if a valid iterator cannot be built.
+    /// The iterator requires a difference string and an explicitly stored target path.
+    /// It may stop early if the alignment is invalid.
+    ///
+    /// The iterator needs a function that provides the sequence length for each node.
+    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
+    pub fn iter<'a>(&'a self, sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>) -> Option<AlignmentIter<'a>> {
+        if !self.has_target_path() {
+            return None;
         }
+        let target_path = self.target_path().unwrap();
+        if target_path.is_empty() != self.is_unaligned() {
+            return None;
+        }
+        if self.difference.is_empty() != self.is_unaligned() {
+            return None;
+        }
+
+        let mut iter = AlignmentIter {
+            parent: self,
+            sequence_len,
+            seq_offset: self.seq_interval.start,
+            path_offset: self.path_interval.start,
+            path_vec_offset: 0,
+            path_node_offset: self.path_interval.start,
+            diff_vec_offset: 0,
+            diff_op_offset: 0,
+        };
+        if self.is_unaligned() {
+            return Some(iter);
+        }
+
+        // In some edge cases, there may be unused nodes at the start of the target path.
+        let mut handle = *target_path.get(iter.path_vec_offset)?;
+        let mut node_len = (*iter.sequence_len)(handle)?;
+        while iter.path_node_offset >= node_len {
+            iter.path_node_offset -= node_len;
+            iter.path_vec_offset += 1;
+            handle = *target_path.get(iter.path_vec_offset)?;
+            node_len = (*iter.sequence_len)(handle)?;
+        }
+
+        Some(iter)
+    }
+
+    // Creates an empty fragment of this alignment.
+    fn empty_fragment(&self, fragment_id: usize) -> Alignment {
+        let mut aln = Alignment {
+            name: self.name.clone(),
+            seq_len: self.seq_len,
+            seq_interval: 0..0,
+            path: TargetPath::Path(Vec::new()),
+            path_len: 0,
+            path_interval: 0..0,
+            matches: self.matches,
+            edits: self.edits,
+            mapq: self.mapq,
+            score: self.score,
+            base_quality: self.base_quality.clone(),
+            difference: Vec::new(),
+            pair: self.pair.clone(),
+            optional: self.optional.clone(),
+        };
+        aln.optional.push(TypedField::Int([b'f', b'i'], fragment_id as isize));
+
+        aln
+    }
+
+    // Extends the given fragment with the next mapping of the same original alignment.
+    fn extend(&mut self, mapping: Mapping) -> Result<(), String> {
+        // Start by updating the difference string.
+        if self.seq_interval.is_empty() && self.path_interval.is_empty() {
+            // If we started with a gap, `is_unaligned()` would be true.
+            if !self.difference.is_empty() {
+                return Err(String::from("Cannot extend an unaligned fragment with a non-empty difference string"));
+            }
+            self.difference.push(mapping.edit().clone());
+        } else {
+            if self.difference.is_empty() {
+                return Err(String::from("Cannot extend an aligned fragment without a difference string"));
+            }
+            if !self.difference.last_mut().unwrap().try_merge(mapping.edit()) {
+                self.difference.push(mapping.edit().clone());
+            }
+        }
+
+        // Update the query sequence.
+        if mapping.seq_interval().end > self.seq_len {
+            return Err(String::from("Cannot extend a fragment beyond the query sequence length"));
+        }
+        if self.is_unaligned() {
+            self.seq_interval = mapping.seq_interval().clone();
+        } else {
+            if mapping.seq_interval().start != self.seq_interval.end {
+                return Err(String::from("Cannot append a non-contiguous query interval"));
+            }
+            self.seq_interval.end = mapping.seq_interval().end;
+        }
+
+        // TODO: enum?
+        // Determine how we are extending the alignment.
+        let target_path = self.target_path().ok_or(
+            "Cannot extend a fragment without an explicit target path"
+        )?;
+        let last_node = target_path.last().copied();
+        let path_left = self.path_len.saturating_sub(self.path_interval.end);
+        let reverse_offset = mapping.node_len().saturating_sub(mapping.node_interval().start);
+        let first_mapping = last_node.is_none();
+        let continues_in_same_node = Some(mapping.handle()) == last_node && reverse_offset == path_left;
+        let starts_a_new_node = path_left == 0 && mapping.is_at_start();
+
+        // Update the target path.
+        if first_mapping {
+            if let TargetPath::Path(path) = &mut self.path {
+                path.push(mapping.handle());
+            } else {
+                unreachable!();
+            }
+            self.path_len += mapping.node_len();
+            self.path_interval = mapping.node_interval().clone();
+        } else if starts_a_new_node {
+            if let TargetPath::Path(path) = &mut self.path {
+                path.push(mapping.handle());
+            } else {
+                unreachable!();
+            }
+            self.path_len += mapping.node_len();
+            self.path_interval.end += mapping.target_len();
+        } else if continues_in_same_node {
+            self.path_interval.end += mapping.target_len();
+        } else {
+            return Err(String::from("Cannot append a non-contiguous target interval"));
+        }
+
+        Ok(())
+    }
+
+    /// Clips the alignment into fragments that are fully contained in the given subgraph.
+    ///
+    /// Returns an empty vector if the read is unaligned or lacks an explicit non-empty target path or a difference string.
+    /// There will be one alignment fragment for every maximal subpath in the subgraph.
+    /// The fragments have the same name, pair, optional fields, and statistics as the original alignment.
+    /// Only the aligned intervals and difference strings depend on the fragment.
+    /// Fragments of the same alignment are identified by a fragment index stored as an optional field `fi:i`.
+    ///
+    /// Clipping requires a function that returns the sequence length for the node with the given handle.
+    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an [`AlignmentIter`] cannot be created.
+    /// May return an error if the alignment is invalid and the iterator returns non-consecutive mappings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use gbwt::{GBZ, Orientation};
+    /// use gbwt::support;
+    /// use gbz_base::{Alignment, Difference, Subgraph};
+    /// use gbz_base::utils;
+    /// use simple_sds::serialize;
+    /// use std::sync::Arc;
+    ///
+    /// let gbz_filename = utils::get_test_data("micb-kir3dl1.gbz");
+    /// let graph: GBZ = serialize::load_from(&gbz_filename).unwrap();
+    ///
+    /// // Create a perfect alignment with node lengths of 68 bp, 1 bp, and 6 bp.
+    /// let mut aln = Alignment::new();
+    /// aln.seq_len = 50;
+    /// aln.seq_interval = 0..50;
+    /// let target_path = vec![
+    ///     support::encode_node(13, Orientation::Forward),
+    ///     support::encode_node(14, Orientation::Forward),
+    ///     support::encode_node(16, Orientation::Forward),
+    /// ];
+    /// aln.set_target_path(target_path.clone());
+    /// aln.path_len = 75;
+    /// aln.path_interval = 20..70;
+    /// aln.matches = 50;
+    /// aln.difference.push(Difference::Match(50));
+    ///
+    /// // Create a subgraph without the middle node.
+    /// let mut subgraph = Subgraph::new();
+    /// let _ = subgraph.add_node_from_gbz(&graph, 13);
+    /// let _ = subgraph.add_node_from_gbz(&graph, 16);
+    ///
+    /// // Clip the alignment to the subgraph.
+    /// let sequence_len = Arc::new(|handle| {
+    ///     let (node_id, _) = support::decode_node(handle);
+    ///     graph.sequence_len(node_id)
+    /// });
+    /// let result = aln.clip(&subgraph, sequence_len.clone());
+    /// assert!(result.is_ok());
+    /// let clipped = result.unwrap();
+    ///
+    /// // We should have two fragments.
+    /// assert_eq!(clipped.len(), 2);
+    /// assert_eq!(clipped[0].seq_interval, 0..48);
+    /// assert_eq!(clipped[0].target_path().unwrap(), &target_path[0..1]);
+    /// assert_eq!(clipped[0].path_interval, 20..68);
+    /// assert_eq!(clipped[0].difference, vec![Difference::Match(48)]);
+    /// assert_eq!(clipped[1].seq_interval, 49..50);
+    /// assert_eq!(clipped[1].target_path().unwrap(), &target_path[2..3]);
+    /// assert_eq!(clipped[1].path_interval, 0..1);
+    /// assert_eq!(clipped[1].difference, vec![Difference::Match(1)]);
+    /// ```
+    pub fn clip<'a>(&self, subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) -> Result<Vec<Alignment>, String> {
+        let mut result = Vec::new();
+        if self.is_unaligned() || !self.has_non_empty_target_path() || self.difference.is_empty() {
+            eprintln!("Unaligned: {}", self.is_unaligned());
+            eprintln!("Has non-empty target path: {}", self.has_non_empty_target_path());
+            eprintln!("Difference is empty: {}", self.difference.is_empty());
+            return Ok(result);
+        }
+
+        let mut aln: Option<Alignment> = None; // The alignment we are currently building.
+        let iter = self.iter(sequence_len).ok_or(String::from("Cannot build an alignment iterator"))?;
+        for mapping in iter {
+            if !subgraph.has_handle(mapping.handle()) {
+                if let Some(prev) = aln {
+                    result.push(prev);
+                    aln = None;
+                }
+                continue;
+            }
+
+            if let Some(aln) = &mut aln {
+                aln.extend(mapping)?;
+            } else {
+                let mut curr = self.empty_fragment(result.len() + 1);
+                curr.extend(mapping)?;
+                aln = Some(curr);
+            }
+        }
+        if let Some(aln) = aln {
+            result.push(aln);
+        }
+
+        Ok(result)
     }
 }
 
@@ -743,288 +997,129 @@ pub struct PairedRead {
 
 //-----------------------------------------------------------------------------
 
-/// An operation in a difference string describing an alignment between a query sequence and a target sequence.
+/// An iterator over an [`Alignment`] as a sequence of [`Mapping`] objects.
 ///
-/// This implementation supports the following operations:
-///
-/// * `=`: A match given as the matching sequence.
-/// * `:`: A match given as the match length.
-/// * `*`: A mismatch given as the target base and the query base.
-/// * `+`: An insertion given as the inserted sequence.
-/// * `-`: A deletion given as the deleted sequence.
-///
-/// The operations do not store target bases, as the query sequence can be reconstructed without that information.
-/// Operation `~` (intron length and splice signal) is not supported yet.
-/// Parsing is based on bytes rather than characters to avoid unnecessary UTF-8 validation.
+/// This iterator assumes that the alignment is valid, and it may stop early if it is not.
+/// It requires that the alignment stores the target path explicitly and has a difference string.
+/// Insertions at node boundaries are assigned to the left.
 ///
 /// # Examples
 ///
 /// ```
-/// use gbz_base::alignment::Difference;
+/// use gbz_base::{Alignment, Mapping, Difference};
+/// use std::sync::Arc;
 ///
-/// let with_gaps = b":48-CAT:44+GATTACA:51";
-/// let ops = Difference::parse(with_gaps);
-/// assert!(ops.is_ok());
-/// let ops = ops.unwrap();
-/// assert_eq!(ops.len(), 5);
-/// assert_eq!(ops[0], Difference::Match(48));
-/// assert_eq!(ops[1], Difference::Deletion(3));
-/// assert_eq!(ops[2], Difference::Match(44));
-/// assert_eq!(ops[3], Difference::Insertion(b"GATTACA".to_vec()));
-/// assert_eq!(ops[4], Difference::Match(51));
+/// // Construct an alignment.
+/// let mut aln = Alignment::new();
+/// aln.seq_len = 15;
+/// aln.seq_interval = 0..15;
+/// aln.set_target_path(vec![1, 2, 3]);
+/// aln.path_len = 15;
+/// aln.path_interval = 0..15;
+/// aln.matches = 14;
+/// aln.edits = 1;
+/// aln.difference = vec![
+///     Difference::Match(6),
+///     Difference::Mismatch(b'A'),
+///     Difference::Match(8),
+/// ];
+///
+/// // We use this in place of a graph for node lengths.
+/// let node_lengths = vec![0, 4, 6, 5];
+/// let sequence_len = Arc::new(|handle| node_lengths.get(handle).copied());
+///
+/// // This is what we expect from the iterator.
+/// let truth = vec![
+///     Mapping::new(0, 1, node_lengths[1], 0, Difference::Match(4)),
+///     Mapping::new(4, 2, node_lengths[2], 0, Difference::Match(2)),
+///     Mapping::new(6, 2, node_lengths[2], 2, Difference::Mismatch(b'A')),
+///     Mapping::new(7, 2, node_lengths[2], 3, Difference::Match(3)),
+///     Mapping::new(10, 3, node_lengths[3], 0, Difference::Match(5)),
+/// ];
+///
+/// // Iterator creation may fail if the alignment is invalid.
+/// let iter = aln.iter(sequence_len);
+/// assert!(iter.is_some());
+/// let iter = iter.unwrap();
+/// assert!(iter.eq(truth.iter().cloned()));
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Difference {
-    /// A match of the given length.
-    Match(usize),
-    /// Mismatch represented as the query base.
-    Mismatch(u8),
-    /// Insertion to the reference represented as the inserted sequence.
-    Insertion(Vec<u8>),
-    /// Deletion from the reference represented as deletion length.
-    Deletion(usize),
-    /// Marker for the end of a sequence when concatenating multiple difference strings.
-    End,
+#[derive(Clone)]
+pub struct AlignmentIter<'a> {
+    parent: &'a Alignment,
+    sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>,
+    // Position in the query sequence.
+    seq_offset: usize,
+    // Position in the target sequence.
+    path_offset: usize,
+    // Position in the target path.
+    path_vec_offset: usize,
+    // Position within the current node in the target path.
+    path_node_offset: usize,
+    // Position in the difference string.
+    diff_vec_offset: usize,
+    // Target position in the current difference operation.
+    diff_op_offset: usize,
 }
 
-impl Difference {
-    /// Number of supported operation types.
-    pub const NUM_TYPES: usize = 5;
+impl<'a> Iterator for AlignmentIter<'a> {
+    type Item = Mapping;
 
-    /// Symbol used as a substitute for an unknown base.
-    pub const UNKNOWN_BASE: u8 = b'X';
-
-    // TODO: This does not support `~` (intron length and splice signal) yet.
-    const OPS: &'static [u8] = b"=:*+-";
-
-    fn base_to_upper(c: u8) -> u8 {
-        if c.is_ascii_lowercase() {
-            c - b'a' + b'A'
-        } else {
-            c
-        }
-    }
-
-    fn seq_to_upper(seq: &[u8]) -> Vec<u8> {
-        seq.iter().map(|&c| Self::base_to_upper(c)).collect()
-    }
-
-    fn matching_sequence(value: &[u8]) -> Option<Self> {
-        Some(Self::Match(value.len()))
-    }
-
-    fn match_length(value: &[u8]) -> Option<Self> {
-        let len = str::from_utf8(value).ok()?;
-        let len = len.parse::<usize>().ok()?;
-        Some(Self::Match(len))
-    }
-
-    fn mismatch(value: &[u8]) -> Option<Self> {
-        if value.len() != 2 {
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.diff_vec_offset >= self.parent.difference.len() {
             return None;
         }
-        Some(Self::Mismatch(Self::base_to_upper(value[1])))
-    }
 
-    fn insertion(value: &[u8]) -> Option<Self> {
-        Some(Self::Insertion(Self::seq_to_upper(value)))
-    }
+        // First find the edit that forms the basis of the mapping.
+        let full_edit = self.parent.difference.get(self.diff_vec_offset)?;
+        let edit_left = full_edit.target_len() - self.diff_op_offset;
 
-    fn deletion(value: &[u8]) -> Option<Self> {
-        Some(Self::Deletion(value.len()))
-    }
-
-    /// Parses a difference string and returns it as a vector of operations.
-    ///
-    /// Returns an error if the difference string is invalid.
-    pub fn parse(difference_string: &[u8]) -> Result<Vec<Self>, String> {
-        let mut result: Vec<Self> = Vec::new();
-        if difference_string.is_empty() {
-            return Ok(result);
+        // Then find the target node. We may need to advance to the next node we are
+        // at the end of the node and we have an edit with non-zero target length.
+        // We prefer mapping insertions to the end of a node rather than to the start
+        // of the next node, as the next node may not exist.
+        let target_path = self.parent.target_path()?;
+        let mut handle = *target_path.get(self.path_vec_offset)?;
+        let mut node_len = (*self.sequence_len)(handle)?;
+        if self.path_node_offset >= node_len && edit_left > 0 {
+            self.path_vec_offset += 1;
+            self.path_node_offset = 0;
+            handle = *target_path.get(self.path_vec_offset)?;
+            node_len = (*self.sequence_len)(handle)?;
         }
-        if !Self::OPS.contains(&difference_string[0]) {
-            return Err(format!("Invalid difference string operation: {}", difference_string[0] as char));
-        }
+        let node_left = node_len - self.path_node_offset;
 
-        let mut start = 0;
-        while start < difference_string.len() {
-            let mut end = start + 1;
-            while end < difference_string.len() && !Self::OPS.contains(&difference_string[end]) {
-                end += 1;
-            }
-            let value = &difference_string[start + 1..end];
-            let op = match difference_string[start] {
-                b'=' => Self::matching_sequence(value),
-                b':' => Self::match_length(value),
-                b'*' => Self::mismatch(value),
-                b'+' => Self::insertion(value),
-                b'-' => Self::deletion(value),
-                _ => return Err(format!("Invalid difference string operation: {}", difference_string[start] as char)),
-            }.ok_or(format!("Invalid difference string field: {}", String::from_utf8_lossy(&difference_string[start..end])))?;
-            result.push(op);
-            start = end;
-        }
+        // Take the offsets for the mapping before we update them.
+        let seq_offset = self.seq_offset;
+        let node_offset = self.path_node_offset;
 
-        Ok(result)
-    }
-
-    /// Parses a difference string and returns it as a normalized vector of operations.
-    ///
-    /// The operations are merged and empty operations are removed.
-    /// Returns an error if the difference string is invalid.
-    pub fn parse_normalized(difference_string: &[u8]) -> Result<Vec<Self>, String> {
-        let ops = Self::parse(difference_string)?;
-        Ok(Self::normalize(ops))
-    }
-
-    /// Calculates various statistics from a sequence of operations.
-    ///
-    /// The return value is (query length, target length, matches, edits).
-    pub fn stats(difference_string: &[Self]) -> (usize, usize, usize, usize) {
-        let mut query_len = 0;
-        let mut target_len = 0;
-        let mut matches = 0;
-        let mut edits = 0;
-        for diff in difference_string.iter() {
-            match diff {
-                Self::Match(len) => {
-                    query_len += len;
-                    target_len += len;
-                    matches += len;
-                },
-                Self::Mismatch(_) => {
-                    query_len += 1;
-                    target_len += 1;
-                    edits += 1;
-                }
-                Self::Insertion(seq) => {
-                    query_len += seq.len();
-                    edits += seq.len();
-                }
-                Self::Deletion(len) => {
-                    target_len += len;
-                    edits += len;
-                },
-                Self::End => {},
-            }
-        }
-        (query_len, target_len, matches, edits)
-    }
-
-    /// Returns the length of the operation.
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Match(len) => *len,
-            Self::Mismatch(_) => 1,
-            Self::Insertion(seq) => seq.len(),
-            Self::Deletion(len) => *len,
-            Self::End => 0,
-        }
-    }
-
-    /// Returns `true` if the operation is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Returns the length of the operation in the target sequence.
-    pub fn target_len(&self) -> usize {
-        match self {
-            Self::Match(len) => *len,
-            Self::Mismatch(_) => 1,
-            Self::Insertion(_) => 0,
-            Self::Deletion(len) => *len,
-            Self::End => 0,
-        }
-    }
-
-    /// Returns the length of the operation in the query sequence.
-    pub fn query_len(&self) -> usize {
-        match self {
-            Self::Match(len) => *len,
-            Self::Mismatch(_) => 1,
-            Self::Insertion(seq) => seq.len(),
-            Self::Deletion(_) => 0,
-            Self::End => 0,
-        }
-    }
-
-    /// Merges the given operation into this operation if they can be merged.
-    ///
-    /// Returns `true` if the operations were merged.
-    pub fn try_merge(&mut self, op: &Self) -> bool {
-        match (self, op) {
-            (Self::Match(len1), Self::Match(len2)) => {
-                *len1 += len2;
-                true
+        // Now determine the actual edit.
+        let edit_len = cmp::min(edit_left, node_left);
+        let edit = match full_edit {
+            Difference::Match(_) => Difference::Match(edit_len),
+            Difference::Mismatch(base) => Difference::Mismatch(*base),
+            Difference::Insertion(seq) => {
+                // We can always take the full insertion within the current node.
+                Difference::Insertion(seq.clone())
             },
-            (Self::Insertion(seq1), Self::Insertion(seq2)) => {
-                seq1.extend_from_slice(seq2);
-                true
+            Difference::Deletion(_) => Difference::Deletion(edit_len),
+            Difference::End => {
+                self.diff_vec_offset = self.parent.difference.len();
+                return None;
             },
-            (Self::Deletion(len1), Self::Deletion(len2)) => {
-                *len1 += len2;
-                true
-            },
-            _ => false,
-        }
-    }
+        };
 
-    /// Normalizes the sequence of operations.
-    ///
-    /// This merges adjacent matches and insertions and removes empty operations.
-    pub fn normalize(ops: Vec<Self>) -> Vec<Self> {
-        let mut result = ops;
-        let mut tail = 0;
-        for i in 0..result.len() {
-            if result[i].is_empty() {
-                continue;
-            }
-            if tail > 0 {
-                // We need to be careful around the borrow checker.
-                let (left, right) = result.split_at_mut(i);
-                if left[tail - 1].try_merge(&right[0]) {
-                    continue;
-                }
-            }
-            result.swap(tail, i);
-            tail += 1;
+        // And then advance the iterator.
+        self.seq_offset += edit.query_len();
+        self.path_offset += edit.target_len();
+        // We do not advance the node, as the next edit may be an insertion.
+        self.path_node_offset += edit.target_len();
+        self.diff_op_offset += edit.target_len();
+        if self.diff_op_offset >= full_edit.target_len() {
+            self.diff_vec_offset += 1;
+            self.diff_op_offset = 0;
         }
 
-        result.truncate(tail);
-        result
-    }
-
-    /// Writes a difference string as a `Vec<u8>` string.
-    pub fn to_bytes(ops: &[Difference], target_sequence: &[u8]) -> Vec<u8> {
-        let mut result = Vec::new();
-        let mut target_offset = 0;
-        for op in ops.iter() {
-            match op {
-                Self::Match(len) => {
-                    result.push(b':');
-                    utils::append_usize(&mut result, *len);
-                    target_offset += *len;
-                },
-                Self::Mismatch(base) => {
-                    result.push(b'*');
-                    result.push(target_sequence[target_offset]);
-                    result.push(*base);
-                    target_offset += 1;
-                },
-                Self::Insertion(seq) => {
-                    result.push(b'+');
-                    result.extend_from_slice(seq);
-                },
-                Self::Deletion(len) => {
-                    result.push(b'-');
-                    result.extend_from_slice(&target_sequence[target_offset..target_offset + *len]);
-                    target_offset += *len;
-                },
-                Self::End => {},
-            }
-        }
-        result
+        Some(Mapping::new(seq_offset, handle, node_len, node_offset, edit))
     }
 }
 

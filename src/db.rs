@@ -1,12 +1,9 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
-// TODO: GBZ-base and GAF-base in separate files?
 
-use crate::{Alignment, AlignmentBlock, Subgraph};
-use crate::alignment::{Flags, TargetPath};
+use crate::{Alignment, AlignmentBlock, Chains};
 use crate::utils;
 
-use std::collections::BTreeMap;
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 use std::{fs, thread};
@@ -42,7 +39,8 @@ mod tests;
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("gbz-base");
 /// assert!(!utils::file_exists(&db_file));
-/// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+/// // Here we build a database without chains.
+/// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
 /// assert!(result.is_ok());
 ///
 /// // Open the database and check some header information.
@@ -62,10 +60,12 @@ pub struct GBZBase {
     connection: Connection,
     version: String,
     nodes: usize,
+    chains: usize,
+    chain_links: usize,
+    paths: usize,
     samples: usize,
     haplotypes: usize,
     contigs: usize,
-    paths: usize,
 }
 
 /// Using the database.
@@ -77,10 +77,19 @@ impl GBZBase {
     const KEY_VERSION: &'static str = "version";
 
     /// Current database version.
-    pub const VERSION: &'static str = "GBZ-base v0.3.0";
+    pub const VERSION: &'static str = "GBZ-base v0.4.0";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
+
+    // Key for chain count.
+    const KEY_CHAINS: &'static str = "chains";
+
+    // Key for the total number of links in the chains.
+    const KEY_CHAIN_LINKS: &'static str = "chain_links";
+
+    // Key for path count.
+    const KEY_PATHS: &'static str = "paths";
 
     // Key for sample count.
     const KEY_SAMPLES: &'static str = "samples";
@@ -90,9 +99,6 @@ impl GBZBase {
 
     // Key for sample count.
     const KEY_CONTIGS: &'static str = "contigs";
-
-    // Key for path count.
-    const KEY_PATHS: &'static str = "paths";
 
     // Prefix for GBWT tag keys.
     const KEY_GBWT: &'static str = "gbwt_";
@@ -116,16 +122,19 @@ impl GBZBase {
             return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
         }
         let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
+        let chains = get_numeric_value(&mut get_tag, Self::KEY_CHAINS)?;
+        let chain_links = get_numeric_value(&mut get_tag, Self::KEY_CHAIN_LINKS)?;
+        let paths = get_numeric_value(&mut get_tag, Self::KEY_PATHS)?;
         let samples = get_numeric_value(&mut get_tag, Self::KEY_SAMPLES)?;
         let haplotypes = get_numeric_value(&mut get_tag, Self::KEY_HAPLOTYPES)?;
         let contigs = get_numeric_value(&mut get_tag, Self::KEY_CONTIGS)?;
-        let paths = get_numeric_value(&mut get_tag, Self::KEY_PATHS)?;
         drop(get_tag);
 
         Ok(GBZBase {
             connection,
             version,
-            nodes, samples, haplotypes, contigs, paths,
+            nodes, chains, chain_links,
+            paths, samples, haplotypes, contigs,
         })
     }
 
@@ -150,6 +159,21 @@ impl GBZBase {
         self.nodes
     }
 
+    /// Returns the number of top-level chains with stored links between boundary nodes.
+    pub fn chains(&self) -> usize {
+        self.chains
+    }
+
+    /// Returns the total number of links in the top-level chains.
+    pub fn chain_links(&self) -> usize {
+        self.chain_links
+    }
+
+    /// Returns the number of paths in the graph.
+    pub fn paths(&self) -> usize {
+        self.paths
+    }
+
     /// Returns the number of samples in path metadata.
     pub fn samples(&self) -> usize {
         self.samples
@@ -164,27 +188,34 @@ impl GBZBase {
     pub fn contigs(&self) -> usize {
         self.contigs
     }
-
-    /// Returns the number of paths in the graph.
-    pub fn paths(&self) -> usize {
-        self.paths
-    }
 }
 
 //-----------------------------------------------------------------------------
 
 /// Creating the database.
 impl GBZBase {
-    /// Creates a new database from the GBZ graph in file `gbz_file` and stores the database in file `db_file`.
+    /// Creates a new database from the input files.
+    ///
+    /// # Arguments
+    ///
+    /// * `gbz_file`: Name of the file containing the GBZ graph.
+    /// * `chains_file`: Name of the file containing top-level chains.
+    /// * `db_file`: Name of the database file to be created.
     ///
     /// # Errors
     ///
     /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create_from_file<P: AsRef<Path>, Q: AsRef<Path>>(gbz_file: P, db_file: Q) -> Result<(), String> {
-        eprintln!("Loading GBZ graph {}", gbz_file.as_ref().display());
+    pub fn create_from_files(gbz_file: &Path, chains_file: Option<&Path>, db_file: &Path) -> Result<(), String> {
+        eprintln!("Loading GBZ graph {}", gbz_file.display());
         let graph: GBZ = serialize::load_from(&gbz_file).map_err(|x| x.to_string())?;
-        Self::create(&graph, db_file)
+        let chains = if let Some(filename) = chains_file {
+            eprintln!("Loading top-level chain file {}", filename.display());
+            Chains::load_from(filename)?
+        } else {
+            Chains::new()
+        };
+        Self::create(&graph, &chains, db_file)
     }
 
     // Sanity checks for the GBZ graph. We do not want to handle graphs without sufficient metadata.
@@ -206,13 +237,19 @@ impl GBZBase {
         Ok(())
     }
 
-    /// Creates a new database in file `filename` from the given GBZ graph.
+    /// Creates a new database from the given inputs.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph`: GBZ graph.
+    /// * `chains`: Top-level chains.
+    /// * `filename`: Name of the database file to be created.
     ///
     /// # Errors
     ///
     /// Returns an error if the database already exists or if the GBZ graph does not contain sufficient metadata.
     /// Passes through any database errors.
-    pub fn create<P: AsRef<Path>>(graph: &GBZ, filename: P) -> Result<(), String> {
+    pub fn create<P: AsRef<Path>>(graph: &GBZ, chains: &Chains, filename: P) -> Result<(), String> {
         eprintln!("Creating database {}", filename.as_ref().display());
         if utils::file_exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
@@ -220,14 +257,14 @@ impl GBZBase {
         Self::sanity_checks(graph)?;
 
         let mut connection = Connection::open(filename).map_err(|x| x.to_string())?;
-        Self::insert_tags(graph, &mut connection).map_err(|x| x.to_string())?;
-        Self::insert_nodes(graph, &mut connection).map_err(|x| x.to_string())?;
+        Self::insert_tags(graph, chains, &mut connection).map_err(|x| x.to_string())?;
+        Self::insert_nodes(graph, chains, &mut connection).map_err(|x| x.to_string())?;
         Self::insert_paths(graph, &mut connection).map_err(|x| x.to_string())?;
         Self::index_reference_paths(graph, &mut connection).map_err(|x| x.to_string())?;
         Ok(())
     }
 
-    fn insert_tags(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
+    fn insert_tags(graph: &GBZ, chains: &Chains, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -251,10 +288,12 @@ impl GBZBase {
             let metadata = graph.metadata().unwrap();
             insert.execute((Self::KEY_VERSION, Self::VERSION))?;
             insert.execute((Self::KEY_NODES, graph.nodes()))?;
+            insert.execute((Self::KEY_CHAINS, chains.len()))?;
+            insert.execute((Self::KEY_CHAIN_LINKS, chains.links()))?;
+            insert.execute((Self::KEY_PATHS, metadata.paths()))?;
             insert.execute((Self::KEY_SAMPLES, metadata.samples()))?;
             insert.execute((Self::KEY_HAPLOTYPES, metadata.haplotypes()))?;
             insert.execute((Self::KEY_CONTIGS, metadata.contigs()))?;
-            insert.execute((Self::KEY_PATHS, metadata.paths()))?;
             inserted += 6;
 
             // GBWT tags.
@@ -278,7 +317,7 @@ impl GBZBase {
         Ok(())
     }
 
-    fn insert_nodes(graph: &GBZ, connection: &mut Connection) -> rusqlite::Result<()> {
+    fn insert_nodes(graph: &GBZ, chains: &Chains, connection: &mut Connection) -> rusqlite::Result<()> {
         eprintln!("Inserting nodes");
 
         // Create the nodes table.
@@ -287,7 +326,8 @@ impl GBZBase {
                 handle INTEGER PRIMARY KEY,
                 edges BLOB NOT NULL,
                 bwt BLOB NOT NULL,
-                sequence BLOB NOT NULL
+                sequence BLOB NOT NULL,
+                next INTEGER
             ) STRICT",
             (),
         )?;
@@ -297,7 +337,7 @@ impl GBZBase {
         let transaction = connection.transaction()?;
         {
             let mut insert = transaction.prepare(
-                "INSERT INTO Nodes(handle, edges, bwt, sequence) VALUES (?1, ?2, ?3, ?4)"
+                "INSERT INTO Nodes(handle, edges, bwt, sequence, next) VALUES (?1, ?2, ?3, ?4, ?5)"
             )?;
             let index: &GBWT = graph.as_ref();
             let bwt: &BWT = index.as_ref();
@@ -308,7 +348,8 @@ impl GBZBase {
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = graph.sequence(node_id).unwrap();
                 let encoded_sequence = utils::encode_sequence(sequence);
-                insert.execute((forward_id, edge_bytes, bwt_bytes, encoded_sequence))?;
+                let next: Option<usize> = chains.next(forward_id);
+                insert.execute((forward_id, edge_bytes, bwt_bytes, encoded_sequence, next))?;
                 inserted += 1;
         
                 // Reverse orientation.
@@ -317,7 +358,8 @@ impl GBZBase {
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
                 let sequence = support::reverse_complement(sequence);
                 let encoded_sequence = utils::encode_sequence(&sequence);
-                insert.execute((reverse_id, edge_bytes, bwt_bytes, encoded_sequence))?;
+                let next: Option<usize> = chains.next(reverse_id);
+                insert.execute((reverse_id, edge_bytes, bwt_bytes, encoded_sequence, next))?;
                 inserted += 1;
             }
         }
@@ -430,7 +472,7 @@ impl GBZBase {
 ///
 /// This structure stores a database connection and some header information.
 /// In multi-threaded applications, each thread should have its own connection.
-/// A set of alignments overlapping with a subgraph can be extracted using the [`ReadSet`] structure.
+/// A set of alignments overlapping with a subgraph can be extracted using the [`crate::ReadSet`] structure.
 ///
 /// # Examples
 ///
@@ -461,7 +503,7 @@ impl GBZBase {
 /// ```
 #[derive(Debug)]
 pub struct GAFBase {
-    connection: Connection,
+    pub(crate) connection: Connection,
     version: String,
     nodes: usize,
     alignments: usize,
@@ -610,11 +652,11 @@ impl GAFBase {
     ///
     /// Returns an error if the input files do not exist or the database already exists.
     /// Passes through any database errors.
-    pub fn create_from_files<P: AsRef<Path>, Q: AsRef<Path>, R: AsRef<Path>>(
-        gaf_file: P, gbwt_file: Q, db_file: R,
+    pub fn create_from_files(
+        gaf_file: &Path, gbwt_file: &Path, db_file: &Path,
         params: &GAFBaseParams
     ) -> Result<(), String> {
-        eprintln!("Loading GBWT index {}", gbwt_file.as_ref().display());
+        eprintln!("Loading GBWT index {}", gbwt_file.display());
         let index: Arc<GBWT> = Arc::new(serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?);
         Self::create(gaf_file, index, db_file, params)
     }
@@ -963,15 +1005,20 @@ impl GAFBase {
 /// The record corresponds to one row in table `Nodes`.
 /// It stores the information in a GBWT node record ([`Record`]) and the sequence of the node in the correct orientation.
 /// The edges and the sequence are decompressed, while the BWT fragment remains in compressed form.
+///
+/// If the node is a boundary node in a top-level chain, there may also be a link to the next node in the chain.
+/// That requires that the link was also present in the source of the record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GBZRecord {
     handle: usize,
     edges: Vec<Pos>,
     bwt: Vec<u8>,
     sequence: Vec<u8>,
+    next: Option<usize>,
 }
 
 impl GBZRecord {
+    // TODO: add next from chains?
     /// Creates a new GBZ record from the given GBZ graph and node handle.
     ///
     /// Returns [`None`] if the node does not exist in the graph.
@@ -993,8 +1040,9 @@ impl GBZRecord {
         } else {
             support::reverse_complement(sequence)
         };
+        let next = None;
 
-        Some(GBZRecord { handle, edges, bwt, sequence })
+        Some(GBZRecord { handle, edges, bwt, sequence, next })
     }
 
     /// Creates a new GBZ record from the raw parts.
@@ -1006,8 +1054,8 @@ impl GBZRecord {
     /// This is probably safe, even if the record breaks some invariants.
     /// However, I do not have the time and the energy to determine the consequences.
     #[doc(hidden)]
-    pub unsafe fn from_raw_parts(handle: usize, edges: Vec<Pos>, bwt: Vec<u8>, sequence: Vec<u8>) -> Self {
-        GBZRecord { handle, edges, bwt, sequence }
+    pub unsafe fn from_raw_parts(handle: usize, edges: Vec<Pos>, bwt: Vec<u8>, sequence: Vec<u8>, next: Option<usize>) -> Self {
+        GBZRecord { handle, edges, bwt, sequence, next }
     }
 
     /// Returns a GBWT record based on this record.
@@ -1018,7 +1066,7 @@ impl GBZRecord {
     ///
     /// Will panic if the record would be empty.
     /// This should never happen with a valid database.
-    pub fn to_gbwt_record(&self) -> Record {
+    pub fn to_gbwt_record(&self) -> Record<'_> {
         if self.edges.is_empty() {
             panic!("GBZRecord::to_gbwt_record: Empty record");
         }
@@ -1086,6 +1134,12 @@ impl GBZRecord {
     #[inline]
     pub fn sequence_len(&self) -> usize {
         self.sequence.len()
+    }
+
+    /// Returns the next handle for the next boundary node in the chain, or [`None`] if there is none.
+    #[inline]
+    pub fn next(&self) -> Option<usize> {
+        self.next
     }
 }
 
@@ -1176,7 +1230,7 @@ impl AsRef<FullPathName> for GBZPath {
 /// // Create the database.
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("graph-interface");
-/// let result = GBZBase::create_from_file(&gbz_file, &db_file);
+/// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
 /// assert!(result.is_ok());
 ///
 /// // Open the database and create a graph interface.
@@ -1239,7 +1293,7 @@ impl<'a> GraphInterface<'a> {
         ).map_err(|x| x.to_string())?;
 
         let get_record = database.connection.prepare(
-            "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
+            "SELECT edges, bwt, sequence, next FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
 
         let get_path = database.connection.prepare(
@@ -1300,7 +1354,8 @@ impl<'a> GraphInterface<'a> {
                 let bwt: Vec<u8> = row.get(1)?;
                 let encoded_sequence: Vec<u8> = row.get(2)?;
                 let sequence: Vec<u8> = utils::decode_sequence(&encoded_sequence);
-                Ok(GBZRecord { handle, edges, bwt, sequence })
+                let next: Option<usize> = row.get(3)?;
+                Ok(GBZRecord { handle, edges, bwt, sequence, next })
             }
         ).optional().map_err(|x| x.to_string())
     }
@@ -1366,289 +1421,6 @@ impl<'a> GraphInterface<'a> {
                 Ok((path_offset, Pos::new(node_handle, node_offset)))
             }
         ).optional().map_err(|x| x.to_string())
-    }
-}
-
-//-----------------------------------------------------------------------------
-
-/// A set of reads extracted from [`GAFBase`].
-///
-/// This is a counterpart to [`Subgraph`].
-/// Sets of reads fully contained in a subgraph or overlapping with it can be created using [`ReadSet::new`].
-/// The reads can be iterated over with [`ReadSet::iter`] and converted to GAF lines with [`ReadSet::to_gaf`].
-/// The reads will appear in the same order as in the database.
-///
-/// # Examples
-///
-/// ```
-/// use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
-/// use gbz_base::{GAFBase, GAFBaseParams, ReadSet, GraphReference};
-/// use gbz_base::utils;
-/// use gbwt::GBZ;
-/// use simple_sds::serialize;
-///
-/// // Get an in-memory graph.
-/// let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
-/// let graph = serialize::load_from(&gbz_file).unwrap();
-///
-/// // Extract a 100 bp subgraph around node 150.
-/// let nodes = vec![150];
-/// let query = SubgraphQuery::nodes(nodes, 100, HaplotypeOutput::Distinct);
-/// let mut subgraph = Subgraph::new();
-/// let _ = subgraph.from_gbz(&graph, None, &query).unwrap();
-///
-/// // Create a database of reads aligned to the graph.
-/// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
-/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
-/// let db_file = serialize::temp_file_name("gaf-base");
-/// let params = GAFBaseParams::default();
-/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
-/// assert!(db.is_ok());
-///
-/// // Extract all reads fully within the subgraph.
-/// let db = GAFBase::open(&db_file);
-/// assert!(db.is_ok());
-/// let db = db.unwrap();
-/// let read_set = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &db, true);
-/// assert!(read_set.is_ok());
-/// let read_set = read_set.unwrap();
-/// assert_eq!(read_set.len(), 148);
-///
-/// // The extracted reads are aligned and fully within the subgraph.
-/// for aln in read_set.iter() {
-///     for handle in aln.target_path().unwrap() {
-///         assert!(subgraph.has_handle(*handle));
-///     }
-/// }
-///
-/// drop(db);
-/// let _ = std::fs::remove_file(&db_file);
-/// ```
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReadSet {
-    // GBZ records in the GAF GBWT, including sequence from the subgraph.
-    nodes: BTreeMap<usize, GBZRecord>,
-    reads: Vec<Alignment>,
-    blocks: usize,
-}
-
-impl ReadSet {
-    // Decompresses an alignment block from a row.
-    fn decompress_block(row: &Row) -> Result<Vec<Alignment>, String> {
-        let min_handle: Option<usize> = row.get(0).map_err(|x| x.to_string())?;
-        let max_handle: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
-        let alignments: usize = row.get(2).map_err(|x| x.to_string())?;
-        let read_length: Option<usize> = row.get(3).map_err(|x| x.to_string())?;
-        let gbwt_starts: Vec<u8> = row.get(4).map_err(|x| x.to_string())?;
-        let names: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
-        let quality_strings: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
-        let difference_strings: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
-        let flags: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
-        let numbers: Vec<u8> = row.get(9).map_err(|x| x.to_string())?;
-
-        let block = AlignmentBlock {
-            min_handle, max_handle, alignments, read_length,
-            gbwt_starts, names,
-            quality_strings, difference_strings,
-            flags: Flags::from(flags), numbers
-        };
-        block.decode()
-    }
-
-    // Replaces the GBWT starting position of the alignment with the path.
-    // Requires that the path overlaps with / is fully contained in the subgraph.
-    // If the path is valid, inserts all missing node records into the read set.
-    fn set_target_path(
-        &mut self, alignment: &mut Alignment, subgraph: &Subgraph,
-        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>,
-        contained: bool
-    ) -> Result<(), String> {
-        let mut pos = match alignment.path {
-            TargetPath::Path(_) => return Ok(()),
-            TargetPath::StartPosition(pos) => Some(pos),
-        };
-
-        let mut path = Vec::new();
-        let mut overlap = false;
-        while let Some(p) = pos {
-            if subgraph.has_handle(p.node) {
-                overlap = true;
-            } else if contained {
-                return Ok(()); // Not fully contained in the subgraph.
-            }
-
-            // Now get the record for the node.
-            let mut record = self.nodes.get(&p.node);
-            if record.is_none() {
-                let result = get_record(p.node)?;
-                self.nodes.insert(p.node, result);
-                record = self.nodes.get(&p.node);
-            }
-
-            // Navigate to the next position.
-            path.push(p.node);
-            let record = record.unwrap();
-            pos = record.to_gbwt_record().lf(p.offset);
-        }
-
-        // Set the target path in the alignment.
-        if overlap {
-            alignment.set_target_path(path);
-        }
-        Ok(())
-    }
-
-    // TODO: Better long read algorithm for the overlapping case: extend paths in a bidirectional GBWT.
-    /// Extracts a set of reads overlapping with the subgraph.
-    ///
-    /// The extracted reads will be in the same order as in the database.
-    /// That corresponds to the order in the original GAF file.
-    ///
-    /// # Arguments
-    ///
-    /// * `graph`: A GBZ-compatible graph.
-    /// * `subgraph`: The subgraph used as the query region.
-    /// * `database`: A database storing reads aligned to the graph.
-    /// * `contained`: If `true`, only reads that are fully within the subgraph are returned.
-    ///
-    /// # Errors
-    ///
-    /// Passes through any database errors.
-    /// Returns an error if an alignment cannot be decompressed.
-    pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, contained: bool) -> Result<Self, String> {
-        let mut read_set = ReadSet {
-            nodes: BTreeMap::new(),
-            reads: Vec::new(),
-            blocks: 0,
-        };
-
-        // Build a record from the databases.
-        let mut get_node = database.connection.prepare(
-            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
-        ).map_err(|x| x.to_string())?;
-        let mut graph = graph;
-        let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
-            // Get the edges and the BWT fragment from the GAF-base.
-            let gaf_result = get_node.query_row(
-                (handle,),
-                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
-                    let edge_bytes: Vec<u8> = row.get(0)?;
-                    let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
-                    let bwt: Vec<u8> = row.get(1)?;
-                    Ok((edges, bwt))
-                }
-            ).optional().map_err(|x| x.to_string())?;
-            if gaf_result.is_none() {
-                return Err(format!("Could not find the record for handle {} in GAF-base", handle));
-            }
-            let (edges, bwt) = gaf_result.unwrap();
-
-            // Get the sequence from the subgraph or from the GBZ-base.
-            let sequence = subgraph.sequence(handle);
-            let sequence = match sequence {
-                Some(seq) => seq.to_vec(),
-                None => {
-                    let gbz_record = graph.gbz_record(handle)?;
-                    gbz_record.sequence().to_vec()
-                }
-            };
-
-            unsafe {
-                Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence))
-            }
-        };
-
-        // Get the reads that may overlap with the subgraph.
-        let min_handle = subgraph.min_handle();
-        let max_handle = subgraph.max_handle();
-        let mut get_reads = database.connection.prepare(
-            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
-            FROM Alignments
-            WHERE min_handle <= ?1 AND max_handle >= ?2"
-        ).map_err(|x| x.to_string())?;
-        let mut rows = get_reads.query((max_handle, min_handle)).map_err(|x| x.to_string())?;
-        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
-            let block = Self::decompress_block(row)?;
-            for mut alignment in block {
-                read_set.set_target_path(&mut alignment, subgraph, &mut get_record, contained)?;
-                if alignment.has_target_path() {
-                    read_set.reads.push(alignment);
-                }
-            }
-            read_set.blocks += 1;
-        }
-
-        Ok(read_set)
-    }
-
-    /// Returns the number of reads in the set.
-    pub fn len(&self) -> usize {
-        self.reads.len()
-    }
-
-    /// Returns `true` if the set is empty.
-    pub fn is_empty(&self) -> bool {
-        self.reads.is_empty()
-    }
-
-    /// Returns the number of alignment blocks decompressed when creating the read set.
-    pub fn blocks(&self) -> usize {
-        self.blocks
-    }
-
-    /// Returns the number of node records in the read set.
-    ///
-    /// Each record corresponds to an oriented node, and the opposite orientation may not be present.
-    /// This includes all node records encountered while tracing the alignments, even when the alignment was not included in the read set.
-    pub fn node_records(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Returns an iterator over the reads in the set.
-    pub fn iter(&self) -> impl Iterator<Item = &Alignment> {
-        self.reads.iter()
-    }
-
-    // Extracts the target sequence for the given alignment.
-    fn target_sequence(&self, alignment: &Alignment) -> Result<Vec<u8>, String> {
-        let target_path = alignment.target_path();
-        if target_path.is_none() {
-            return Ok(Vec::new());
-        }
-        let target_path = target_path.unwrap();
-
-        let mut sequence = Vec::new();
-        for handle in target_path{
-            let record = self.nodes.get(handle);
-            if record.is_none() {
-                return Err(format!("Read {}: Missing record for node handle {}", alignment.name, handle));
-            }
-            let record = record.unwrap();
-            sequence.extend_from_slice(record.sequence());
-        }
-
-        if sequence.len() != alignment.path_len {
-            return Err(format!(
-                "Read {}: Target path length {} does not match the expected length {}",
-                alignment.name, sequence.len(), alignment.path_len
-            ));
-        }
-        sequence = sequence[alignment.path_interval.clone()].to_vec();
-        Ok(sequence)
-    }
-
-    /// Serializes the read set in the GAF format.
-    ///
-    /// Returns an error if the target sequence for a read is invalid or cannot be determined.
-    /// Passes through any I/O errors.
-    pub fn to_gaf<W: Write>(&self, writer: &mut W) -> Result<(), String> {
-        for alignment in self.reads.iter() {
-            let target_sequence = self.target_sequence(alignment)?;
-            let mut line = alignment.to_gaf(&target_sequence);
-            line.push(b'\n');
-            writer.write_all(&line).map_err(|x| x.to_string())?;
-        }
-        Ok(())
     }
 }
 

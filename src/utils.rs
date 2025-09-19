@@ -1,10 +1,16 @@
 //! Utility functions and structures.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read, Error, ErrorKind};
 
 use flate2::read::MultiGzDecoder;
+
+use gbwt::{support, Orientation};
+use simple_sds::int_vector::IntVector;
+use simple_sds::ops::{Vector, Access};
+use simple_sds::serialize::Serialize;
 
 //-----------------------------------------------------------------------------
 
@@ -182,9 +188,166 @@ pub fn encoded_length(sequence_length: usize) -> usize {
 
 //-----------------------------------------------------------------------------
 
+// TODO: Move to gbwt-rs?
+// TODO: Do we want to support nested chains as well?
+/// A set of top-level chains represented as links between boundary nodes.
+///
+/// Top-level chains provide a linear high-level structure for each weakly connected component in the graph.
+/// A chain is a sequence of nodes and snarls.
+/// Boundary nodes bordering the snarls form a sketch of graph topology.
+/// Given a pair of boundary nodes, the graph region between them is either a unary path or a snarl.
+/// In both cases, no path can leave the region without visiting one of the boundary nodes.
+///
+/// This representation is based on storing links between successive boundary nodes.
+/// Each link is stored twice, once in each orientation.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::Chains;
+/// use gbz_base::utils;
+/// use gbwt::support::{self, Orientation};
+///
+/// let filename = utils::get_test_data("micb-kir3dl1.chains");
+/// let chains = Chains::load_from(&filename);
+/// assert!(chains.is_ok());
+/// let chains = chains.unwrap();
+///
+/// assert_eq!(chains.len(), 2);
+/// assert_eq!(chains.links(), 925);
+/// let handle = support::encode_node(44, Orientation::Forward);
+/// assert!(chains.has_handle(handle));
+/// let next = support::encode_node(47, Orientation::Forward);
+/// assert_eq!(chains.next(handle), Some(next));
+/// ```
+pub struct Chains {
+    chains: usize,
+    next: BTreeMap<usize, usize>,
+}
+
+impl Chains {
+    // Reads the serialized chains representation.
+    fn read_data<R: Read>(reader: &mut R) -> io::Result<Vec<IntVector>> {
+        let chains = usize::load(reader)?;
+        let mut data: Vec<IntVector> = Vec::with_capacity(chains);
+        for _ in 0..chains {
+            let vec = IntVector::load(reader)?;
+            data.push(vec);
+        }
+        Ok(data)
+    }
+
+    // Converts the chains to a bidirectional link map.
+    fn link_map(data: Vec<IntVector>) -> io::Result<BTreeMap<usize, usize>> {
+        let mut next = BTreeMap::new();
+        for chain in data {
+            for i in 1..chain.len() {
+                let from = chain.get(i - 1) as usize;
+                if next.contains_key(&from) {
+                    let msg = format!("Duplicate link from {}", from);
+                    return Err(Error::new(ErrorKind::InvalidData, msg));
+                }
+                let to = chain.get(i) as usize;
+                next.insert(from, to);
+
+                let rev_from = support::flip_node(to);
+                if next.contains_key(&rev_from) {
+                    let msg = format!("Duplicate link from {}", rev_from);
+                    return Err(Error::new(ErrorKind::InvalidData, msg));
+                }
+                let rev_to = support::flip_node(from);
+                next.insert(rev_from, rev_to);
+            }
+        }
+        Ok(next)
+    }
+
+    /// Creates an empty set of chains.
+    pub fn new() -> Self {
+        Self {
+            chains: 0,
+            next: BTreeMap::new(),
+        }
+    }
+
+    /// Reads the chains from a reader in binary format.
+    ///
+    /// # Errors
+    ///
+    /// Passes through all deserialization errors.
+    /// Returns an error if a handle occurs in multiple chains.
+    pub fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let data = Self::read_data(reader)?;
+        let chains = data.len();
+        let next = Self::link_map(data)?;
+        Ok(Self { chains, next })
+    }
+
+    /// Reads the chains from a binary file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or [`Self::deserialize`] fails.
+    pub fn load_from(filename: &Path) -> Result<Self, String> {
+        let mut file = File::open(&filename).map_err(|x|
+            format!("Failed to open chains file {}: {}", filename.display(), x)
+        )?;
+        Self::deserialize(&mut file).map_err(|x|
+            format!("Failed to read chains from file {}: {}", filename.display(), x)
+        )
+    }
+
+    /// Returns the number of chains.
+    pub fn len(&self) -> usize {
+        self.chains
+    }
+
+    /// Returns `true` if there are no chains.
+    pub fn is_empty(&self) -> bool {
+        self.chains == 0
+    }
+
+    /// Returns the total number of links in the chains.
+    pub fn links(&self) -> usize {
+        self.next.len() / 2
+    }
+
+    /// Returns the successor for the given handle in the chains, or [`None`] if there is no successor.
+    pub fn next(&self, handle: usize) -> Option<usize> {
+        self.next.get(&handle).copied()
+    }
+
+    /// Returns `true` if the given node is a boundary node in one of the chains.
+    pub fn has_node(&self, node_id: usize) -> bool {
+        let fw_handle = support::encode_node(node_id, Orientation::Forward);
+        let rev_handle = support::encode_node(node_id, Orientation::Reverse);
+        self.next.contains_key(&fw_handle) || self.next.contains_key(&rev_handle)
+    }
+
+    /// Returns `true` if the given handle refers to a boundary node.
+    pub fn has_handle(&self, handle: usize) -> bool {
+        let rev_handle = support::flip_node(handle);
+        self.next.contains_key(&handle) || self.next.contains_key(&rev_handle)
+    }
+
+    /// Returns an iterator over the links, ordered by source handle.
+    ///
+    /// Filter using [`support::encoded_edge_is_canonical`] to visit each link in a single orientation.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.next.iter().map(|(k, v)| (*k, *v))
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::HashSet;
+
+    use gbwt::GBZ;
+    use simple_sds::serialize;
 
     #[test]
     fn sequence_encoding() {
@@ -194,6 +357,92 @@ mod tests {
             let encoded = encode_sequence(sequence);
             let decoded = decode_sequence(&encoded);
             assert_eq!(decoded, sequence, "Wrong sequence encoding for length {}", i);
+        }
+    }
+
+    fn load_chains(filename: &PathBuf) -> Vec<IntVector> {
+        let file = File::open(&filename);
+        assert!(file.is_ok(), "Failed to open chains file {}", filename.display());
+        let mut file = file.unwrap();
+        let data = Chains::read_data(&mut file);
+        assert!(data.is_ok(), "Failed to read chains from {}", filename.display());
+        data.unwrap()
+    }
+
+    fn check_chains(chains: &Chains, data: &[IntVector]) {
+        assert_eq!(chains.len(), data.len(), "Wrong number of chains");
+        let mut expected_links = 0;
+        for chain in data.iter() {
+            if chain.len() > 1 {
+                expected_links += chain.len() - 1;
+            }
+        }
+        assert_eq!(chains.links(), expected_links, "Wrong number of links");
+
+        // Handles and nodes should be present.
+        for chain in data.iter() {
+            for handle in chain.iter().map(|x| x as usize) {
+                assert!(chains.has_handle(handle), "Missing handle {}", handle);
+                let rev_handle = support::flip_node(handle);
+                assert!(chains.has_handle(rev_handle), "Missing reverse handle {}", rev_handle);
+                let (node_id, _) = support::decode_node(handle);
+                assert!(chains.has_node(node_id), "Missing node {}", node_id);
+            }
+        }
+
+        // Missing handles and nodes should not be present.
+        let max_handle = data.iter().flat_map(|x| x.iter().map(|y| y as usize)).max().unwrap();
+        assert!(!chains.has_handle(max_handle + 2), "Unexpected handle {}", max_handle + 1);
+        let missing_node = support::decode_node(max_handle).0 + 1;
+        assert!(!chains.has_node(missing_node), "Unexpected node {}", missing_node);
+    }
+
+    fn check_region(graph: &GBZ, chains: &Chains, from: usize, to: usize) {
+        // Active handles. We proceed to their successors but not predecessors.
+        let mut active = vec![from, support::flip_node(to)];
+        // Visited node identifiers.
+        let mut visited = HashSet::new();
+        visited.insert(support::decode_node(from).0);
+        visited.insert(support::decode_node(to).0);
+
+        while !active.is_empty() {
+            let curr = active.pop().unwrap();
+            let (node_id, orientation) = support::decode_node(curr);
+            for (next_id, next_o) in graph.successors(node_id, orientation).unwrap() {
+                if visited.contains(&next_id) {
+                    continue;
+                }
+                let fw_handle = support::encode_node(next_id, next_o);
+                let rev_handle = support::flip_node(fw_handle);
+                assert!(!chains.has_node(next_id), "Reached boundary node {} ({}, {}) from region {}..{}", fw_handle, next_id, next_o, from, to);
+                active.push(fw_handle); active.push(rev_handle);
+                visited.insert(next_id);
+            }
+        }
+    }
+
+    #[test]
+    fn chains_empty() {
+        let chains = Chains::new();
+        assert_eq!(chains.len(), 0, "Expected empty chains");
+        assert_eq!(chains.links(), 0, "Expected no links");
+    }
+
+    #[test]
+    fn chains_nonempty() {
+        let chains_file = get_test_data("micb-kir3dl1.chains");
+        let data = load_chains(&chains_file);
+        let chains = Chains::load_from(&chains_file);
+        if let Err(msg) = chains {
+            panic!("Failed to read chains from {}: {}", chains_file.display(), msg);
+        }
+        let chains = chains.unwrap();
+        check_chains(&chains, &data);
+
+        let graph_file = get_test_data("micb-kir3dl1.gbz");
+        let graph: GBZ = serialize::load_from(&graph_file).unwrap();
+        for (from, to) in chains.iter() {
+            check_region(&graph, &chains, from, to);
         }
     }
 }

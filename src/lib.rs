@@ -50,11 +50,20 @@ pub mod alignment;
 pub mod db;
 pub mod formats;
 pub mod path_index;
+pub mod read_set;
 pub mod subgraph;
 pub mod utils;
 
+// Shared utility functions for tests.
+#[cfg(test)]
+pub(crate) mod internal;
+
 pub use alignment::{Alignment, AlignmentBlock};
+pub use alignment::mapping::{Difference, Mapping};
 pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface, GraphReference};
-pub use db::{GAFBase, GAFBaseParams, ReadSet};
+pub use db::{GAFBase, GAFBaseParams};
 pub use path_index::PathIndex;
-pub use subgraph::{Subgraph, SubgraphQuery, HaplotypeOutput};
+pub use read_set::{ReadSet, AlignmentOutput};
+pub use subgraph::Subgraph;
+pub use subgraph::query::{SubgraphQuery, HaplotypeOutput};
+pub use utils::Chains;

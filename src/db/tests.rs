@@ -1,42 +1,12 @@
-use crate::{HaplotypeOutput, SubgraphQuery, Alignment};
-
 use super::*;
+
+use crate::{internal, utils};
 
 use gbwt::REF_SAMPLE;
 use gbwt::{Metadata, GBWT};
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-
-//-----------------------------------------------------------------------------
-
-fn create_database_from_graph(graph: &GBZ) -> PathBuf {
-    let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
-    let result = GBZBase::create(&graph, &db_file);
-    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
-    db_file
-}
-
-fn create_database_from_file(filename: &PathBuf) -> PathBuf {
-    let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
-    let result = GBZBase::create_from_file(&filename, &db_file);
-    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
-    db_file
-}
-
-fn open_database(filename: &PathBuf) -> GBZBase {
-    let database = GBZBase::open(filename);
-    assert!(database.is_ok(), "Failed to open database: {}", database.unwrap_err());
-    database.unwrap()
-}
-
-fn create_interface(database: &GBZBase) -> GraphInterface {
-    let interface = GraphInterface::new(database);
-    assert!(interface.is_ok(), "Failed to create graph interface: {}", interface.unwrap_err());
-    interface.unwrap()
-}
 
 //-----------------------------------------------------------------------------
 
@@ -78,13 +48,15 @@ fn existing_indexed_pos(interface: &mut GraphInterface, path_handle: usize, offs
 
 //-----------------------------------------------------------------------------
 
-fn check_header(database: &GBZBase, graph: &GBZ) {
+fn check_header(database: &GBZBase, graph: &GBZ, chains: &Chains) {
     let metadata = graph.metadata().unwrap();
     assert_eq!(database.nodes(), graph.nodes(), "Wrong number of nodes");
+    assert_eq!(database.chains(), chains.len(), "Wrong number of chains");
+    assert_eq!(database.chain_links(), chains.links(), "Wrong number of chain links");
+    assert_eq!(database.paths(), metadata.paths(), "Wrong number of paths");
     assert_eq!(database.samples(), metadata.samples(), "Wrong number of samples");
     assert_eq!(database.haplotypes(), metadata.haplotypes(), "Wrong number of haplotypes");
     assert_eq!(database.contigs(), metadata.contigs(), "Wrong number of contigs");
-    assert_eq!(database.paths(), metadata.paths(), "Wrong number of paths");
 }
 
 fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
@@ -109,7 +81,7 @@ fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
     }
 }
 
-fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
+fn check_nodes(interface: &mut GraphInterface, graph: &GBZ, chains: &Chains) {
     let gbwt: &GBWT = graph.as_ref();
     let bwt: &BWT = gbwt.as_ref();
 
@@ -123,7 +95,7 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
             assert!(record.is_some(), "Missing node record for handle {}", handle);
             let record = record.unwrap();
 
-            // Handle and sequence.
+            // Handle, sequence, and link.
             assert_eq!(record.handle(), handle, "Wrong node record handle");
             if orientation == Orientation::Forward {
                 assert_eq!(record.sequence(), sequence, "Wrong sequence for handle {}", handle);
@@ -131,6 +103,7 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ) {
                 let rc = support::reverse_complement(sequence);
                 assert_eq!(record.sequence(), rc, "Wrong sequence for handle {}", handle);
             }
+            assert_eq!(record.next(), chains.next(handle), "Wrong chain link for handle {}", handle);
 
             // Successors using the graph / iterator.
             let truth: Vec<(usize, Orientation)> = graph.successors(node_id, orientation).unwrap().collect();
@@ -208,16 +181,17 @@ fn create_from_graph() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
-    let database = open_database(&db_file);
-    let mut interface = create_interface(&database);
+    let db_file = internal::create_gbz_base_from_graph(&graph, &chains);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
 
     // Check header, tags, and nodes.
-    check_header(&database, &graph);
+    check_header(&database, &graph, &chains);
     check_tags(&mut interface, &graph);
-    check_nodes(&mut interface, &graph);
+    check_nodes(&mut interface, &graph, &chains);
 
     drop(interface);
     drop(database);
@@ -229,16 +203,40 @@ fn create_from_file() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_file(&gbz_file);
-    let database = open_database(&db_file);
-    let mut interface = create_interface(&database);
+    let db_file = internal::create_gbz_base_from_files(&gbz_file, None);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
 
     // Check header, tags, and nodes.
-    check_header(&database, &graph);
+    check_header(&database, &graph, &chains);
     check_tags(&mut interface, &graph);
-    check_nodes(&mut interface, &graph);
+    check_nodes(&mut interface, &graph, &chains);
+
+    drop(interface);
+    drop(database);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn large_test_case() {
+    // Load the graph.
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains_file = utils::get_test_data("micb-kir3dl1.chains");
+    let chains = Chains::load_from(&chains_file).unwrap();
+
+    // Create and open the database and create a graph interface.
+    let db_file = internal::create_gbz_base_from_graph(&graph, &chains);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
+
+    // Check header, tags, and nodes.
+    check_header(&database, &graph, &chains);
+    check_tags(&mut interface, &graph);
+    check_nodes(&mut interface, &graph, &chains);
 
     drop(interface);
     drop(database);
@@ -247,17 +245,18 @@ fn create_from_file() {
 
 //-----------------------------------------------------------------------------
 
-// FIXME handle empty paths
+// TODO: handle empty paths
 #[test]
 fn get_path() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
-    let database = open_database(&db_file);
-    let mut interface = create_interface(&database);
+    let db_file = internal::create_gbz_base_from_graph(&graph, &chains);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
 
     // Check all fields except `is_indexed` for all paths. Also check that the
     // path can be found by its metadata.
@@ -310,11 +309,12 @@ fn paths_for_sample() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let chains = Chains::new();
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
-    let database = open_database(&db_file);
-    let mut interface = create_interface(&database);
+    let db_file = internal::create_gbz_base_from_graph(&graph, &chains);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
 
     // Check that we get correct paths for each existing sample name.
     let metadata = graph.metadata().unwrap();
@@ -340,9 +340,9 @@ fn paths_for_sample() {
 fn nonexistent_paths() {
     // Create and open the database and create a graph interface.
     let gbz_file = support::get_test_data("example.gbz");
-    let db_file = create_database_from_file(&gbz_file);
-    let database = open_database(&db_file);
-    let mut interface = create_interface(&database);
+    let db_file = internal::create_gbz_base_from_files(&gbz_file, None);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
 
     // Paths by handle.
     let by_handle = path_by_handle(&mut interface, database.paths());
@@ -375,27 +375,31 @@ fn visited_positions(gbwt: &GBWT, path_handle: usize) -> HashSet<Pos> {
     result
 }
 
-#[test]
-fn indexed_position() {
-    let gbz_file = support::get_test_data("example.gbz");
-    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+fn check_indexed_positions(gbz_file: &PathBuf, chains_file: Option<&PathBuf>, ref_samples: Vec<String>) {
+    let graph: GBZ = serialize::load_from(gbz_file).unwrap();
+    let chains = if let Some(chains_file) = chains_file {
+        Chains::load_from(chains_file).unwrap()
+    } else {
+        Chains::new()
+    };
 
     // Create and open the database and create a graph interface.
-    let db_file = create_database_from_graph(&graph);
-    let database = open_database(&db_file);
-    let mut interface = create_interface(&database);
+    let db_file = internal::create_gbz_base_from_graph(&graph, &chains);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
 
-    // Check that paths corresponding to `gbwt::REF_SAMPLE` have been indexed.
-    // TODO: We should have another test graph with reference paths instead of generic paths.
-    const MAX_LEN: usize = 20; // This is enough for the example.
+    // Check that paths corresponding to the reference samples have been indexed.
+    let mut offsets: Vec<usize> = (0..20).collect();
+    let past_the_end = 1000000;
+    offsets.push(past_the_end); // This is past the end in all test cases.
     let gbwt: &GBWT = graph.as_ref();
     for path_handle in 0..database.paths() {
         let path = existing_path_by_handle(&mut interface, path_handle);
         if path.is_indexed {
-            assert_eq!(path.name.sample, REF_SAMPLE, "Path {} with sample name {} is indexed", path_handle, path.name.sample);
+            assert!(ref_samples.contains(&path.name.sample), "Path {} with sample name {} is not indexed", path_handle, path.name.sample);
             let mut previous = 0;
             let visited = visited_positions(gbwt, path_handle);
-            for offset in 0..MAX_LEN {
+            for &offset in offsets.iter() {
                 let (indexed, pos) = existing_indexed_pos(&mut interface, path_handle, offset);
                 assert!(indexed <= offset, "Indexed position {} is after query position {} for path {}", indexed, offset, path_handle);
                 assert!(indexed >= previous, "Indexed position {} is before the previous position {} for path {}", indexed, previous, path_handle);
@@ -403,14 +407,14 @@ fn indexed_position() {
                 assert!(visited.contains(&pos), "Path {} does not visit indexed position ({}, {}) at offset {}", path_handle, pos.node, pos.offset, indexed);
             }
         } else {
-            assert_ne!(path.name.sample, REF_SAMPLE, "Path {} with sample name {} is not indexed", path_handle, path.name.sample);
-            let result = indexed_pos(&mut interface, path_handle, MAX_LEN);
+            assert!(!ref_samples.contains(&path.name.sample), "Path {} with sample name {} is indexed", path_handle, path.name.sample);
+            let result = indexed_pos(&mut interface, path_handle, past_the_end);
             assert!(result.is_none(), "Found indexed position for non-indeded path {}", path_handle);
             continue;
         }
     }
 
-    let nonexistent = indexed_pos(&mut interface, database.paths(), MAX_LEN);
+    let nonexistent = indexed_pos(&mut interface, database.paths(), past_the_end);
     assert!(nonexistent.is_none(), "Found indexed position for nonexistent path");
 
     drop(interface);
@@ -418,137 +422,30 @@ fn indexed_position() {
     let _ = std::fs::remove_file(&db_file);
 }
 
+#[test]
+fn index_generic_paths() {
+    let gbz_file = support::get_test_data("example.gbz");
+    let chains_file = None;
+    let ref_samples = vec![String::from(REF_SAMPLE)];
+    check_indexed_positions(&gbz_file, chains_file, ref_samples);
+}
+
+#[test]
+fn index_reference_paths() {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let chains_file = Some(utils::get_test_data("micb-kir3dl1.chains"));
+    let ref_samples = vec![String::from("GRCh38"), String::from("CHM13")];
+    check_indexed_positions(&gbz_file, chains_file.as_ref(), ref_samples);
+}
+
 //-----------------------------------------------------------------------------
 
 // Helper functions for GAF-base tests.
-
-fn create_gaf_base(gaf_part: &'static str, gbwt_part: &'static str) -> PathBuf {
-    let gaf_file = utils::get_test_data(gaf_part);
-    let gbwt_file = utils::get_test_data(gbwt_part);
-    let db_file = serialize::temp_file_name("gaf-base");
-    let params = GAFBaseParams::default();
-    let result = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
-    assert!(result.is_ok(), "Failed to create GAF-base database: {}", result.unwrap_err());
-    db_file
-}
-
-fn open_gaf_base(db_file: &Path) -> GAFBase {
-    let db = GAFBase::open(db_file);
-    assert!(db.is_ok(), "Failed to open GAF-base database: {}", db.unwrap_err());
-    // We do not check the filename, as the one reported by SQLite may differ.
-    db.unwrap()
-}
 
 fn check_gaf_base(db: &GAFBase, nodes: usize, alignments: usize, bidirectional_gbwt: bool) {
     assert_eq!(db.nodes(), nodes, "Wrong number of nodes in GAF-base database");
     assert_eq!(db.alignments(), alignments, "Wrong number of alignments in GAF-base database");
     assert_eq!(db.bidirectional_gbwt(), bidirectional_gbwt, "Wrong GBWT bidirectionality in GAF-base database");
-}
-
-fn gaf_base_gbz() -> GBZ {
-    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
-    let result = serialize::load_from(&gbz_file);
-    assert!(result.is_ok(), "Failed to load GBZ graph: {}", result.unwrap_err());
-    result.unwrap()
-}
-
-fn gaf_base_db() -> (GBZBase, PathBuf) {
-    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
-    let db_file = create_database_from_file(&gbz_file);
-    let db = open_database(&db_file);
-    (db, db_file)
-}
-
-fn gaf_base_reads(gaf_part: &'static str) -> Vec<Alignment> {
-    let gaf_file = utils::get_test_data(gaf_part);
-
-    let reader = utils::open_file(gaf_file);
-    assert!(reader.is_ok(), "Failed to open GAF file: {}", reader.err().unwrap());
-    let mut reader = reader.unwrap();
-
-    let mut result = Vec::new();
-    let mut line_num = 1;
-    loop {
-        let mut buf: Vec<u8> = Vec::new();
-        let len = reader.read_until(b'\n', &mut buf);
-        assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-        }
-        if buf.is_empty() {
-            break;
-        }
-        let aln = Alignment::from_gaf(&buf);
-        assert!(aln.is_ok(), "Failed to parse GAF line {}: {}", line_num, aln.unwrap_err());
-        result.push(aln.unwrap());
-        line_num += 1;
-    };
-
-    result
-
-}
-
-fn gaf_base_subgraph_queries() -> Vec<(SubgraphQuery, String)> {
-    vec![
-        (SubgraphQuery::nodes(vec![], 100, HaplotypeOutput::All), String::from("empty")),
-        (SubgraphQuery::nodes(vec![1000], 100, HaplotypeOutput::All), String::from("single component")),
-        (SubgraphQuery::nodes(vec![500, 1500], 100, HaplotypeOutput::All), String::from("two components")),
-    ]
-}
-
-fn validate_read_set(read_set: &ReadSet, subgraph: &Subgraph, all_reads: &[Alignment], name: &str, contained: bool) {
-    // Select the alignments that should be included in the read set.
-    let mut expected_reads = Vec::new();
-    for aln in all_reads {
-        let target_path = aln.target_path().unwrap();
-        if target_path.is_empty() {
-            continue;
-        }
-        let mut take = false;
-        for handle in target_path {
-            if subgraph.has_handle(*handle) {
-                take = true;
-            } else if contained {
-                take = false;
-                break;
-            }
-        }
-        if take {
-            let mut aln = aln.clone();
-            aln.optional.clear(); // We do not store unknown optional fields for the moment.
-            expected_reads.push(aln);
-        }
-    }
-    assert_eq!(read_set.len(), expected_reads.len(), "Wrong number of reads in read set for {}", name);
-
-    // GAF-base construction and read set extraction maintain order.
-    for (i, (aln, truth)) in read_set.iter().zip(expected_reads.iter()).enumerate() {
-        assert_eq!(aln, truth, "Wrong read {} for {}", i, name);
-    }
-
-    // Generate the expected GAF output.
-    let mut expected_gaf = Vec::new();
-    for aln in expected_reads {
-        let mut target_sequence = Vec::new();
-        let target_path = aln.target_path().unwrap();
-        for handle in target_path {
-            let record = read_set.nodes.get(handle);
-            assert!(record.is_some(), "Missing GBZ record for handle {} in {}", handle, name);
-            let record = record.unwrap();
-            target_sequence.extend_from_slice(record.sequence());
-        }
-        target_sequence = target_sequence[aln.path_interval.clone()].to_vec();
-        let gaf_line = aln.to_gaf(&target_sequence);
-        expected_gaf.extend_from_slice(&gaf_line);
-        expected_gaf.push(b'\n');
-    }
-
-    // Check the GAF output.
-    let mut gaf_output = Vec::new();
-    let result = read_set.to_gaf(&mut gaf_output);
-    assert!(result.is_ok(), "Failed to output GAF for {}: {}", name, result.unwrap_err());
-    assert_eq!(gaf_output.len(), expected_gaf.len(), "Wrong GAF output length for {}", name);
-    assert_eq!(gaf_output, expected_gaf, "Wrong GAF output for {}", name);
 }
 
 //-----------------------------------------------------------------------------
@@ -557,8 +454,8 @@ fn validate_read_set(read_set: &ReadSet, subgraph: &Subgraph, all_reads: &[Align
 
 #[test]
 fn gaf_base_empty() {
-    let db_file = create_gaf_base("empty.gaf", "empty.gbwt");
-    let db = open_gaf_base(&db_file);
+    let db_file = internal::create_gaf_base("empty.gaf", "empty.gbwt");
+    let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, 0, 0, true);
 
     drop(db);
@@ -567,8 +464,8 @@ fn gaf_base_empty() {
 
 #[test]
 fn gaf_base_plain_unidirectional() {
-    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt");
-    let db = open_gaf_base(&db_file);
+    let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt");
+    let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, 2291, 12439, false);
 
     drop(db);
@@ -577,8 +474,8 @@ fn gaf_base_plain_unidirectional() {
 
 #[test]
 fn gaf_base_plain_bidirectional() {
-    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt");
-    let db = open_gaf_base(&db_file);
+    let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt");
+    let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, 2324, 12439, true);
 
     drop(db);
@@ -587,8 +484,8 @@ fn gaf_base_plain_bidirectional() {
 
 #[test]
 fn gaf_base_gz_unidirectional() {
-    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt");
-    let db = open_gaf_base(&db_file);
+    let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt");
+    let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, 2291, 12439, false);
 
     drop(db);
@@ -597,8 +494,8 @@ fn gaf_base_gz_unidirectional() {
 
 #[test]
 fn gaf_base_gz_bidirectional() {
-    let db_file = create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "bidirectional.gbwt");
-    let db = open_gaf_base(&db_file);
+    let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "bidirectional.gbwt");
+    let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, 2324, 12439, true);
 
     drop(db);
@@ -607,96 +504,3 @@ fn gaf_base_gz_bidirectional() {
 
 //-----------------------------------------------------------------------------
 
-// Tests for ReadSet.
-
-fn test_read_set_gbz(gbwt_part: &'static str) {
-    // Load GBZ.
-    let graph = gaf_base_gbz();
-
-    // Build and open GAF-base.
-    let gaf_base_file = create_gaf_base("micb-kir3dl1_HG003.gaf", gbwt_part);
-    let gaf_base = open_gaf_base(&gaf_base_file);
-
-    // Parse the reads as a source of truth.
-    let all_reads = gaf_base_reads("micb-kir3dl1_HG003.gaf");
-
-    let queries = gaf_base_subgraph_queries();
-    for (query, name) in queries {
-        let mut subgraph = Subgraph::new();
-        let result = subgraph.from_gbz(&graph, None, &query);
-        assert!(result.is_ok(), "Failed to extract subgraph for {}: {}", name, result.unwrap_err());
-
-        let overlapping = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &gaf_base, false);
-        assert!(overlapping.is_ok(), "Failed to extract overlapping reads for {}: {}", name, overlapping.unwrap_err());
-        let overlapping = overlapping.unwrap();
-        validate_read_set(&overlapping, &subgraph, &all_reads, &name, false);
-
-        let contained = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &gaf_base, true);
-        assert!(contained.is_ok(), "Failed to extract fully contained reads for {}: {}", name, contained.unwrap_err());
-        let contained = contained.unwrap();
-        validate_read_set(&contained, &subgraph, &all_reads, &name, true);
-    }
-
-    // Cleanup.
-    drop(gaf_base);
-    let _ = std::fs::remove_file(&gaf_base_file);
-}
-
-#[test]
-fn read_set_gbz_unidirectional() {
-    test_read_set_gbz("micb-kir3dl1_HG003.gbwt");
-}
-
-#[test]
-fn read_set_gbz_bidirectional() {
-    test_read_set_gbz("bidirectional.gbwt");
-}
-
-fn test_read_set_db(gbwt_part: &'static str) {
-    // Build and open GAF-base.
-    let gaf_base_file = create_gaf_base("micb-kir3dl1_HG003.gaf", gbwt_part);
-    let gaf_base = open_gaf_base(&gaf_base_file);
-
-    // Open GBZ-base.
-    let (gbz_base, gbz_base_file) = gaf_base_db();
-    let mut graph = create_interface(&gbz_base);
-
-    // Parse the reads as a source of truth.
-    let all_reads = gaf_base_reads("micb-kir3dl1_HG003.gaf");
-
-    let queries = gaf_base_subgraph_queries();
-    for (query, name) in queries {
-        let mut subgraph = Subgraph::new();
-        let result = subgraph.from_db(&mut graph, &query);
-        assert!(result.is_ok(), "Failed to extract subgraph for {}: {}", name, result.unwrap_err());
-
-        let overlapping = ReadSet::new(GraphReference::Db(&mut graph), &subgraph, &gaf_base, false);
-        assert!(overlapping.is_ok(), "Failed to extract overlapping reads for {}: {}", name, overlapping.unwrap_err());
-        let overlapping = overlapping.unwrap();
-        validate_read_set(&overlapping, &subgraph, &all_reads, &name, false);
-
-        let contained = ReadSet::new(GraphReference::Db(&mut graph), &subgraph, &gaf_base, true);
-        assert!(contained.is_ok(), "Failed to extract fully contained reads for {}: {}", name, contained.unwrap_err());
-        let contained = contained.unwrap();
-        validate_read_set(&contained, &subgraph, &all_reads, &name, true);
-    }
-
-    // Cleanup.
-    drop(graph);
-    drop(gbz_base);
-    let _ = std::fs::remove_file(&gbz_base_file);
-    drop(gaf_base);
-    let _ = std::fs::remove_file(&gaf_base_file);
-}
-
-#[test]
-fn read_set_db_unidirectional() {
-    test_read_set_db("micb-kir3dl1_HG003.gbwt");
-}
-
-#[test]
-fn read_set_db_bidirectional() {
-    test_read_set_db("bidirectional.gbwt");
-}
-
-//-----------------------------------------------------------------------------

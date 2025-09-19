@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Instant;
 use std::{env, fs, process};
 
@@ -17,10 +18,10 @@ fn main() -> Result<(), String> {
     // Check if the database already exists.
     if utils::file_exists(&config.db_file) {
         if config.overwrite {
-            eprintln!("Overwriting database {}", config.db_file);
+            eprintln!("Overwriting database {}", config.db_file.display());
             fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;
         } else {
-            return Err(format!("Database {} already exists", config.db_file));
+            return Err(format!("Database {} already exists", config.db_file.display()));
         }
     }
 
@@ -46,9 +47,9 @@ fn main() -> Result<(), String> {
 //-----------------------------------------------------------------------------
 
 struct Config {
-    pub gaf_file: String,
-    pub gbwt_file: String,
-    pub db_file: String,
+    pub gaf_file: PathBuf,
+    pub gbwt_file: PathBuf,
+    pub db_file: PathBuf,
     pub overwrite: bool,
     pub params: GAFBaseParams,
 }
@@ -76,29 +77,30 @@ impl Config {
             }
         };
 
-        let mut db_file: Option<String> = None;
+        let mut db_file: Option<PathBuf> = None;
         if matches.opt_present("h") {
             eprint!("{}", opts.usage(&header));
             process::exit(0);
         }
         let gbwt_file = if let Some(s) = matches.opt_str("g") {
-            s.clone()
+            PathBuf::from(s)
         } else {
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
         if let Some(s) = matches.opt_str("o") {
-            db_file = Some(s);
+            db_file = Some(PathBuf::from(s));
         }
 
         let gaf_file = if let Some(s) = matches.free.first() {
-            s.clone()
+            PathBuf::from(s)
         } else {
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
         if db_file.is_none() {
-            db_file = Some(format!("{}.db", gaf_file));
+            // TODO: add_extension is still experimental
+            db_file = Some(PathBuf::from(format!("{}.db", gaf_file.display())));
         }
 
         // Parameters.
