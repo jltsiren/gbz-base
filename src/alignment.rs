@@ -937,9 +937,6 @@ impl Alignment {
     pub fn clip<'a>(&self, subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) -> Result<Vec<Alignment>, String> {
         let mut result = Vec::new();
         if self.is_unaligned() || !self.has_non_empty_target_path() || self.difference.is_empty() {
-            eprintln!("Unaligned: {}", self.is_unaligned());
-            eprintln!("Has non-empty target path: {}", self.has_non_empty_target_path());
-            eprintln!("Difference is empty: {}", self.difference.is_empty());
             return Ok(result);
         }
 

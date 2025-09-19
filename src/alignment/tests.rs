@@ -852,10 +852,16 @@ fn clip_and_check_real<'a>(alignments: &[Alignment], subgraph: &Subgraph, sequen
 
         // We have a target path, because clipping was successful.
         let target_path = aln.target_path().unwrap();
+        let mut target_offset = 0;
         let mut curr: Option<Range<usize>> = None; // Interval of `target_path` in the subgraph.
         let mut fragment_id = 0;
         for (i, &handle) in target_path.iter().enumerate() {
-            if subgraph.has_handle(handle) {
+            let node_len = sequence_len(handle).unwrap();
+            let node_is_aligned =
+                aln.path_interval.start < target_offset + node_len &&
+                target_offset < aln.path_interval.end;
+            target_offset += node_len;
+            if node_is_aligned && subgraph.has_handle(handle) {
                 if let Some(range) = curr.as_mut() {
                     range.end = i + 1;
                 } else {

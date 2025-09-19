@@ -52,7 +52,7 @@ impl Display for AlignmentOutput {
 ///
 /// ```
 /// use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
-/// use gbz_base::{GAFBase, GAFBaseParams, ReadSet, GraphReference};
+/// use gbz_base::{GAFBase, GAFBaseParams, ReadSet, AlignmentOutput, GraphReference};
 /// use gbz_base::utils;
 /// use gbwt::GBZ;
 /// use simple_sds::serialize;
@@ -79,7 +79,7 @@ impl Display for AlignmentOutput {
 /// let db = GAFBase::open(&db_file);
 /// assert!(db.is_ok());
 /// let db = db.unwrap();
-/// let read_set = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &db, true);
+/// let read_set = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &db, AlignmentOutput::Contained);
 /// assert!(read_set.is_ok());
 /// let read_set = read_set.unwrap();
 /// assert_eq!(read_set.len(), 148);
