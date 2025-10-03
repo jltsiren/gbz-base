@@ -818,7 +818,8 @@ impl Alignment {
         if mapping.seq_interval().end > self.seq_len {
             return Err(String::from("Cannot extend a fragment beyond the query sequence length"));
         }
-        if self.is_unaligned() {
+        if self.seq_interval.is_empty() {
+            // Either the first mapping or we only have deletions so far.
             self.seq_interval = mapping.seq_interval().clone();
         } else {
             if mapping.seq_interval().start != self.seq_interval.end {

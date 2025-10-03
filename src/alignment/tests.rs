@@ -931,6 +931,28 @@ fn alignment_clip_aligned() {
             Some(sequence_len.clone())
         ),
         create_alignment(
+            "starts-with-insertion",
+            5, 0,
+            vec![
+                support::encode_node(11, Orientation::Forward),
+                support::encode_node(12, Orientation::Forward),
+                support::encode_node(14, Orientation::Forward),
+            ], 0,
+            vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(3)],
+            Some(sequence_len.clone())
+        ),
+        create_alignment(
+            "starts-with-deletion",
+            1, 0,
+            vec![
+                support::encode_node(11, Orientation::Forward),
+                support::encode_node(12, Orientation::Forward),
+                support::encode_node(14, Orientation::Forward),
+            ], 0,
+            vec![Difference::Deletion(2), Difference::Match(1)],
+            Some(sequence_len.clone())
+        ),
+        create_alignment(
             "outside-subgraph",
             3, 0,
             vec![
@@ -978,6 +1000,32 @@ fn alignment_clip_aligned() {
                     support::encode_node(14, Orientation::Forward),
                 ], 0,
                 vec![Difference::Match(3)],
+                Some(sequence_len.clone())
+            ),
+        ],
+        vec![
+            create_alignment(
+                "starts-with-insertion",
+                5, 0,
+                vec![
+                    support::encode_node(11, Orientation::Forward),
+                    support::encode_node(12, Orientation::Forward),
+                    support::encode_node(14, Orientation::Forward),
+                ], 0,
+                vec![Difference::Insertion(b"AC".to_vec()), Difference::Match(3)],
+                Some(sequence_len.clone())
+            ),
+        ],
+        vec![
+            create_alignment(
+                "starts-with-deletion",
+                1, 0,
+                vec![
+                    support::encode_node(11, Orientation::Forward),
+                    support::encode_node(12, Orientation::Forward),
+                    support::encode_node(14, Orientation::Forward),
+                ], 0,
+                vec![Difference::Deletion(2), Difference::Match(1)],
                 Some(sequence_len.clone())
             ),
         ],
