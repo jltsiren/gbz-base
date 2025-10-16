@@ -726,6 +726,7 @@ impl Alignment {
         self.path = TargetPath::Path(path);
     }
 
+    // FIXME: Make this work with unaligned reads represented as insertions.
     /// Returns an iterator over the alignment as a sequence of mappings.
     ///
     /// Returns [`None`] if a valid iterator cannot be built.

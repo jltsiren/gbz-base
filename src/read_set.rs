@@ -2,13 +2,15 @@
 
 use crate::{GAFBase, GBZRecord, GraphReference, Subgraph, Alignment, AlignmentBlock};
 use crate::alignment::{Flags, TargetPath};
+use crate::utils;
 
-use gbwt::Pos;
+use gbwt::{Orientation, Pos};
 use gbwt::bwt::Record;
+use gbwt::support;
 
 use rusqlite::{Row, OptionalExtension};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::io::Write;
 use std::sync::Arc;
@@ -102,21 +104,29 @@ pub struct ReadSet {
     // Number of alignments before clipping.
     unclipped: usize,
     blocks: usize,
+    // Number of node id clusters in the subgraph.
+    clusters: usize,
 }
 
 impl ReadSet {
+    // Returns the row id from the first column.
+    fn get_row_id(row: &Row) -> Result<usize, String> {
+        let row_id: usize = row.get(0).map_err(|x| x.to_string())?;
+        Ok(row_id)
+    }
+
     // Decompresses an alignment block from a row.
     fn decompress_block(row: &Row) -> Result<Vec<Alignment>, String> {
-        let min_handle: Option<usize> = row.get(0).map_err(|x| x.to_string())?;
-        let max_handle: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
-        let alignments: usize = row.get(2).map_err(|x| x.to_string())?;
-        let read_length: Option<usize> = row.get(3).map_err(|x| x.to_string())?;
-        let gbwt_starts: Vec<u8> = row.get(4).map_err(|x| x.to_string())?;
-        let names: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
-        let quality_strings: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
-        let difference_strings: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
-        let flags: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
-        let numbers: Vec<u8> = row.get(9).map_err(|x| x.to_string())?;
+        let min_handle: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
+        let max_handle: Option<usize> = row.get(2).map_err(|x| x.to_string())?;
+        let alignments: usize = row.get(3).map_err(|x| x.to_string())?;
+        let read_length: Option<usize> = row.get(4).map_err(|x| x.to_string())?;
+        let gbwt_starts: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
+        let names: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
+        let quality_strings: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
+        let difference_strings: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
+        let flags: Vec<u8> = row.get(9).map_err(|x| x.to_string())?;
+        let numbers: Vec<u8> = row.get(10).map_err(|x| x.to_string())?;
 
         let block = AlignmentBlock {
             min_handle, max_handle, alignments, read_length,
@@ -192,6 +202,7 @@ impl ReadSet {
             reads: Vec::new(),
             unclipped: 0,
             blocks: 0,
+            clusters: 0,
         };
 
         // Build a record from the databases.
@@ -230,36 +241,52 @@ impl ReadSet {
             }
         };
 
-        // Get the reads that may overlap with the subgraph.
-        let min_handle = subgraph.min_handle();
-        let max_handle = subgraph.max_handle();
+        // Cluster the handles in the subgraph into reasonable intervals. Because node
+        // i corresponds to handles 2i and 2i+1, it is easier to work with node ids.
+        let node_ids: Vec<usize> = subgraph.node_iter().collect();
+        let clusters = utils::cluster_node_ids(node_ids);
+        let clusters: Vec<(usize, usize)> = clusters.into_iter()
+            .map(|r| (support::encode_node(*r.start(), Orientation::Forward), support::encode_node(*r.end(), Orientation::Reverse)))
+            .collect();
+        read_set.clusters = clusters.len();
+
+        // Get the reads that may overlap with the subgraph. We keep track of row ids
+        // we have encountered to avoid duplicating reads that overlap multiple clusters.
+        let mut row_ids: HashSet<usize> = HashSet::new();
         let mut get_reads = database.connection.prepare(
-            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT rowid, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
             FROM Alignments
             WHERE min_handle <= ?1 AND max_handle >= ?2"
         ).map_err(|x| x.to_string())?;
-        let mut rows = get_reads.query((max_handle, min_handle)).map_err(|x| x.to_string())?;
-        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
-            let block = Self::decompress_block(row)?;
-            for mut alignment in block {
-                read_set.set_target_path(&mut alignment, subgraph, &mut get_record, output == AlignmentOutput::Contained)?;
-                if alignment.has_target_path() {
-                    if output == AlignmentOutput::Clipped {
-                        let sequence_len = Arc::new(|handle| {
-                            let record = read_set.nodes.get(&handle)?;
-                            Some(record.sequence().len())
-                        });
-                        let clipped = alignment.clip(subgraph, sequence_len)?;
-                        for aln in clipped.into_iter() {
-                            read_set.reads.push(aln);
-                        }
-                    } else {
-                        read_set.reads.push(alignment);
-                    }
-                    read_set.unclipped += 1;
+        for (min_handle, max_handle) in clusters.into_iter() {
+            let mut rows = get_reads.query((max_handle, min_handle)).map_err(|x| x.to_string())?;
+            while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+                let row_id = Self::get_row_id(&row)?;
+                if row_ids.contains(&row_id) {
+                    continue;
                 }
+                row_ids.insert(row_id);
+                let block = Self::decompress_block(row)?;
+                for mut alignment in block {
+                    read_set.set_target_path(&mut alignment, subgraph, &mut get_record, output == AlignmentOutput::Contained)?;
+                    if alignment.has_target_path() {
+                        if output == AlignmentOutput::Clipped {
+                            let sequence_len = Arc::new(|handle| {
+                                let record = read_set.nodes.get(&handle)?;
+                                Some(record.sequence().len())
+                            });
+                            let clipped = alignment.clip(subgraph, sequence_len)?;
+                            for aln in clipped.into_iter() {
+                                read_set.reads.push(aln);
+                            }
+                        } else {
+                            read_set.reads.push(alignment);
+                        }
+                        read_set.unclipped += 1;
+                    }
+                }
+                read_set.blocks += 1;
             }
-            read_set.blocks += 1;
         }
 
         Ok(read_set)
@@ -296,6 +323,12 @@ impl ReadSet {
     #[inline]
     pub fn node_records(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Returns the number of node id clusters in the subgraph.
+    #[inline]
+    pub fn clusters(&self) -> usize {
+        self.clusters
     }
 
     /// Returns an iterator over the reads in the set.
