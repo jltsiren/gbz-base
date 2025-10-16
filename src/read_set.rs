@@ -109,6 +109,10 @@ pub struct ReadSet {
 }
 
 impl ReadSet {
+    // TODO: Should this be configurable?
+    /// Gap length threshold for clustering node ids.
+    pub const CLUSTER_GAP_THRESHOLD: usize = 1000;
+
     // Returns the row id from the first column.
     fn get_row_id(row: &Row) -> Result<usize, String> {
         let row_id: usize = row.get(0).map_err(|x| x.to_string())?;
@@ -244,7 +248,7 @@ impl ReadSet {
         // Cluster the handles in the subgraph into reasonable intervals. Because node
         // i corresponds to handles 2i and 2i+1, it is easier to work with node ids.
         let node_ids: Vec<usize> = subgraph.node_iter().collect();
-        let clusters = utils::cluster_node_ids(node_ids);
+        let clusters = utils::cluster_node_ids(node_ids, Self::CLUSTER_GAP_THRESHOLD);
         let clusters: Vec<(usize, usize)> = clusters.into_iter()
             .map(|r| (support::encode_node(*r.start(), Orientation::Forward), support::encode_node(*r.end(), Orientation::Reverse)))
             .collect();
