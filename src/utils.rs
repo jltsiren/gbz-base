@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
+use std::ops::{Range, RangeInclusive};
 use std::path::{Path, PathBuf};
 use std::io::{self, BufRead, BufReader, Read, Error, ErrorKind};
 
@@ -340,6 +341,130 @@ impl Chains {
 
 //-----------------------------------------------------------------------------
 
+#[derive(Clone, Debug)]
+struct NodeIdCluster {
+    // Inclusive range of node ids in the cluster.
+    node_id_range: RangeInclusive<usize>,
+    // Range of indices in the original node id array.
+    array_range: Range<usize>,
+    // Array offset after the largest gap.
+    largest_gap_offset: Option<usize>,
+    // Ratio of the largest gap to mean gap.
+    gap_ratio: Option<f64>,
+}
+
+impl NodeIdCluster {
+    // Returns a new cluster covering the given range in the node id array.
+    // Assumes sorted and deduplicated node ids.
+    fn new(node_ids: &[usize], array_range: Range<usize>) -> Option<Self> {
+        if node_ids.is_empty() {
+            return None;
+        }
+        if array_range.is_empty() || array_range.end > node_ids.len() {
+            return None;
+        }
+
+        let first = node_ids[array_range.start];
+        let last = node_ids[array_range.end - 1];
+        let node_id_range = first..=last;
+
+        let mut largest_gap = 0;
+        let mut largest_gap_offset = None;
+        for i in (array_range.start + 1)..array_range.end {
+            let gap = node_ids[i] - node_ids[i - 1];
+            if gap > largest_gap {
+                largest_gap = gap;
+                largest_gap_offset = Some(i);
+            }
+        }
+
+        let gap_ratio = if array_range.len() > 1 {
+            let total_gap = (node_id_range.end() - node_id_range.start()) as f64;
+            let mean_gap = total_gap / (array_range.len() - 1) as f64;
+            Some(largest_gap as f64 / mean_gap)
+        } else {
+            None
+        };
+
+        Some(Self {
+            node_id_range,
+            array_range,
+            largest_gap_offset,
+            gap_ratio,
+        })
+    }
+
+    // Splits the cluster into two at the largest gap, if any.
+    // The return values are the cluster before the gap and the cluster after the gap.
+    fn split(self, node_ids: &[usize]) -> (Option<Self>, Option<Self>) {
+        if self.largest_gap_offset.is_none() {
+            return (Some(self), None);
+        }
+
+        let offset = self.largest_gap_offset.unwrap();
+        let left = NodeIdCluster::new(node_ids, self.array_range.start..offset);
+        let right = NodeIdCluster::new(node_ids, offset..self.array_range.end);
+
+        (left, right)
+    }
+}
+
+// TODO: Is 3.0 a good threshold?
+/// Returns a set of closed ranges that cover all node identifiers in the given set.
+///
+/// Initially there is a single cluster containing all node ids.
+/// Each cluster is recursively split at the largest gap between successive identifiers.
+/// The recursion stops when the ratio of the largest gap to the mean gap is at most 3.0.
+/// This can be useful for partitioning a [`crate::Subgraph`] into multiple ranges before querying [`crate::GAFBase`].
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::utils;
+///
+/// let node_ids = vec![1, 2, 4, 6, 30, 31, 35];
+/// let clusters = utils::cluster_node_ids(node_ids);
+/// assert_eq!(clusters.len(), 2);
+/// assert_eq!(clusters[0], 1..=6);
+/// assert_eq!(clusters[1], 30..=35);
+/// ```
+pub fn cluster_node_ids(node_ids: Vec<usize>) -> Vec<RangeInclusive<usize>> {
+    let mut node_ids = node_ids;
+    node_ids.sort_unstable();
+    node_ids.dedup();
+
+    let mut stack: Vec<NodeIdCluster> = Vec::new();
+    let mut result: Vec<RangeInclusive<usize>> = Vec::new();
+    let initial = NodeIdCluster::new(&node_ids, 0..node_ids.len());
+    if initial.is_none() {
+        return result;
+    }
+    stack.push(initial.unwrap());
+
+    while !stack.is_empty() {
+        let curr = stack.pop().unwrap();
+        if let Some(ratio) = curr.gap_ratio {
+            if ratio > 3.0 {
+                let (left, right) = curr.split(&node_ids);
+                if right.is_some() {
+                    stack.push(right.unwrap());
+                }
+                if left.is_some() {
+                    stack.push(left.unwrap());
+                }
+            } else {
+                result.push(curr.node_id_range);
+            }
+        } else {
+            result.push(curr.node_id_range);
+        }
+    }
+
+    result
+}
+
+//-----------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,6 +569,49 @@ mod tests {
         for (from, to) in chains.iter() {
             check_region(&graph, &chains, from, to);
         }
+    }
+
+    fn test_cluster(node_ids: Vec<usize>, expected: Vec<RangeInclusive<usize>>, test_case: &str) {
+        let clusters = cluster_node_ids(node_ids);
+        assert_eq!(clusters.len(), expected.len(), "Wrong number of clusters for {}", test_case);
+        for (i, cluster) in clusters.iter().enumerate() {
+            assert_eq!(cluster, &expected[i], "Wrong cluster {} for {}", i, test_case);
+        }
+    }
+
+    #[test]
+    fn cluster_node_ids_test() {
+        let node_ids = Vec::new();
+        let expected = Vec::new();
+        test_cluster(node_ids, expected, "empty");
+
+        let node_ids = vec![5];
+        let expected = vec![5..=5];
+        test_cluster(node_ids, expected, "single node");
+
+        let node_ids = vec![5, 6, 7, 8, 9];
+        let expected = vec![5..=9];
+        test_cluster(node_ids, expected, "continuous nodes");
+
+        let node_ids = vec![6, 9, 7, 5, 8];
+        let expected = vec![5..=9];
+        test_cluster(node_ids, expected, "continuous nodes unsorted");
+
+        let node_ids = vec![5, 7, 9];
+        let expected = vec![5..=9];
+        test_cluster(node_ids, expected, "equal gaps");
+
+        let node_ids = vec![5, 6, 7, 20, 21, 22];
+        let expected = vec![5..=7, 20..=22];
+        test_cluster(node_ids, expected, "two clusters");
+
+        let node_ids = vec![1, 50, 52, 53, 63, 64, 200];
+        let expected = vec![1..=1, 50..=64, 200..=200];
+        test_cluster(node_ids, expected, "one cluster and outliers");
+
+        let node_ids = vec![1, 50, 52, 53, 73, 74, 200];
+        let expected = vec![1..=1, 50..=53, 73..=74, 200..=200];
+        test_cluster(node_ids, expected, "two clusters and outliers");
     }
 }
 

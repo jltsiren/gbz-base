@@ -76,13 +76,13 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
     let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.alignment_output)?;
     if config.alignment_output == AlignmentOutput::Clipped {
         eprintln!(
-            "Extracted {} fragments for {} reads in {} alignment blocks with {} node records",
-            read_set.len(), read_set.unclipped(), read_set.blocks(), read_set.node_records()
+            "Extracted {} fragments for {} reads in {} alignment blocks with {} node records in {} clusters",
+            read_set.len(), read_set.unclipped(), read_set.blocks(), read_set.node_records(), read_set.clusters()
         );
     } else {
         eprintln!(
-            "Extracted {} reads in {} alignment blocks with {} node records",
-            read_set.len(), read_set.blocks(), read_set.node_records()
+            "Extracted {} reads in {} alignment blocks with {} node records in {} clusters",
+            read_set.len(), read_set.blocks(), read_set.node_records(), read_set.clusters()
         );
     }
 
