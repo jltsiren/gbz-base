@@ -943,7 +943,7 @@ impl Alignment {
         }
 
         let mut aln: Option<Alignment> = None; // The alignment we are currently building.
-        let iter = self.iter(sequence_len).ok_or(String::from("Cannot build an alignment iterator"))?;
+        let iter = self.iter(sequence_len).ok_or(format!("Cannot build an alignment iterator for {}", self.name))?;
         for mapping in iter {
             if !subgraph.has_handle(mapping.handle()) {
                 if let Some(prev) = aln {

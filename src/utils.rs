@@ -403,6 +403,7 @@ impl NodeIdCluster {
     }
 }
 
+// TODO: If we stick to a constant threshold, we could determine the final clusters in a single pass.
 /// Returns a set of closed ranges that cover all node identifiers in the given set.
 ///
 /// Initially there is a single cluster containing all node ids.
