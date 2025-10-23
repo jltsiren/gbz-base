@@ -231,7 +231,7 @@ impl ReadSet {
             let (edges, bwt) = gaf_result.unwrap();
 
             // Get the sequence from the subgraph or from the GBZ-base.
-            let sequence = subgraph.sequence(handle);
+            let sequence = subgraph.sequence_for_handle(handle);
             let sequence = match sequence {
                 Some(seq) => seq.to_vec(),
                 None => {
