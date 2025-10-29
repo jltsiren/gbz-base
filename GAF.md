@@ -44,8 +44,9 @@ Missing values in fields 3 to 11 are indicated by character `*`.
 
 **Example:**
 ```txt
-read1   6   0   6   +   >2>3>4   12  2   8   6   6   60  cs:Z::6
-read2   7   0   7   +   >2>5>6   11  1   8   7   7   60  cs:Z::7
+read1 	6 	0 	6 	+ 	>2>3>4 	12 	2 	8 	6 	6 	60 	cs:Z::6
+read2 	7 	0 	7 	+ 	>2>5>6 	11 	1 	8 	7 	7 	60 	cs:Z::7
+read3 	7 	0 	7 	* 	* 	* 	* 	* 	* 	* 	255 	cs:Z:+GATTACA
 ```
 
 ### Query sequence name
