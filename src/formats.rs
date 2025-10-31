@@ -27,6 +27,7 @@
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
 //!
 //! GAF I/O is currently implemented in [`crate::Alignment`].
+//! [`is_gaf_header_line`] can be used to identify header lines when reading GAF files.
 
 use crate::utils;
 
@@ -267,6 +268,17 @@ impl WalkMetadata {
     pub fn add_cigar(&mut self, cigar: Option<String>) {
         self.cigar = cigar;
     }
+}
+
+//-----------------------------------------------------------------------------
+
+// TODO: Tests when we start parsing GAF headers.
+
+/// Returns `true` if the buffer contains a GAF header line.
+///
+/// A header line starts with `@`.
+pub fn is_gaf_header_line(buf: &[u8]) -> bool {
+    buf.first() == Some(&b'@')
 }
 
 //-----------------------------------------------------------------------------

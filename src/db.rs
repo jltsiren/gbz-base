@@ -1,7 +1,7 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
 use crate::{Alignment, AlignmentBlock, Chains};
-use crate::utils;
+use crate::{formats, utils};
 
 use std::io::BufRead;
 use std::path::Path;
@@ -785,7 +785,6 @@ impl GAFBase {
         let mut gaf_file = gaf_file;
         let mut connection = connection;
 
-        // TODO: optional tags
         // The primary key is the 0-based line number in the GAF file.
         // `start_node` is a foreign key to `Nodes`, but we do not enforce that for performance reasons.
         connection.execute(
@@ -939,6 +938,11 @@ impl GAFBase {
                     break;
                 },
             };
+            if formats::is_gaf_header_line(&buf) {
+                // TODO: Parse header lines.
+                line_num += 1;
+                continue;
+            }
             let aln = Alignment::from_gaf(&buf).map_err(
                 |x| format!("Failed to parse the alignment on line {}: {}", line_num, x)
             );

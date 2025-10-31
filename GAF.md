@@ -6,6 +6,7 @@ That format in turn is a superset of the [PAF format](https://github.com/lh3/min
 Sequence names and optional fields follow conventions set in the [SAM format](https://samtools.github.io/hts-specs/SAMv1.pdf).
 Difference strings are defined in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html).
 Paths are represented as [GFA](https://gfa-spec.github.io/GFA-spec/GFA1.html) walks.
+Reference graphs may have [pggname](https://github.com/jltsiren/pggname) stable names.
 
 ## Overview
 
@@ -59,7 +60,7 @@ The following optional fields are known.
 ### Reference name
 
 The graph the sequences were aligned to can be identified using a reference name line.
-A reference name line starts with tag `@RN` and contains the [pggname](https://github.com/jltsiren/pggname) of the graph as the second field.
+A reference name line starts with tag `@RN` and contains the pggname (SHA-256 hash of the canonical GFA representation) of the graph as the second field.
 There may be optional typed fields.
 There can be only one reference name line in a file.
 
@@ -78,20 +79,20 @@ Both line types may contain optional typed fields, and there may be any number o
 Each alignment line has 12 mandatory fields.
 Missing values in fields 3 to 11 are indicated by character `*`.
 
-|Field|Type  |Description|
-|----:|:----:|:----------|
-|1    |string|Query sequence name|
-|2    |int   |Query sequence length|
-|3    |int   |Query start (0-based; closed)|
-|4    |int   |Query end (0-based; open)|
-|5    |char  |Strand relative to the path; always `+`|
-|6    |string|Target path represented as a GFA walk|
-|7    |int   |Target path length|
-|8    |int   |Start position on the target path (0-based; closed)|
-|9    |int   |End position on the target path (0-based; open)|
-|10   |int   |Number of matches|
-|11   |int   |Number of matches, mismatches, insertions, and deletions|
-|12   |int   |Mapping quality (0-255; 255 for missing)|
+|Field|Type|Description|
+|----:|:--:|:----------|
+|1    |`Z` |Query sequence name|
+|2    |`i` |Query sequence length|
+|3    |`i` |Query start (0-based; closed)|
+|4    |`i` |Query end (0-based; open)|
+|5    |`A` |Strand relative to the path; always `+`|
+|6    |`Z` |Target path represented as a GFA walk|
+|7    |`i` |Target path length|
+|8    |`i` |Start position on the target path (0-based; closed)|
+|9    |`i` |End position on the target path (0-based; open)|
+|10   |`i` |Number of matches|
+|11   |`i` |Number of matches, mismatches, insertions, and deletions|
+|12   |`i` |Mapping quality (0-255; 255 for missing)|
 
 **Example:**
 ```txt

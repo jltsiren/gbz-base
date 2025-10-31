@@ -25,7 +25,7 @@ fn empty_alignment(name: &str, seq_len: usize) -> Alignment {
     result
 }
 
-// Returns the GAF lines from the given file.
+// Returns the GAF alignment lines from the given file.
 fn read_gaf_lines(filename: &PathBuf) -> Vec<Vec<u8>> {
     let reader = utils::open_file(filename);
     assert!(reader.is_ok(), "Failed to open the test file: {}", reader.err().unwrap());
@@ -37,6 +37,10 @@ fn read_gaf_lines(filename: &PathBuf) -> Vec<Vec<u8>> {
         let mut buf: Vec<u8> = Vec::new();
         let len = reader.read_until(b'\n', &mut buf);
         assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
+        if formats::is_gaf_header_line(&buf) {
+            line_num += 1;
+            continue;
+        }
         if buf.last() == Some(&b'\n') {
             buf.pop();
         }
