@@ -1,6 +1,6 @@
 # The Graph Alignment Format (GAF)
 
-This document describes the [vg](https://github.com/vgteam/vg) version of the Graph Alignment Format (GAF).
+This document describes **version 1.0** of the [vg](https://github.com/vgteam/vg) interpretation of the Graph Alignment Format (GAF).
 It is a superset of a subset of the [original GAF format](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md).
 That format in turn is a superset of the [PAF format](https://github.com/lh3/miniasm/blob/master/PAF.md).
 Sequence names and optional fields follow conventions set in the [SAM format](https://samtools.github.io/hts-specs/SAMv1.pdf).
@@ -16,11 +16,62 @@ Unless otherwise specified, all fields are restricted to 7-bit US-ASCII.
 Each file consists of a number of header lines followed by a number of alignment lines.
 Each line can be split into a number of fields separated by TAB (`\t`) characters.
 
+## Typed fields
+
+Typed fields are stored in the SAM-style `TAG:TYPE:VALUE` format.
+The tag is a two-character string matching `[A-Za-z][A-Za-z0-9]`.
+
+The following types are currently supported:
+
+|Type|Description|
+|:--:|:----------|
+|`A` |Printable character in `[!-~]`|
+|`Z` |String of printable characters and spaces (`[ !-~]*`)|
+|`i` |Signed 64-bit integer|
+|`f` |Double-precision floating point number|
+|`b` |Boolean value, with `1` for true and `0` for false|
+
 ## Header lines
 
 **NOT IMPLEMENTED**
 
-Header lines start with character `@`.
+Header lines are optional, and they must all appear before the first alignment line.
+The first field of each header line is a three-character tag matching `@[A-Za-z][A-Za-z0-9]`.
+
+**Example:**
+```txt
+@HD	VN:Z:1.0
+@RN	7f4b28c71ceb808aebd8b8e9fe85e79d0d208ee263ffe9fcdef5ade20534ceb5
+@SG	7f4b28c71ceb808aebd8b8e9fe85e79d0d208ee263ffe9fcdef5ade20534ceb5	e10f3b362d8a4273059d9aea38a78bd71913418c3f3c9a2b5ea44e86de2c1181
+@TL	e10f3b362d8a4273059d9aea38a78bd71913418c3f3c9a2b5ea44e86de2c1181	1f133f116e8dd98fc07a647a8954038c2bcf07a45759ba94718471fe34ed7a7c
+```
+
+### File headers
+
+File headers start with tag `@HD`.
+They may contain any number of optional typed fields.
+The following optional fields are known.
+
+|Tag |Type|Description|
+|:--:|:--:|:----------|
+|`VN`|`Z` |Version number (e.g. `1.0`; only one allowed in the file)|
+
+### Reference name
+
+The graph the sequences were aligned to can be identified using a reference name line.
+A reference name line starts with tag `@RN` and contains the [pggname](https://github.com/jltsiren/pggname) of the graph as the second field.
+There may be optional typed fields.
+There can be only one reference name line in a file.
+
+### Graph relationships
+
+If the sequences were aligned to graph A, which is a subgraph of B, graph B is also a valid reference for the alignments.
+If there is a known coordinate translation from graph B to graph C, graph C can also be used as a reference after translating the coordinates.
+Subgraph (`@SG`) and translation (`@TL`) lines can used to describe such relationships between reference graphs.
+
+A subgraph line contains the pggname of the subgraph as the second field and the name of the supergraph as the third field.
+A translation line contains the name of the source graph as the second field and the name of the destination graph as the third field.
+Both line types may contain optional typed fields, and there may be any number of such lines.
 
 ## Alignment lines
 
@@ -63,19 +114,8 @@ Node identifier `0` cannot be used, as many graph implementations reserve it for
 
 ### Optional fields
 
-Optional fields are stored in the SAM-style `TAG:TYPE:VALUE` format.
-The tag is a two-character string matching `/[A-Za-z][A-Za-z0-9]/`.
+Optional fields are SAM-style typed fields.
 No tag can appear more than once on the same line, and the order of the optional fields does not matter.
-
-The following types are currently supported:
-
-|Type|Description|
-|:--:|:----------|
-|`A` |Printable character in `[!-~]`|
-|`Z` |String of printable characters and spaces (`[ !-~]*`)|
-|`i` |Signed 64-bit integer|
-|`f` |Double-precision floating point number|
-|`b` |Boolean value, with `1` for true and `0` for false|
 
 ### Difference string
 
@@ -126,5 +166,5 @@ The fragments (alignment lines) correspond to non-overlapping intervals of the u
 Each fragment represents an alignment of a non-empty query interval to a non-empty interval of a non-empty target path.
 
 Query interval (fields 3 and 4), target path (fields 6 to 9), and the difference string must be specific to each fragment.
-Other fields are inherited from the underlying alignment.
+Alignment statistics (fields 10 to 12) may be inherited from the underlying alignment or be specific to each fragment.
 Fragments are identified by fragment indexes starting from `1`, stored as an optional field `fi` of type `i`.
