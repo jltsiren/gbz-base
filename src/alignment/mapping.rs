@@ -6,6 +6,7 @@ use std::ops::Range;
 
 //-----------------------------------------------------------------------------
 
+// FIXME: We need an option for an insertion without a target node.
 /// An alignment between a substring of a query sequence and a single node using a single edit operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mapping {

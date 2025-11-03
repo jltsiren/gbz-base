@@ -8,6 +8,8 @@ Difference strings are defined in the [minimap2 man page](https://lh3.github.io/
 Paths are represented as [GFA](https://gfa-spec.github.io/GFA-spec/GFA1.html) walks.
 Reference graphs may have [pggname](https://github.com/jltsiren/pggname) stable names.
 
+**This is a draft.** The final version will be hosted in the vg repository.
+
 ## Overview
 
 GAF is a tab-delimited file format for sequence alignments to bidirected sequence graphs.
@@ -34,8 +36,6 @@ The following types are currently supported:
 
 ## Header lines
 
-**NOT IMPLEMENTED**
-
 Header lines are optional, and they must all appear before the first alignment line.
 The first field of each header line is a three-character tag matching `@[A-Za-z][A-Za-z0-9]`.
 
@@ -59,12 +59,16 @@ The following optional fields are known.
 
 ### Reference name
 
+**NOT IMPLEMENTED**
+
 The graph the sequences were aligned to can be identified using a reference name line.
 A reference name line starts with tag `@RN` and contains the pggname (SHA-256 hash of the canonical GFA representation) of the graph as the second field.
 There may be optional typed fields.
 There can be only one reference name line in a file.
 
 ### Graph relationships
+
+**NOT IMPLEMENTED**
 
 If the sequences were aligned to graph A, which is a subgraph of B, graph B is also a valid reference for the alignments.
 If there is a known coordinate translation from graph B to graph C, graph C can also be used as a reference after translating the coordinates.
@@ -144,17 +148,19 @@ We support a subset of the operations defined for minimap2 difference strings.
 
 ## Conventions
 
-### Primary alignments
+### Header lines
 
-**NOT IMPLEMENTED**
+The first line of a GAF file is a file header (`@HD`) with the version number (`VZ:Z`) tag.
+Any additional file header lines follow.
+Other types of header lines are after file header lines.
+
+### Primary alignments
 
 A primary alignment represents an alignment of the entire query sequence to a non-empty interval of a target path.
 Query start (field 3) must be `0` and query end (field 4) must have the same value as query sequence length (field 2).
 A difference string must be present to allow recovering the entire query sequence.
 
 ### Unaligned sequences
-
-**NOT IMPLEMENTED**
 
 An unaligned sequence is represented as an alignment of the entire query sequence to a missing interval of a missing target path.
 Query start (field 3) must be `0` and query end (field 4) must have the same value as query sequence length (field 2).
