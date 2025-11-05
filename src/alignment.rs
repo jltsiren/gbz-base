@@ -124,7 +124,7 @@ pub mod mapping;
 /// assert!(aln.optional.is_empty());
 ///
 /// // Convert back to GAF.
-/// let _query_sequence =   b"GATTACA"; // Not used yet.
+/// let _query_sequence = b"GATTACA"; // Not used yet.
 /// let target_sequence = b"GAGATCAC".to_vec();
 /// let from_aln = aln.to_gaf(&target_sequence);
 /// assert_eq!(&from_aln, line.as_bytes());
@@ -425,7 +425,6 @@ impl Alignment {
         })
     }
 
-    // TODO: Should we take the sequence for the full target path instead?
     /// Converts the alignment to a GAF line.
     ///
     /// If the target path is stored as a GBWT starting position, it will be missing (`*`).
@@ -433,7 +432,7 @@ impl Alignment {
     /// The returned line does not end with an endline character.
     ///
     /// A target sequence is necessary for reconstructing the difference string, if present.
-    /// It must correspond only to `path_interval` of the target path.
+    /// It must correspond to the entire target path.
     pub fn to_gaf(&self, target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
 
@@ -491,6 +490,7 @@ impl Alignment {
         }
         if !self.difference.is_empty() {
             // TODO: Can we write the difference string directly?
+            let target_sequence = &target_sequence[self.path_interval.clone()];
             let field = TypedField::String([b'c', b's'], Difference::to_bytes(&self.difference, target_sequence));
             field.append_to(&mut result, true);
         }

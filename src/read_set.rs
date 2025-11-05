@@ -365,7 +365,6 @@ impl ReadSet {
                 alignment.name, sequence.len(), alignment.path_len
             ));
         }
-        sequence = sequence[alignment.path_interval.clone()].to_vec();
         Ok(sequence)
     }
 

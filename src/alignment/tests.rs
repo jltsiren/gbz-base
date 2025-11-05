@@ -137,7 +137,7 @@ fn known_good_alignments() -> Vec<Alignment> {
     // The file contains:
     // * three variants of the same alignment
     // * three additional variants that are paired
-    // * two variants of unaligned sequences
+    // * three variants of unaligned sequences
     let forward = Alignment {
         name, seq_len, seq_interval,
         path, path_len, path_interval,
@@ -204,7 +204,7 @@ fn alignment_known_good() {
         0, 2, 3, 4, 5, 6,
     ];
     let gaf_lines = read_gaf_lines(&filename);
-    let target_sequence = b"CCCCCCCCCCCCCCCCCCCCAGAAAAAAAAAAAAAAAAAAAAGATTACATGGGGGGGGGGGGGGGGGGGGTTTTTTTTTTTTTTTTTTTT".to_vec();
+    let target_sequence = b"AAAAAAAAAACCCCCCCCCCCCCCCCCCCCAGAAAAAAAAAAAAAAAAAAAAGATTACATGGGGGGGGGGGGGGGGGGGGTTTTTTTTTTTTTTTTTTTTAAAAAAAAAACCCCCCCCCC".to_vec();
     for index in round_trip {
         let line = alignments[index].to_gaf(&target_sequence);
         assert_eq!(line, gaf_lines[index], "Line {} did not survive the round trip", index + 1);

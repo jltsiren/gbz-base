@@ -74,7 +74,6 @@ fn validate_read_set(read_set: &ReadSet, subgraph: &Subgraph, all_reads: &[Align
             let record = record.unwrap();
             target_sequence.extend_from_slice(record.sequence());
         }
-        target_sequence = target_sequence[aln.path_interval.clone()].to_vec();
         let gaf_line = aln.to_gaf(&target_sequence);
         expected_gaf.extend_from_slice(&gaf_line);
         expected_gaf.push(b'\n');
