@@ -511,6 +511,47 @@ impl Alignment {
 
         result
     }
+
+    /// Validates the internal consistency of the alignment.
+    ///
+    /// Returns an error message if the alignment is inconsistent.
+    pub fn validate(&self) -> Result<(), String> {
+        // Check that intervals are valid.
+        if self.seq_interval.start > self.seq_interval.end || self.seq_interval.end > self.seq_len {
+            return Err(format!("Query sequence interval {}..{} for a sequence of length {}", self.seq_interval.start, self.seq_interval.end, self.seq_len));
+        }
+        if self.path_interval.start > self.path_interval.end || self.path_interval.end > self.path_len {
+            return Err(format!("Target path interval {}..{} for a path of length {}", self.path_interval.start, self.path_interval.end, self.path_len));
+        }
+
+        // Check that the target path is consistent with the path length and interval.
+        if let Some(path) = self.target_path() {
+            // This check also guarantees that the path interval is empty if the path is empty.
+            if path.is_empty() && self.path_len > 0 {
+                return Err(String::from("Empty target path with a non-empty path length"));
+            }
+            // TODO: We could check that the path length matches the sum of node lengths if we had access to a graph here.
+        }
+
+        // Check that interval lengths and alignment statistics match the difference string, if present.
+        if !self.difference.is_empty() {
+            let (query_len, target_len, num_matches, num_edits) = Difference::stats(&self.difference);
+            if query_len != self.seq_interval.len() {
+                return Err(format!("Query interval length {} according to the difference string, but {} in the alignment", query_len, self.seq_interval.len()));
+            }
+            if target_len != self.path_interval.len() {
+                return Err(format!("Target path interval length {} according to the difference string, but {} in the alignment", target_len, self.path_interval.len()));
+            }
+            if num_matches != self.matches {
+                return Err(format!("Number of matches {} according to the difference string, but {} in the alignment", num_matches, self.matches));
+            }
+            if num_edits != self.edits {
+                return Err(format!("Number of edits {} according to the difference string, but {} in the alignment", num_edits, self.edits));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 //-----------------------------------------------------------------------------

@@ -56,6 +56,7 @@ fn read_gaf_lines(filename: &PathBuf) -> Vec<Vec<u8>> {
 
 // Parses the alignments from the test file.
 // Returns them as a vector, unless told to expect a parse error.
+// Also validates the parsed alignments.
 fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
     let lines = read_gaf_lines(filename);
 
@@ -66,7 +67,10 @@ fn parse_alignments(filename: &PathBuf, expect_error: bool) -> Vec<Alignment> {
             assert!(alignment.is_err(), "Expected a parse error on line {}", line_num + 1);
         } else {
             assert!(alignment.is_ok(), "Failed to parse line {}: {}", line_num + 1, alignment.err().unwrap());
-            result.push(alignment.unwrap());
+            let alignment = alignment.unwrap();
+            let valid = alignment.validate();
+            assert!(valid.is_ok(), "Parsed alignment on line {} is inconsistent: {}", line_num + 1, valid.err().unwrap());
+            result.push(alignment);
         }
     }
 
