@@ -102,8 +102,7 @@ fn check_alignment(alignment: &Alignment, truth: &Alignment, line: usize, skip_r
     }
 }
 
-#[test]
-fn alignment_known_good() {
+fn known_good_alignments() -> Vec<Alignment> {
     // Construct the correct alignment object.
     let name = String::from("forward");
     let seq_len = 100;
@@ -180,8 +179,17 @@ fn alignment_known_good() {
     let empty = empty_alignment("empty", seq_len);
     let missing_values = empty_alignment("missing_values", seq_len);
 
-    // And now the actual test.
-    let truth = vec![forward, reverse, no_mapq, first, second, same, empty, missing_values];
+    let mut unaligned = empty_alignment("unaligned", 10);
+    unaligned.seq_interval = 0..10;
+    unaligned.difference.push(Difference::Insertion(b"GATTACAGAT".to_vec()));
+    unaligned.edits = 10;
+
+    vec![forward, reverse, no_mapq, first, second, same, empty, missing_values, unaligned]
+}
+
+#[test]
+fn alignment_known_good() {
+    let truth = known_good_alignments();
     let filename = utils::get_test_data("good.gaf");
     let alignments = parse_alignments(&filename, false);
     assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
@@ -191,6 +199,7 @@ fn alignment_known_good() {
 
     // These alignments will survive the round-trip from/to GAF intact.
     // 1 is on the reverse strand, while 7 has non-canonical empty fields.
+    // In 8, missing numerical fields get values from the difference string.
     let round_trip = vec![
         0, 2, 3, 4, 5, 6,
     ];
@@ -199,6 +208,18 @@ fn alignment_known_good() {
     for index in round_trip {
         let line = alignments[index].to_gaf(&target_sequence);
         assert_eq!(line, gaf_lines[index], "Line {} did not survive the round trip", index + 1);
+    }
+}
+
+#[test]
+fn alignment_known_good_no_header() {
+    // This is the same test as above, but the GAF file has no header lines.
+    let truth = known_good_alignments();
+    let filename = utils::get_test_data("no_header.gaf");
+    let alignments = parse_alignments(&filename, false);
+    assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
+    for i in 0..truth.len() {
+        check_alignment(&alignments[i], &truth[i], i + 1, false, false);
     }
 }
 
@@ -492,7 +513,8 @@ fn alignment_iter_special_cases() {
         vec![Difference::Insertion(b"GATTACA".to_vec())],
         None
     );
-    check_alignment_iter(&aln, &truth, true);
+    let truth = vec![Mapping::unaligned(0, Difference::Insertion(b"GATTACA".to_vec()))];
+    check_alignment_iter(&aln, &truth, false);
 
     let aln = create_alignment(
         "insertion-only-with-path",
@@ -501,7 +523,8 @@ fn alignment_iter_special_cases() {
         vec![Difference::Insertion(b"GATTACA".to_vec())],
         None
     );
-    check_alignment_iter(&aln, &truth, true);
+    let truth = vec![Mapping::new(0, 30, 30, 0, Difference::Insertion(b"GATTACA".to_vec()))];
+    check_alignment_iter(&aln, &truth, false);
 }
 
 #[test]

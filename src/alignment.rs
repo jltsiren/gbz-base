@@ -726,7 +726,6 @@ impl Alignment {
         self.path = TargetPath::Path(path);
     }
 
-    // FIXME: Make this work with unaligned reads represented as insertions.
     /// Returns an iterator over the alignment as a sequence of mappings.
     ///
     /// Returns [`None`] if a valid iterator cannot be built.
@@ -736,15 +735,19 @@ impl Alignment {
     /// The iterator needs a function that provides the sequence length for each node.
     /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
     pub fn iter<'a>(&'a self, sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>) -> Option<AlignmentIter<'a>> {
+        if self.difference.is_empty() {
+            if !self.seq_interval.is_empty() || !self.path_interval.is_empty() {
+                return None;
+            }
+        }
         if !self.has_target_path() {
             return None;
         }
         let target_path = self.target_path().unwrap();
-        if target_path.is_empty() != self.is_unaligned() {
-            return None;
-        }
-        if self.difference.is_empty() != self.is_unaligned() {
-            return None;
+        if target_path.is_empty() {
+            if self.path_interval.start != 0 || self.path_interval.end != 0 {
+                return None;
+            }
         }
 
         let mut iter = AlignmentIter {
@@ -757,7 +760,7 @@ impl Alignment {
             diff_vec_offset: 0,
             diff_op_offset: 0,
         };
-        if self.is_unaligned() {
+        if iter.path_node_offset == 0 {
             return Some(iter);
         }
 
@@ -1006,6 +1009,7 @@ pub struct PairedRead {
 /// This iterator assumes that the alignment is valid, and it may stop early if it is not.
 /// It requires that the alignment stores the target path explicitly and has a difference string.
 /// Insertions at node boundaries are assigned to the left.
+/// If the difference string is inconsistent with the sequence / path intervals, the difference string takes precedence.
 ///
 /// # Examples
 ///
@@ -1077,12 +1081,29 @@ impl<'a> Iterator for AlignmentIter<'a> {
         let full_edit = self.parent.difference.get(self.diff_vec_offset)?;
         let edit_left = full_edit.target_len() - self.diff_op_offset;
 
-        // Then find the target node. We may need to advance to the next node we are
+        // We may have unaligned insertions past the end of an empty target path.
+        let target_path = self.parent.target_path()?;
+        let handle = target_path.get(self.path_vec_offset);
+        if handle.is_none() {
+            match full_edit {
+                Difference::Insertion(_) => {
+                    let seq_offset = self.seq_offset;
+                    self.seq_offset += full_edit.query_len();
+                    self.diff_vec_offset += 1;
+                    self.diff_op_offset = 0;
+                    return Some(Mapping::unaligned(seq_offset, full_edit.clone()));
+                },
+                _ => {
+                    return None;
+                },
+            }
+        }
+
+        // Find the target node. We may need to advance to the next node we are
         // at the end of the node and we have an edit with non-zero target length.
         // We prefer mapping insertions to the end of a node rather than to the start
         // of the next node, as the next node may not exist.
-        let target_path = self.parent.target_path()?;
-        let mut handle = *target_path.get(self.path_vec_offset)?;
+        let mut handle = *handle.unwrap();
         let mut node_len = (*self.sequence_len)(handle)?;
         if self.path_node_offset >= node_len && edit_left > 0 {
             self.path_vec_offset += 1;

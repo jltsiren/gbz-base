@@ -6,13 +6,14 @@ use std::ops::Range;
 
 //-----------------------------------------------------------------------------
 
-// FIXME: We need an option for an insertion without a target node.
 /// An alignment between a substring of a query sequence and a single node using a single edit operation.
+///
+/// This can also represent unaligned insertions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mapping {
     // Aligned interval of the query sequence.
     seq_interval: Range<usize>,
-    // Handle of the target node.
+    // Handle of the target node, or `gbwt::ENDMARKER` for no target node.
     handle: usize,
     // Length of the target node.
     node_len: usize,
@@ -28,13 +29,31 @@ impl Mapping {
     /// # Panics
     ///
     /// Will panic if the edit extends past the end of the node.
+    /// Will panic if `handle` is [`gbwt::ENDMARKER`].
     pub fn new(seq_offset: usize, handle: usize, node_len: usize, node_offset: usize, edit: Difference) -> Self {
         assert!(node_offset + edit.target_len() <= node_len, "The edit extends past the end of the node");
+        assert!(handle != gbwt::ENDMARKER, "A mapping cannot have {} as the target handle", gbwt::ENDMARKER);
         Self {
             seq_interval: seq_offset..seq_offset + edit.query_len(),
             handle,
             node_len,
             node_interval: node_offset..node_offset + edit.target_len(),
+            edit,
+        }
+    }
+
+    /// Creates a mapping for an unaligned insertion.
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the edit is not an insertion.
+    pub fn unaligned(seq_offset: usize, edit: Difference) -> Self {
+        assert!(matches!(edit, Difference::Insertion(_)), "An unaligned mapping must have an insertion edit");
+        Self {
+            seq_interval: seq_offset..seq_offset + edit.query_len(),
+            handle: gbwt::ENDMARKER,
+            node_len: 0,
+            node_interval: 0..0,
             edit,
         }
     }
@@ -52,9 +71,17 @@ impl Mapping {
     }
 
     /// Returns the handle of the target node.
+    ///
+    /// Returns [`gbwt::ENDMARKER`] for an unaligned insertion.
     #[inline]
     pub fn handle(&self) -> usize {
         self.handle
+    }
+
+    /// Returns `true` if this mapping is an unaligned insertion.
+    #[inline]
+    pub fn is_unaligned(&self) -> bool {
+        self.handle == gbwt::ENDMARKER
     }
 
     /// Returns the length of the target node.
