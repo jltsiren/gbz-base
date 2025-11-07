@@ -635,10 +635,10 @@ fn random_nodes() {
     let max_node = support::node_id(graph.max_node());
 
     let mut selected: BTreeSet<usize> = BTreeSet::new();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let mut subgraph = Subgraph::new();
     for _ in 0..100 {
-        let node_id = rng.gen_range(min_node..=max_node);
+        let node_id = rng.random_range(min_node..=max_node);
         if !graph.has_node(node_id) {
             continue;
         }

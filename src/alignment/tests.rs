@@ -1218,9 +1218,9 @@ fn alignment_clip_real() {
     // Subgraph queries for the default context around 10 random nodes.
     let node_ids: Vec<usize> = graph.node_iter().collect();
     let mut queries = Vec::new();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for _ in 0..10 {
-        let node_id = node_ids[rng.gen_range(0..node_ids.len())];
+        let node_id = node_ids[rng.random_range(0..node_ids.len())];
         let mut query = BTreeSet::new();
         query.insert(node_id);
         queries.push(query);
