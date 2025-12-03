@@ -12,7 +12,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
 use gbwt::{FullPathName, Orientation, Pos, GBWT, GBZ};
 use gbwt::bwt::{BWT, Record};
-use gbwt::support;
+use gbwt::support::{self, Tags};
 
 use simple_sds::serialize;
 
@@ -1280,6 +1280,7 @@ impl AsRef<FullPathName> for GBZPath {
 #[derive(Debug)]
 pub struct GraphInterface<'a> {
     get_tag: Statement<'a>,
+    get_tags: Statement<'a>,
     get_record: Statement<'a>,
     get_path: Statement<'a>,
     find_path: Statement<'a>,
@@ -1294,6 +1295,10 @@ impl<'a> GraphInterface<'a> {
     pub fn new(database: &'a GBZBase) -> Result<Self, String> {
         let get_tag = database.connection.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
+        ).map_err(|x| x.to_string())?;
+
+        let get_tags = database.connection.prepare(
+            "SELECT key, value FROM Tags WHERE key LIKE ?1"
         ).map_err(|x| x.to_string())?;
 
         let get_record = database.connection.prepare(
@@ -1323,7 +1328,7 @@ impl<'a> GraphInterface<'a> {
         ).map_err(|x| x.to_string())?;
 
         Ok(GraphInterface {
-            get_tag,
+            get_tag, get_tags,
             get_record,
             get_path, find_path, paths_for_sample,
             indexed_position,
@@ -1346,6 +1351,30 @@ impl<'a> GraphInterface<'a> {
             (key,),
             |row| row.get(0)
         ).optional().map_err(|x| x.to_string())
+    }
+
+    // Returns all tags with the given prefix.
+    fn get_tags_with_prefix(&mut self, prefix: &str) -> Result<Tags, String> {
+        let mut tags = Tags::new();
+        let pattern = format!("{}%", prefix);
+        let mut rows = self.get_tags.query((pattern,)).map_err(|x| x.to_string())?;
+        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+            let key: String = row.get(0).map_err(|x| x.to_string())?;
+            let value: String = row.get(1).map_err(|x| x.to_string())?;
+            let key = key.trim_start_matches(prefix).to_string();
+            tags.insert(&key, &value);
+        }
+        Ok(tags)
+    }
+
+    /// Returns all [`GBWT`] tags.
+    pub fn get_gbwt_tags(&mut self) -> Result<Tags, String> {
+        self.get_tags_with_prefix(GBZBase::KEY_GBWT)
+    }
+
+    /// Returns all [`GBZ`] tags.
+    pub fn get_gbz_tags(&mut self) -> Result<Tags, String> {
+        self.get_tags_with_prefix(GBZBase::KEY_GBZ)
     }
 
     /// Returns the node record for the given handle, or [`None`] if the node does not exist.

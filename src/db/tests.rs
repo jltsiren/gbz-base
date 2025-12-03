@@ -70,6 +70,10 @@ fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
         assert!(tag.is_some(), "Missing GBWT tag {}", key);
         assert_eq!(tag.unwrap(), *value, "Wrong GBWT tag value for {}", key);
     }
+    let extracted_tags = interface.get_gbwt_tags();
+    assert!(extracted_tags.is_ok(), "Failed to get GBWT tags: {}", extracted_tags.unwrap_err());
+    let extracted_tags = extracted_tags.unwrap();
+    assert_eq!(extracted_tags, *gbwt.tags(), "Wrong GBWT tags from the database");
 
     // GBZ tags.
     for (key, value) in graph.tags().iter() {
@@ -79,6 +83,10 @@ fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
         assert!(tag.is_some(), "Missing GBZ tag {}", key);
         assert_eq!(tag.unwrap(), *value, "Wrong GBZ tag value for {}", key);
     }
+    let extracted_tags = interface.get_gbz_tags();
+    assert!(extracted_tags.is_ok(), "Failed to get GBZ tags: {}", extracted_tags.unwrap_err());
+    let extracted_tags = extracted_tags.unwrap();
+    assert_eq!(extracted_tags, *graph.tags(), "Wrong GBZ tags from the database");
 }
 
 fn check_nodes(interface: &mut GraphInterface, graph: &GBZ, chains: &Chains) {
