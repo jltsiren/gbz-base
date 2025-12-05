@@ -59,7 +59,7 @@ fn subgraph_statistics(subgraph: &Subgraph) {
 }
 
 fn write_subgraph(subgraph: &Subgraph, config: &Config) -> Result<(), String> {
-    let mut output = io::stdout();
+    let mut output = io::stdout().lock();
     match config.format {
         OutputFormat::Gfa => subgraph.write_gfa(&mut output, config.cigar).map_err(|x| x.to_string()),
         OutputFormat::Json => subgraph.write_json(&mut output, config.cigar).map_err(|x| x.to_string()),

@@ -1,3 +1,4 @@
+use std::io::{Write, BufWriter};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -42,19 +43,26 @@ fn write_gaf(database: &GAFBase, graph: &GBZ, config: &Config) -> Result<(), Str
 
     // Output thread.
     let output_thread = thread::spawn(move || {
-        let mut output = io::stdout();
+        let mut output = BufWriter::new(io::stdout().lock());
+        let mut status = Ok(());
         loop {
             let read_set: ReadSet = from_decoder.recv().unwrap_or(ReadSet::default());
             if read_set.is_empty() {
-                let _ = to_decoder.send(Ok(()));
                 break;
             }
             let result = read_set.to_gaf(&mut output);
             if result.is_err() {
-                let _ = to_decoder.send(result);
+                status = result;
                 break;
             }
         }
+        if status.is_ok() {
+            let result = output.flush();
+            if result.is_err() {
+                status = Err(result.unwrap_err().to_string());
+            }
+        }
+        let _ = to_decoder.send(status);
     });
 
     let mut found_alns = 0;
@@ -105,7 +113,7 @@ struct Config {
 
 impl Config {
     // Default number of blocks in a single ReadSet.
-    const CHUNK_SIZE: usize = 10;
+    const CHUNK_SIZE: usize = 100;
 
     pub fn new() -> Config {
         let args: Vec<String> = env::args().collect();
