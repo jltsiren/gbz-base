@@ -2,7 +2,7 @@
 
 ## Current version
 
-* ...
+* `db2gaf` tool for converting a GAF-base back to GAF format.
 
 ## GBZ-base 0.1.0 (2025-11-06)
 

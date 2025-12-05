@@ -507,6 +507,7 @@ pub struct GAFBase {
     version: String,
     nodes: usize,
     alignments: usize,
+    blocks: usize,
     bidirectional_gbwt: bool,
 }
 
@@ -548,12 +549,21 @@ impl GAFBase {
         let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
         let alignments = get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
         let bidirectional_gbwt = get_boolean_value(&mut get_tag, Self::KEY_BIDIRECTIONAL_GBWT)?;
-
         drop(get_tag);
+
+        // Also determine the number of rows in the Alignments table.
+        let mut count_rows = connection.prepare(
+            "SELECT COUNT(*) FROM Alignments"
+        ).map_err(|x| x.to_string())?;
+        let blocks = count_rows.query_row((), |row|
+            row.get::<_, usize>(0)
+        ).map_err(|x| x.to_string())?;
+        drop(count_rows);
+
         Ok(GAFBase {
             connection,
             version,
-            nodes, alignments, bidirectional_gbwt,
+            nodes, alignments, blocks, bidirectional_gbwt,
         })
     }
 
@@ -581,6 +591,13 @@ impl GAFBase {
     /// Returns the number of alignments in the database.
     pub fn alignments(&self) -> usize {
         self.alignments
+    }
+
+    /// Returns the number of database rows storing the alignments.
+    ///
+    /// Each row corresponds to an [`AlignmentBlock`].
+    pub fn blocks(&self) -> usize {
+        self.blocks
     }
 
     /// Returns `true` if the paths are stored in a bidirectional GBWT.

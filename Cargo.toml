@@ -1,7 +1,6 @@
 [package]
 name = "gbz-base"
 version = "0.1.0"
-authors = ["Jouni Siren <jouni.siren@iki.fi>"]
 edition = "2024"
 description = "Pangenome file formats based on SQLite"
 license = "MIT"
@@ -11,6 +10,7 @@ repository = "https://github.com/jltsiren/gbz-base"
 [dependencies]
 gbwt = { git = "https://github.com/jltsiren/gbwt-rs", branch = "main" }
 simple-sds = { git = "https://github.com/jltsiren/simple-sds", branch = "main" }
+pggname = { git = "https://github.com/jltsiren/pggname", branch = "main" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 getopts = { version = "0.2" }
 flate2 = { version = "1.0" }
@@ -28,6 +28,12 @@ doc = false
 
 [[bin]]
 name = "gaf2db"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "db2gaf"
 test = false
 bench = false
 doc = false
