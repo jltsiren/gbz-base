@@ -4,7 +4,7 @@ use crate::{GAFBase, GBZRecord, GraphReference, Subgraph, Alignment, AlignmentBl
 use crate::alignment::{Flags, TargetPath};
 use crate::utils;
 
-use gbwt::{Orientation, Pos};
+use gbwt::{Orientation, Pos, GBZ};
 use gbwt::bwt::Record;
 use gbwt::support;
 
@@ -13,6 +13,7 @@ use rusqlite::{Row, OptionalExtension};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::io::Write;
+use std::ops::Range;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -96,7 +97,7 @@ impl Display for AlignmentOutput {
 /// drop(db);
 /// let _ = std::fs::remove_file(&db_file);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReadSet {
     // GBZ records from the GAF GBWT, with sequence from the graph/subgraph.
     nodes: BTreeMap<usize, GBZRecord>,
@@ -119,19 +120,18 @@ impl ReadSet {
         Ok(row_id)
     }
 
-    // Decompresses an alignment block from a row.
-    fn decompress_block(row: &Row) -> Result<Vec<Alignment>, String> {
-        let min_handle: Option<usize> = row.get(1).map_err(|x| x.to_string())?;
-        let max_handle: Option<usize> = row.get(2).map_err(|x| x.to_string())?;
-        let alignments: usize = row.get(3).map_err(|x| x.to_string())?;
-        let read_length: Option<usize> = row.get(4).map_err(|x| x.to_string())?;
-        let gbwt_starts: Vec<u8> = row.get(5).map_err(|x| x.to_string())?;
-        let names: Vec<u8> = row.get(6).map_err(|x| x.to_string())?;
-        let quality_strings: Vec<u8> = row.get(7).map_err(|x| x.to_string())?;
-        let difference_strings: Vec<u8> = row.get(8).map_err(|x| x.to_string())?;
-        let flags: Vec<u8> = row.get(9).map_err(|x| x.to_string())?;
-        let numbers: Vec<u8> = row.get(10).map_err(|x| x.to_string())?;
-
+    // Decompresses an alignment block from a row, starting from index `from_idx`.
+    fn decompress_block(row: &Row, from_idx: usize) -> Result<Vec<Alignment>, String> {
+        let min_handle: Option<usize> = row.get(from_idx + 0).map_err(|x| x.to_string())?;
+        let max_handle: Option<usize> = row.get(from_idx + 1).map_err(|x| x.to_string())?;
+        let alignments: usize = row.get(from_idx + 2).map_err(|x| x.to_string())?;
+        let read_length: Option<usize> = row.get(from_idx + 3).map_err(|x| x.to_string())?;
+        let gbwt_starts: Vec<u8> = row.get(from_idx + 4).map_err(|x| x.to_string())?;
+        let names: Vec<u8> = row.get(from_idx + 5).map_err(|x| x.to_string())?;
+        let quality_strings: Vec<u8> = row.get(from_idx + 6).map_err(|x| x.to_string())?;
+        let difference_strings: Vec<u8> = row.get(from_idx + 7).map_err(|x| x.to_string())?;
+        let flags: Vec<u8> = row.get(from_idx + 8).map_err(|x| x.to_string())?;
+        let numbers: Vec<u8> = row.get(from_idx + 9).map_err(|x| x.to_string())?;
         let block = AlignmentBlock {
             min_handle, max_handle, alignments, read_length,
             gbwt_starts, names,
@@ -184,6 +184,38 @@ impl ReadSet {
         Ok(())
     }
 
+    // Replaces the GBWT starting position of the alignment with the path.
+    // Inserts all missing node records into the read set.
+    fn set_target_path_simple(
+        &mut self, alignment: &mut Alignment,
+        get_record: &mut dyn FnMut(usize) -> Result<GBZRecord, String>,
+    ) -> Result<(), String> {
+        let mut pos = match alignment.path {
+            TargetPath::Path(_) => return Ok(()),
+            TargetPath::StartPosition(pos) => Some(pos),
+        };
+
+        let mut path = Vec::new();
+        while let Some(p) = pos {
+            // Now get the record for the node.
+            let mut record = self.nodes.get(&p.node);
+            if record.is_none() {
+                let result = get_record(p.node)?;
+                self.nodes.insert(p.node, result);
+                record = self.nodes.get(&p.node);
+            }
+
+            // Navigate to the next position.
+            path.push(p.node);
+            let record = record.unwrap();
+            pos = record.to_gbwt_record().lf(p.offset);
+        }
+
+        // Set the target path in the alignment.
+        alignment.set_target_path(path);
+        Ok(())
+    }
+
     /// Extracts a set of reads overlapping with the subgraph.
     ///
     /// The extracted reads will be in the same order as in the database.
@@ -201,13 +233,7 @@ impl ReadSet {
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
     pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, output: AlignmentOutput) -> Result<Self, String> {
-        let mut read_set = ReadSet {
-            nodes: BTreeMap::new(),
-            reads: Vec::new(),
-            unclipped: 0,
-            blocks: 0,
-            clusters: 0,
-        };
+        let mut read_set = ReadSet::default();
 
         // Build a record from the databases.
         let mut get_node = database.connection.prepare(
@@ -270,7 +296,7 @@ impl ReadSet {
                     continue;
                 }
                 row_ids.insert(row_id);
-                let block = Self::decompress_block(row)?;
+                let block = Self::decompress_block(row, 1)?;
                 for mut alignment in block {
                     read_set.set_target_path(&mut alignment, subgraph, &mut get_record, output == AlignmentOutput::Contained)?;
                     if alignment.has_target_path() {
@@ -291,6 +317,80 @@ impl ReadSet {
                 }
                 read_set.blocks += 1;
             }
+        }
+
+        Ok(read_set)
+    }
+
+    /// Extracts all reads from the given range of row ids.
+    ///
+    /// The extracted reads will be in the same order as in the database.
+    /// That corresponds to the order in the original GAF file.
+    ///
+    /// # Arguments
+    ///
+    /// * `database`: A database storing reads aligned to the graph.
+    /// * `row_range`: The range of row ids to extract.
+    /// * `graph`: A GBZ graph.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any database errors.
+    /// Returns an error if an alignment cannot be decompressed.
+    pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: &GBZ) -> Result<Self, String> {
+        let mut read_set = ReadSet::default();
+        read_set.clusters = 1;
+
+        // Build a record from the GAF-base, with the sequence from the GBZ graph.
+        let mut get_node = database.connection.prepare(
+            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
+        ).map_err(|x| x.to_string())?;
+        let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
+            // Get the edges and the BWT fragment from the GAF-base.
+            let gaf_result = get_node.query_row(
+                (handle,),
+                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
+                    let edge_bytes: Vec<u8> = row.get(0)?;
+                    let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
+                    let bwt: Vec<u8> = row.get(1)?;
+                    Ok((edges, bwt))
+                }
+            ).optional().map_err(|x| x.to_string())?;
+            if gaf_result.is_none() {
+                return Err(format!("Could not find the record for handle {} in GAF-base", handle));
+            }
+            let (edges, bwt) = gaf_result.unwrap();
+            let sequence = graph.sequence(support::node_id(handle)).ok_or(
+                format!("Could not find the sequence for handle {} in GBZ", handle)
+            )?;
+            let sequence = if support::node_orientation(handle) == Orientation::Forward {
+                sequence.to_vec()
+            } else {
+                support::reverse_complement(sequence)
+            };
+
+            unsafe {
+                Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence, None))
+            }
+        };
+
+        // Get the reads in the given range of row ids.
+        let mut get_reads = database.connection.prepare(
+            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            FROM Alignments
+            WHERE rowid >= ?1 AND rowid < ?2"
+        ).map_err(|x| x.to_string())?;
+        let mut rows = get_reads.query((row_range.start, row_range.end)).map_err(|x| x.to_string())?;
+        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+            let block = Self::decompress_block(row, 0)?;
+            for mut alignment in block {
+                read_set.set_target_path_simple(&mut alignment, &mut get_record)?;
+                if alignment.has_target_path() {
+                    read_set.reads.push(alignment);
+                    read_set.unclipped += 1;
+                }
+            }
+            read_set.blocks += 1;
         }
 
         Ok(read_set)
