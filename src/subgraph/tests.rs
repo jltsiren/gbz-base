@@ -15,20 +15,14 @@ use std::vec;
 // Alignment.
 
 fn subgraph_from_sequences(nodes: &[(usize, Vec<u8>)]) -> Subgraph {
-    let mut records: BTreeMap<usize, GBZRecord> = BTreeMap::new();
+    let mut subgraph = Subgraph::new();
     for (handle, sequence) in nodes.iter() {
         let record = unsafe {
             GBZRecord::from_raw_parts(*handle, Vec::new(), Vec::new(), sequence.clone(), None)
         };
-        records.insert(*handle, record);
+        subgraph.records.insert(*handle, record);
     }
-    Subgraph {
-        records,
-        paths: Vec::new(),
-        ref_id: None,
-        ref_path: None,
-        ref_interval: None,
-    }
+    subgraph
 }
 
 fn create_subgraph() -> Subgraph {

@@ -132,6 +132,9 @@ pub struct Subgraph {
 
     // Interval of the reference path that is present in the subgraph, if any.
     ref_interval: Option<Range<usize>>,
+
+    // Stable graph name.
+    graph_name: Option<GraphName>,
 }
 
 //-----------------------------------------------------------------------------
@@ -837,6 +840,10 @@ impl Subgraph {
             },
         }
 
+        // Determine the stable graph name and relationships.
+        let parent = GraphName::from_tags(graph.tags()).unwrap_or_default();
+        self.compute_name(Some(&parent));
+
         Ok(())
     }
 
@@ -926,6 +933,11 @@ impl Subgraph {
                 self.extract_paths(None, query.output())?;
             },
         }
+
+        // Determine the stable graph name and relationships.
+        let parent_tags = graph.get_gbz_tags()?;
+        let parent = GraphName::from_tags(&parent_tags).unwrap_or_default();
+        self.compute_name(Some(&parent));
 
         Ok(())
     }
@@ -1209,20 +1221,6 @@ impl Subgraph {
         self.ref_id = None;
         self.ref_path = None;
         self.ref_interval = None;
-    }
-
-    // FIXME: example, tests (also for Graph::statistics)
-    /// Computes and returns the stable graph name (pggname) for the subgraph.
-    ///
-    /// If the name of the parent graph is given, this graph will be marked as its subgraph.
-    /// All other graph relationships are also copied from the parent.
-    pub fn pggname(&self, parent: Option<&GraphName>) -> GraphName {
-        let name = pggname::stable_name(self);
-        let mut result = GraphName::new(name);
-        if let Some(parent) = parent {
-            result.make_subgraph_of(parent);
-        }
-        result
     }
 }
 
@@ -1587,6 +1585,12 @@ impl Subgraph {
         // Header.
         let reference_samples = self.ref_path.as_ref().map(|path| path.sample.as_ref());
         formats::write_gfa_header(reference_samples, output)?;
+        if let Some(graph_name) = self.graph_name.as_ref() {
+            let headers = graph_name.to_gfa_header_lines();
+            for header in headers.iter() {
+                output.write_all(header.as_bytes())?;
+            }
+        }
 
         // Segments.
         for (handle, record) in self.records.iter() {
@@ -1632,6 +1636,7 @@ impl Subgraph {
         Ok(())
     }
 
+    // TODO: We cannot include graph name, as there is no header information.
     /// Writes the subgraph in the JSON format to the given output.
     ///
     /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
@@ -1721,6 +1726,37 @@ impl Subgraph {
 }
 
 //-----------------------------------------------------------------------------
+
+// FIXME: example, tests (also for Graph::statistics; Subgraph::from_gbz, Subgraph::from_db, Subgraph::write_gfa)
+/// Graph names.
+impl Subgraph {
+    /// Returns the stable graph name (pggname) for the subgraph.
+    pub fn graph_name(&self) -> Option<&GraphName> {
+        self.graph_name.as_ref()
+    }
+
+    /// Returns `true` if the subgraph has a graph name.
+    pub fn has_graph_name(&self) -> bool {
+        self.graph_name.is_some()
+    }
+
+    /// Computes and stores the stable graph name (pggname) for the subgraph.
+    ///
+    /// If the name of the parent graph is given, this graph will be marked as its subgraph.
+    /// All other graph relationships are also copied from the parent.
+    /// No effect if the subgraph already has a graph name.
+    pub fn compute_name(&mut self, parent: Option<&GraphName>) {
+        if self.has_graph_name() {
+            return;
+        }
+        let name = pggname::stable_name(self);
+        let mut result = GraphName::new(name);
+        if let Some(parent) = parent {
+            result.make_subgraph_of(parent);
+        }
+        self.graph_name = Some(result);
+    }
+}
 
 impl Graph for Subgraph {
     fn new() -> Self {

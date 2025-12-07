@@ -709,6 +709,7 @@ impl GAFBase {
         Self::insert_tags(&index, nodes, &mut connection)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
+        // FIXME: we want to read pggname from headers and include it in the tags
         // `insert_alignments` consumes the connection, as it is moved to another thread.
         let gaf_file = utils::open_file(gaf_file)?;
         Self::insert_alignments(index, gaf_file, connection, params)?;
