@@ -22,8 +22,10 @@ use std::cmp;
 
 use gbwt::ENDMARKER;
 use gbwt::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
-
 use gbwt::{algorithms, support};
+
+use pggname::{Graph, GraphName};
+use pggname::graph::NodeInt;
 
 #[cfg(test)]
 mod tests;
@@ -54,6 +56,9 @@ pub mod query;
 ///
 /// `Subgraph` implements a similar graph interface to the node/edge operations of [`GBZ`].
 /// It can also be serialized in GFA and JSON formats using [`Subgraph::write_gfa`] and [`Subgraph::write_json`].
+///
+/// [`Subgraph`] also implements [`Graph`] from the [`pggname`].
+/// That enables computing stable graph names using [`pggname::hash`].
 ///
 /// # Examples
 ///
@@ -1205,6 +1210,20 @@ impl Subgraph {
         self.ref_path = None;
         self.ref_interval = None;
     }
+
+    // FIXME: example, tests (also for Graph::statistics)
+    /// Computes and returns the stable graph name (pggname) for the subgraph.
+    ///
+    /// If the name of the parent graph is given, this graph will be marked as its subgraph.
+    /// All other graph relationships are also copied from the parent.
+    pub fn pggname(&self, parent: Option<&GraphName>) -> GraphName {
+        let name = pggname::stable_name(self);
+        let mut result = GraphName::new(name);
+        if let Some(parent) = parent {
+            result.make_subgraph_of(parent);
+        }
+        result
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -1698,6 +1717,61 @@ impl Subgraph {
         } else {
             String::from("unknown")
         }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+impl Graph for Subgraph {
+    fn new() -> Self {
+        unimplemented!();
+    }
+
+    fn add_node(&mut self, _: &[u8], _: &[u8]) -> Result<(), String> {
+        unimplemented!();
+    }
+
+    fn add_edge(&mut self, _: &[u8], _: Orientation, _: &[u8], _: Orientation) -> Result<(), String> {
+        unimplemented!();
+    }
+
+    fn finalize(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn statistics(&self) -> (usize, usize, usize) {
+        let node_count = self.nodes();
+        let mut edge_count = 0;
+        let mut seq_len = 0;
+        for (handle, record) in self.records.iter() {
+            let (from_id, from_o) = support::decode_node(*handle);
+            if from_o == Orientation::Forward {
+                seq_len += record.sequence_len();
+            }
+            for successor in record.successors() {
+                let (to_id, to_o) = support::decode_node(successor);
+                if support::edge_is_canonical((from_id, from_o), (to_id, to_o)) {
+                    edge_count += 1;
+                }
+            }
+        }
+        (node_count, edge_count, seq_len)
+    }
+
+    fn node_iter(&self) -> impl Iterator<Item=Vec<u8>> {
+        self.node_iter().map(|from_id| {
+            let sequence = self.sequence(from_id).unwrap().to_vec();
+            let mut node = NodeInt::new(Some(sequence));
+            for from_o in [Orientation::Forward, Orientation::Reverse] {
+                for (to_id, to_o) in self.successors(from_id, from_o).unwrap() {
+                    if support::edge_is_canonical((from_id, from_o), (to_id, to_o)) {
+                        node.edges.push((from_o, to_id, to_o));
+                    }
+                }
+            }
+            node.finalize();
+            node.serialize(from_id)
+        })
     }
 }
 
