@@ -986,9 +986,24 @@ fn gfa_output() {
             assert!(result.is_ok(), "Failed to write GFA for query {}: {}", query, result.unwrap_err());
             let gfa = String::from_utf8(output).unwrap();
             let lines: Vec<&str> = gfa.lines().collect();
-            assert_eq!(lines.len(), truth.len(), "Wrong number of lines in GFA output for query {}", query);
-            for (line_num, (line, truth_line)) in lines.iter().zip(truth.iter()).enumerate() {
-                assert_eq!(line, truth_line, "Wrong line {} in GFA output for query {}", line_num + 1, query);
+
+            // It would be inconvenient to include the graph name headers in the truth data.
+            // Hence we only check that the GFA output includes the same header lines as we
+            // would get from the graph name.
+            let graph_name = subgraph.graph_name().unwrap();
+            let name_headers = graph_name.to_gfa_header_lines();
+
+            assert_eq!(lines.len(), truth.len() + name_headers.len(), "Wrong number of lines in GFA output for query {}", query);
+            for (line_num, &line) in lines.iter().enumerate() {
+                if line_num == 0 {
+                    assert_eq!(line, lines[0], "Wrong GFA file header for query {}", query);
+                } else if line_num <= name_headers.len() {
+                    let header_line = &name_headers[line_num - 1];
+                    assert_eq!(line, header_line, "Wrong GFA name header line {} for query {}", line_num, query);
+                } else {
+                    let truth_line = &truth[line_num - name_headers.len()];
+                    assert_eq!(line, truth_line, "Wrong non-header line {} in GFA output for query {}", line_num, query);
+                }
             }
         }
     }

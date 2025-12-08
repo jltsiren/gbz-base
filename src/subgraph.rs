@@ -94,6 +94,10 @@ pub mod query;
 /// let result = subgraph.extract_paths(Some((path_pos, path_name)), HaplotypeOutput::All);
 /// assert!(result.is_ok());
 ///
+/// // Compute the stable name of the subgraph with no parent graph.
+/// subgraph.compute_name(None);
+/// assert!(subgraph.has_graph_name());
+///
 /// // The subgraph should be centered around 1 bp node 14 of degree 4.
 /// let nodes = [12, 13, 14, 15, 16];
 /// assert_eq!(subgraph.nodes(), nodes.len());
@@ -1589,6 +1593,7 @@ impl Subgraph {
             let headers = graph_name.to_gfa_header_lines();
             for header in headers.iter() {
                 output.write_all(header.as_bytes())?;
+                output.write_all(b"\n")?;
             }
         }
 
@@ -1727,7 +1732,7 @@ impl Subgraph {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: example, tests (also for Graph::statistics; Subgraph::from_gbz, Subgraph::from_db, Subgraph::write_gfa)
+// FIXME: tests (also for Graph::statistics; Subgraph::from_gbz, Subgraph::from_db)
 /// Graph names.
 impl Subgraph {
     /// Returns the stable graph name (pggname) for the subgraph.
