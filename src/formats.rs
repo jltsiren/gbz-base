@@ -26,13 +26,18 @@
 //! See [the specification](https://github.com/lh3/gfatools/blob/master/doc/rGFA.md) for an overview.
 //! Some details are better documented in the [minimap2 man page](https://lh3.github.io/minimap2/minimap2.html#10).
 //!
-//! GAF I/O is currently implemented in [`crate::Alignment`].
-//! [`is_gaf_header_line`] can be used to identify header lines when reading GAF files.
+//! GAF header lines can be handled with the following functions:
+//!
+//! * [`is_gaf_header_line`]: Check if a buffer contains a GAF header line.
+//! * [`peek_gaf_header_line`]: Check if the next line in a reader would be a GAF header line.
+//! * [`read_gaf_header_lines`]: Read all successive GAF header lines from a reader.
+//!
+//! I/O for GAF alignment lines is currently implemented in [`crate::Alignment`].
 
 use crate::utils;
 
 use std::fmt::Display;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::ops::Range;
 use std::str;
 
@@ -272,13 +277,43 @@ impl WalkMetadata {
 
 //-----------------------------------------------------------------------------
 
-// TODO: Tests when we start parsing GAF headers.
-
 /// Returns `true` if the buffer contains a GAF header line.
 ///
 /// A header line starts with `@`.
 pub fn is_gaf_header_line(buf: &[u8]) -> bool {
     buf.first() == Some(&b'@')
+}
+
+/// Returns `true` if the next line in the reader would be a GAF header line.
+///
+/// The reader position is not changed.
+/// Returns an I/O error if reading from the reader fails.
+/// A header line starts with `@`.
+pub fn peek_gaf_header_line<R: BufRead>(reader: &mut R) -> io::Result<bool> {
+    let buffer = reader.fill_buf()?;
+    Ok(buffer.first() == Some(&b'@'))
+}
+
+// FIXME: example, tests
+/// Returns all successive GAF header lines from the reader.
+///
+/// The returned lines do not contain the trailing newline character.
+/// The reader position is advanced past the header lines.
+/// Returns an I/O error if reading from the reader fails.
+pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<String>> {
+    let mut headers: Vec<String> = Vec::new();
+    while peek_gaf_header_line(reader)? {
+        let mut line: Vec<u8> = Vec::new();
+        let bytes_read = reader.read_until(b'\n', &mut line)?;
+        if bytes_read == 0 {
+            break;
+        }
+        if line.last() == Some(&b'\n') {
+            line.pop();
+        }
+        headers.push(String::from_utf8_lossy(&line).to_string());
+    }
+    Ok(headers)
 }
 
 //-----------------------------------------------------------------------------

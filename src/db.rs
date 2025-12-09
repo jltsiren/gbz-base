@@ -511,6 +511,7 @@ pub struct GAFBase {
     alignments: usize,
     blocks: usize,
     bidirectional_gbwt: bool,
+    tags: Tags,
 }
 
 /// Using the database.
@@ -533,6 +534,24 @@ impl GAFBase {
     /// Default block size in alignments.
     pub const BLOCK_SIZE: usize = 1000;
 
+    fn get_string_value(tags: &Tags, key: &str) -> String {
+        tags.get(key).cloned().unwrap_or_default()
+    }
+
+    fn get_numeric_value(tags: &Tags, key: &str) -> Result<usize, String> {
+        let value = Self::get_string_value(tags, key);
+        value.parse::<usize>().map_err(|x| format!("Invalid numeric value for key {}: {}", key, x))
+    }
+
+    fn get_boolean_value(tags: &Tags, key: &str) -> Result<bool, String> {
+        let value = Self::get_numeric_value(tags, key)?;
+        match value {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(format!("Invalid boolean value for key {}: {}", key, value)),
+        }
+    }
+
     /// Opens a connection to the database in the given file.
     ///
     /// Reads the header information and passes through any database errors.
@@ -540,18 +559,27 @@ impl GAFBase {
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let connection = Connection::open_with_flags(filename, flags).map_err(|x| x.to_string())?;
 
-        // Get some header information.
-        let mut get_tag = connection.prepare(
-            "SELECT value FROM Tags WHERE key = ?1"
+        // Read all tags from the database.
+        let mut get_tags = connection.prepare(
+            "SELECT key, value FROM Tags"
         ).map_err(|x| x.to_string())?;
-        let version = get_string_value(&mut get_tag, Self::KEY_VERSION)?;
+        let mut tags = Tags::new();
+        let mut rows = get_tags.query(()).map_err(|x| x.to_string())?;
+        while let Some(row) = rows.next().map_err(|x| x.to_string())? {
+            let key: String = row.get(0).map_err(|x| x.to_string())?;
+            let value: String = row.get(1).map_err(|x| x.to_string())?;
+            tags.insert(&key, &value);
+        }
+        drop(rows);
+        drop(get_tags);
+
+        let version = Self::get_string_value(&tags, Self::KEY_VERSION);
         if version != Self::VERSION {
             return Err(format!("Unsupported database version: {} (expected {})", version, Self::VERSION));
         }
-        let nodes = get_numeric_value(&mut get_tag, Self::KEY_NODES)?;
-        let alignments = get_numeric_value(&mut get_tag, Self::KEY_ALIGNMENTS)?;
-        let bidirectional_gbwt = get_boolean_value(&mut get_tag, Self::KEY_BIDIRECTIONAL_GBWT)?;
-        drop(get_tag);
+        let nodes = Self::get_numeric_value(&tags, Self::KEY_NODES)?;
+        let alignments = Self::get_numeric_value(&tags, Self::KEY_ALIGNMENTS)?;
+        let bidirectional_gbwt = Self::get_boolean_value(&tags, Self::KEY_BIDIRECTIONAL_GBWT)?;
 
         // Also determine the number of rows in the Alignments table.
         let mut count_rows = connection.prepare(
@@ -566,6 +594,7 @@ impl GAFBase {
             connection,
             version,
             nodes, alignments, blocks, bidirectional_gbwt,
+            tags,
         })
     }
 
@@ -605,6 +634,18 @@ impl GAFBase {
     /// Returns `true` if the paths are stored in a bidirectional GBWT.
     pub fn bidirectional_gbwt(&self) -> bool {
         self.bidirectional_gbwt
+    }
+
+    /// Returns all tags stored in the database.
+    pub fn tags(&self) -> &Tags {
+        &self.tags
+    }
+
+    /// Returns the stable graph name (pggname) for the graph used as the reference for the alignments.
+    ///
+    /// Returns an error if the tags cannot be parsed.
+    pub fn graph_name(&self) -> Result<GraphName, String> {
+        GraphName::from_tags(self.tags())
     }
 }
 
@@ -708,12 +749,13 @@ impl GAFBase {
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
-        Self::insert_tags(&index, nodes, &mut connection)?;
+
+        // We parse additional tags from GAF headers.
+        let mut gaf_file = utils::open_file(gaf_file)?;
+        Self::insert_tags(&index, nodes, &mut gaf_file, &mut connection)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
-        // FIXME: we want to read pggname from headers and include it in the tags
         // `insert_alignments` consumes the connection, as it is moved to another thread.
-        let gaf_file = utils::open_file(gaf_file)?;
         Self::insert_alignments(index, gaf_file, connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
@@ -725,8 +767,8 @@ impl GAFBase {
         if index.is_bidirectional() { index.sequences() / 2 } else { index.sequences() }
     }
 
-    // Returns (prefix, quality encoder).
-    fn insert_tags(index: &GBWT, nodes: usize, connection: &mut Connection) -> Result<(), String> {
+    // We also include tags parsed from GAF headers.
+    fn insert_tags(index: &GBWT, nodes: usize, gaf_file: &mut impl BufRead, connection: &mut Connection) -> Result<(), String> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -738,7 +780,12 @@ impl GAFBase {
             (),
         ).map_err(|x| x.to_string())?;
 
-        // TODO: Do we want to include GBWT tags?
+        // We currently only care about tags related to stable graph names.
+        let header_lines = formats::read_gaf_header_lines(gaf_file).map_err(|x| x.to_string())?;
+        let graph_name = GraphName::from_header_lines(&header_lines).unwrap_or_default();
+        let mut additional_tags = Tags::new();
+        graph_name.set_tags(&mut additional_tags);
+
         // Insert header and selected tags.
         let mut inserted = 0;
         let transaction = connection.transaction().map_err(|x| x.to_string())?;
@@ -754,6 +801,11 @@ impl GAFBase {
             let bidirectional: usize = if index.is_bidirectional() { 1 } else { 0 };
             insert.execute((Self::KEY_BIDIRECTIONAL_GBWT, bidirectional)).map_err(|x| x.to_string())?;
             inserted += 4;
+
+            for (key, value) in additional_tags.iter() {
+                insert.execute((key, value)).map_err(|x| x.to_string())?;
+                inserted += 1;
+            }
         }
         transaction.commit().map_err(|x| x.to_string())?;
 
@@ -959,7 +1011,7 @@ impl GAFBase {
                 },
             };
             if formats::is_gaf_header_line(&buf) {
-                // TODO: Parse header lines.
+                // We should not encounter header lines between alignment lines.
                 line_num += 1;
                 continue;
             }
@@ -1590,17 +1642,6 @@ fn get_string_value(statement: &mut Statement, key: &str) -> Result<String, Stri
 fn get_numeric_value(statement: &mut Statement, key: &str) -> Result<usize, String> {
     let value = get_string_value(statement, key)?;
     value.parse::<usize>().map_err(|x| x.to_string())
-}
-
-// Executes the statement, which is expected to return a single string value.
-// Then returns the value as a boolen flag.
-fn get_boolean_value(statement: &mut Statement, key: &str) -> Result<bool, String> {
-    let value = get_string_value(statement, key)?;
-    match value.as_str() {
-        "0" => Ok(false),
-        "1" => Ok(true),
-        _ => Err(format!("Invalid boolean value for {}: {}", key, value))
-    }
 }
 
 //-----------------------------------------------------------------------------
