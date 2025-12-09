@@ -688,7 +688,7 @@ fn random_nodes() {
     // We have a subgraph with known nodes and no paths.
     let true_nodes: Vec<usize> = selected.iter().copied().collect();
     check_subgraph(&graph, &subgraph, &true_nodes, 0, "(random nodes)");
-    let parent = Subgraph::gbz_graph_name(&graph);
+    let parent = GraphName::from_gbz(&graph);
     check_graph_name(&subgraph, false, &parent, "(random nodes)");
 }
 
@@ -704,7 +704,7 @@ fn subgraph_from_gbz() {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
         check_subgraph(&graph, &subgraph, &true_nodes, *path_count, &query.to_string());
-        let parent = Subgraph::gbz_graph_name(&graph);
+        let parent = GraphName::from_gbz(&graph);
         check_graph_name(&subgraph, true, &parent, &query.to_string());
     }
 }
@@ -800,7 +800,7 @@ fn manual_gbz_queries() {
         check_subgraph(&graph, &subgraph, &true_nodes, *path_count, &query.to_string());
 
         // With manual queries, we have to compute the name explicitly.
-        let parent = Subgraph::gbz_graph_name(&graph);
+        let parent = GraphName::from_gbz(&graph);
         check_graph_name(&subgraph, false, &parent, &query.to_string());
         subgraph.compute_name(Some(&parent));
         check_graph_name(&subgraph, true, &parent, &query.to_string());

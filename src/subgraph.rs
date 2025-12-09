@@ -845,15 +845,10 @@ impl Subgraph {
         }
 
         // Determine the stable graph name and relationships.
-        let parent = Self::gbz_graph_name(graph);
+        let parent = GraphName::from_gbz(graph);
         self.compute_name(Some(&parent));
 
         Ok(())
-    }
-
-    // TODO: This should be a GBZ method.
-    fn gbz_graph_name(graph: &GBZ) -> GraphName {
-        GraphName::from_tags(graph.tags()).unwrap_or_default()
     }
 
     /// Extracts a subgraph around the given query position.
