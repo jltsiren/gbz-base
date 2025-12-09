@@ -14,6 +14,8 @@ use gbwt::{FullPathName, Orientation, Pos, GBWT, GBZ};
 use gbwt::bwt::{BWT, Record};
 use gbwt::support::{self, Tags};
 
+use pggname::GraphName;
+
 use simple_sds::serialize;
 
 #[cfg(test)]
@@ -1393,6 +1395,15 @@ impl<'a> GraphInterface<'a> {
     /// Returns all [`GBZ`] tags.
     pub fn get_gbz_tags(&mut self) -> Result<Tags, String> {
         self.get_tags_with_prefix(GBZBase::KEY_GBZ)
+    }
+
+    /// Returns the stable graph name (pggname) for the graph.
+    ///
+    /// Passes through any database errors.
+    /// Returns an empty name if the corresponding GBZ tags cannot be parsed.
+    pub fn graph_name(&mut self) -> Result<GraphName, String> {
+        let tags = self.get_gbz_tags()?;
+        Ok(GraphName::from_tags(&tags).unwrap_or_default())
     }
 
     /// Returns the node record for the given handle, or [`None`] if the node does not exist.

@@ -3,6 +3,9 @@ use super::*;
 use crate::GBZBase;
 use crate::{formats, internal, utils};
 
+use pggname::graph::GraphInt;
+use pggname::algorithms;
+
 use simple_sds::serialize;
 
 use rand::Rng;
@@ -370,10 +373,12 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
     assert!(subgraph.handle_iter().eq(true_handles.iter().copied()), "Wrong handles for {}", test_case);
 
     // Node ids and sequences.
+    let mut expected_seq_len = 0;
     for node_id in graph.node_iter() {
         if true_nodes.contains(&node_id) {
             assert!(subgraph.has_node(node_id), "Subgraph {} does not contain node {}", test_case, node_id);
             let forward = graph.sequence(node_id).unwrap();
+            expected_seq_len += forward.len();
             let reverse = support::reverse_complement(forward);
             assert_eq!(subgraph.sequence(node_id), Some(forward), "Subgraph {} has wrong sequence for node {}", test_case, node_id);
             assert_eq!(subgraph.oriented_sequence(node_id, Orientation::Forward), Some(forward), "Subgraph {} has wrong forward sequence for node {}", test_case, node_id);
@@ -389,6 +394,7 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
     }
 
     // Edges.
+    let mut expected_edges = 0;
     for node_id in graph.node_iter() {
         for orientation in [Orientation::Forward, Orientation::Reverse] {
             if subgraph.has_node(node_id) {
@@ -397,6 +403,12 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
                 let subgraph_succ = subgraph.successors(node_id, orientation);
                 assert!(subgraph_succ.is_some(), "Subgraph {} does not contain successors for node {} ({})", test_case, node_id, orientation);
                 let subgraph_succ = subgraph_succ.unwrap();
+                let copy = subgraph_succ.clone();
+                for (to_id, to_o) in copy {
+                    if support::edge_is_canonical((node_id, orientation), (to_id, to_o)) {
+                        expected_edges += 1;
+                    }
+                }
                 assert!(graph_succ.filter(|(id, _)| subgraph.has_node(*id)).eq(subgraph_succ), "Subgraph {} has wrong successors for node {} ({})", test_case, node_id, orientation);
 
                 // Supergraph successors.
@@ -425,6 +437,31 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
             }
         }
     }
+
+    // Statistics from Graph.
+    let (node_count, edge_count, seq_len) = subgraph.statistics();
+    assert_eq!(node_count, true_nodes.len(), "Wrong node count in statistics for {}", test_case);
+    assert_eq!(edge_count, expected_edges, "Wrong edge count in statistics for {}", test_case);
+    assert_eq!(seq_len, expected_seq_len, "Wrong sequence length in statistics for {}", test_case);
+}
+
+fn check_graph_name(subgraph: &Subgraph, should_have_name: bool, parent: &GraphName, test_case: &str) {
+    if !should_have_name {
+        assert!(!subgraph.has_graph_name(), "Subgraph {} should not have GraphName", test_case);
+        assert!(subgraph.graph_name().is_none(), "GraphName should not be set for subgraph {}", test_case);
+        return;
+    }
+
+    assert!(subgraph.has_graph_name(), "Subgraph {} should have GraphName", test_case);
+    let graph_name = subgraph.graph_name();
+    assert!(graph_name.is_some(), "GraphName should be set for subgraph {}", test_case);
+    let graph_name = graph_name.unwrap();
+    let name = graph_name.name();
+    assert!(name.is_some(), "Subgraph {} name should be set", test_case);
+
+    let mut copy = graph_name.clone();
+    copy.make_subgraph_of(parent);
+    assert_eq!(&copy, graph_name, "Wrong GraphName for subgraph {}", test_case);
 }
 
 //-----------------------------------------------------------------------------
@@ -651,6 +688,8 @@ fn random_nodes() {
     // We have a subgraph with known nodes and no paths.
     let true_nodes: Vec<usize> = selected.iter().copied().collect();
     check_subgraph(&graph, &subgraph, &true_nodes, 0, "(random nodes)");
+    let parent = Subgraph::gbz_graph_name(&graph);
+    check_graph_name(&subgraph, false, &parent, "(random nodes)");
 }
 
 #[test]
@@ -665,6 +704,8 @@ fn subgraph_from_gbz() {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
         check_subgraph(&graph, &subgraph, &true_nodes, *path_count, &query.to_string());
+        let parent = Subgraph::gbz_graph_name(&graph);
+        check_graph_name(&subgraph, true, &parent, &query.to_string());
     }
 }
 
@@ -687,6 +728,8 @@ fn subgraph_from_db() {
             panic!("Failed to create subgraph for query {}: {}", query, err);
         }
         check_subgraph(&gbz_graph, &subgraph, &true_nodes, *path_count, &query.to_string());
+        let parent = graph.graph_name().unwrap();
+        check_graph_name(&subgraph, true, &parent, &query.to_string());
     }
 
     drop(graph);
@@ -755,6 +798,12 @@ fn manual_gbz_queries() {
             panic!("Path extraction for query {} failed: {}", query, err);
         }
         check_subgraph(&graph, &subgraph, &true_nodes, *path_count, &query.to_string());
+
+        // With manual queries, we have to compute the name explicitly.
+        let parent = Subgraph::gbz_graph_name(&graph);
+        check_graph_name(&subgraph, false, &parent, &query.to_string());
+        subgraph.compute_name(Some(&parent));
+        check_graph_name(&subgraph, true, &parent, &query.to_string());
     }
 }
 
@@ -826,6 +875,12 @@ fn manual_db_queries() {
             panic!("Path extraction for query {} failed: {}", query, err);
         }
         check_subgraph(&gbz_graph, &subgraph, &true_nodes, *path_count, &query.to_string());
+
+        // With manual queries, we have to compute the name explicitly.
+        let parent = graph.graph_name().unwrap();
+        check_graph_name(&subgraph, false, &parent, &query.to_string());
+        subgraph.compute_name(Some(&parent));
+        check_graph_name(&subgraph, true, &parent, &query.to_string());
     }
 
     drop(graph);
@@ -1005,6 +1060,15 @@ fn gfa_output() {
                     assert_eq!(line, truth_line, "Wrong non-header line {} in GFA output for query {}", line_num, query);
                 }
             }
+
+            // This is an indirect test for Graph::node_iter() in Subgraph. We use it for
+            // computing the graph name for the subgraph. Here we compare the name to the
+            // one computed from the GFA output using the reference implementation.
+            let from_gfa = algorithms::parse_gfa::<GraphInt, _>(gfa.as_bytes());
+            assert!(from_gfa.is_ok(), "Failed to parse GFA output for query {}: {}", query, from_gfa.unwrap_err());
+            let from_gfa = from_gfa.unwrap();
+            let true_name = algorithms::stable_name(&from_gfa);
+            assert_eq!(graph_name.name(), Some(&true_name), "Wrong graph name in GFA output for query {}", query);
         }
     }
 }

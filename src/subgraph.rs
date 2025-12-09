@@ -845,10 +845,15 @@ impl Subgraph {
         }
 
         // Determine the stable graph name and relationships.
-        let parent = GraphName::from_tags(graph.tags()).unwrap_or_default();
+        let parent = Self::gbz_graph_name(graph);
         self.compute_name(Some(&parent));
 
         Ok(())
+    }
+
+    // TODO: This should be a GBZ method.
+    fn gbz_graph_name(graph: &GBZ) -> GraphName {
+        GraphName::from_tags(graph.tags()).unwrap_or_default()
     }
 
     /// Extracts a subgraph around the given query position.
@@ -939,8 +944,7 @@ impl Subgraph {
         }
 
         // Determine the stable graph name and relationships.
-        let parent_tags = graph.get_gbz_tags()?;
-        let parent = GraphName::from_tags(&parent_tags).unwrap_or_default();
+        let parent = graph.graph_name()?;
         self.compute_name(Some(&parent));
 
         Ok(())
@@ -1732,7 +1736,6 @@ impl Subgraph {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: tests (also for Graph::statistics; Subgraph::from_gbz, Subgraph::from_db)
 /// Graph names.
 impl Subgraph {
     /// Returns the stable graph name (pggname) for the subgraph.
@@ -1791,7 +1794,7 @@ impl Graph for Subgraph {
             }
             for successor in record.successors() {
                 let (to_id, to_o) = support::decode_node(successor);
-                if support::edge_is_canonical((from_id, from_o), (to_id, to_o)) {
+                if self.has_node(to_id) && support::edge_is_canonical((from_id, from_o), (to_id, to_o)) {
                     edge_count += 1;
                 }
             }
