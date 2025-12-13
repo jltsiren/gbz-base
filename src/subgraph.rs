@@ -22,8 +22,10 @@ use std::cmp;
 
 use gbwt::ENDMARKER;
 use gbwt::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
-
 use gbwt::{algorithms, support};
+
+use pggname::{Graph, GraphName};
+use pggname::graph::NodeInt;
 
 #[cfg(test)]
 mod tests;
@@ -54,6 +56,9 @@ pub mod query;
 ///
 /// `Subgraph` implements a similar graph interface to the node/edge operations of [`GBZ`].
 /// It can also be serialized in GFA and JSON formats using [`Subgraph::write_gfa`] and [`Subgraph::write_json`].
+///
+/// [`Subgraph`] also implements [`Graph`] from the [`pggname`].
+/// That enables computing stable graph names using [`pggname::stable_name`].
 ///
 /// # Examples
 ///
@@ -88,6 +93,10 @@ pub mod query;
 /// // Extract all paths in the subgraph.
 /// let result = subgraph.extract_paths(Some((path_pos, path_name)), HaplotypeOutput::All);
 /// assert!(result.is_ok());
+///
+/// // Compute the stable name of the subgraph with no parent graph.
+/// subgraph.compute_name(None);
+/// assert!(subgraph.has_graph_name());
 ///
 /// // The subgraph should be centered around 1 bp node 14 of degree 4.
 /// let nodes = [12, 13, 14, 15, 16];
@@ -127,6 +136,9 @@ pub struct Subgraph {
 
     // Interval of the reference path that is present in the subgraph, if any.
     ref_interval: Option<Range<usize>>,
+
+    // Stable graph name.
+    graph_name: Option<GraphName>,
 }
 
 //-----------------------------------------------------------------------------
@@ -832,6 +844,10 @@ impl Subgraph {
             },
         }
 
+        // Determine the stable graph name and relationships.
+        let parent = GraphName::from_gbz(graph);
+        self.compute_name(Some(&parent));
+
         Ok(())
     }
 
@@ -921,6 +937,10 @@ impl Subgraph {
                 self.extract_paths(None, query.output())?;
             },
         }
+
+        // Determine the stable graph name and relationships.
+        let parent = graph.graph_name()?;
+        self.compute_name(Some(&parent));
 
         Ok(())
     }
@@ -1563,11 +1583,16 @@ impl Subgraph {
 impl Subgraph {
     /// Writes the subgraph in the GFA format to the given output.
     ///
+    /// The output is a full GFA file, including the header.
     /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
     pub fn write_gfa<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Header.
         let reference_samples = self.ref_path.as_ref().map(|path| path.sample.as_ref());
         formats::write_gfa_header(reference_samples, output)?;
+        if let Some(graph_name) = self.graph_name.as_ref() {
+            let header_lines = graph_name.to_gfa_header_lines();
+            formats::write_header_lines(&header_lines, output)?;
+        }
 
         // Segments.
         for (handle, record) in self.records.iter() {
@@ -1613,6 +1638,7 @@ impl Subgraph {
         Ok(())
     }
 
+    // TODO: We cannot include graph name, as there is no header information.
     /// Writes the subgraph in the JSON format to the given output.
     ///
     /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
@@ -1698,6 +1724,91 @@ impl Subgraph {
         } else {
             String::from("unknown")
         }
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+/// Graph names.
+impl Subgraph {
+    /// Returns the stable graph name (pggname) for the subgraph.
+    pub fn graph_name(&self) -> Option<&GraphName> {
+        self.graph_name.as_ref()
+    }
+
+    /// Returns `true` if the subgraph has a graph name.
+    pub fn has_graph_name(&self) -> bool {
+        self.graph_name.is_some()
+    }
+
+    /// Computes and stores the stable graph name (pggname) for the subgraph.
+    ///
+    /// If the name of the parent graph is given, this graph will be marked as its subgraph.
+    /// All other graph relationships are also copied from the parent.
+    /// No effect if the subgraph already has a graph name.
+    pub fn compute_name(&mut self, parent: Option<&GraphName>) {
+        if self.has_graph_name() {
+            return;
+        }
+        let name = pggname::stable_name(self);
+        let mut result = GraphName::new(name);
+        if let Some(parent) = parent {
+            result.make_subgraph_of(parent);
+        }
+        self.graph_name = Some(result);
+    }
+}
+
+impl Graph for Subgraph {
+    fn new() -> Self {
+        unimplemented!();
+    }
+
+    fn add_node(&mut self, _: &[u8], _: &[u8]) -> Result<(), String> {
+        unimplemented!();
+    }
+
+    fn add_edge(&mut self, _: &[u8], _: Orientation, _: &[u8], _: Orientation) -> Result<(), String> {
+        unimplemented!();
+    }
+
+    fn finalize(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn statistics(&self) -> (usize, usize, usize) {
+        let node_count = self.nodes();
+        let mut edge_count = 0;
+        let mut seq_len = 0;
+        for (handle, record) in self.records.iter() {
+            let (from_id, from_o) = support::decode_node(*handle);
+            if from_o == Orientation::Forward {
+                seq_len += record.sequence_len();
+            }
+            for successor in record.successors() {
+                let (to_id, to_o) = support::decode_node(successor);
+                if self.has_node(to_id) && support::edge_is_canonical((from_id, from_o), (to_id, to_o)) {
+                    edge_count += 1;
+                }
+            }
+        }
+        (node_count, edge_count, seq_len)
+    }
+
+    fn node_iter(&self) -> impl Iterator<Item=Vec<u8>> {
+        self.node_iter().map(|from_id| {
+            let sequence = self.sequence(from_id).unwrap().to_vec();
+            let mut node = NodeInt::new(Some(sequence));
+            for from_o in [Orientation::Forward, Orientation::Reverse] {
+                for (to_id, to_o) in self.successors(from_id, from_o).unwrap() {
+                    if support::edge_is_canonical((from_id, from_o), (to_id, to_o)) {
+                        node.edges.push((from_o, to_id, to_o));
+                    }
+                }
+            }
+            node.finalize();
+            node.serialize(from_id)
+        })
     }
 }
 

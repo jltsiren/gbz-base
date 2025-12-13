@@ -457,6 +457,18 @@ fn check_gaf_base(db: &GAFBase, nodes: usize, alignments: usize, rows: usize, bi
     assert_eq!(db.bidirectional_gbwt(), bidirectional_gbwt, "Wrong GBWT bidirectionality in GAF-base database");
 }
 
+fn check_gaf_base_tags(db: &GAFBase, name_tags: usize) {
+    let tags = db.tags();
+    let expected_tags = 4 + name_tags; // version, nodes, alignments, bidirectional
+    assert_eq!(tags.len(), expected_tags, "Wrong number of tags in GAF-base database");
+    if name_tags > 0 {
+        let graph_name = GraphName::from_tags(&tags);
+        assert!(graph_name.is_ok(), "Failed to parse GraphName from GAF-base tags: {}", graph_name.unwrap_err());
+        let graph_name = graph_name.unwrap();
+        assert!(graph_name.name().is_some(), "Missing graph name in GAF-base tags");
+    }
+}
+
 //-----------------------------------------------------------------------------
 
 // Tests for GAF-base.
@@ -471,6 +483,7 @@ fn gaf_base_empty() {
     let db_file = internal::create_gaf_base("empty.gaf", "empty.gbwt");
     let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, 0, 0, 0, true);
+    check_gaf_base_tags(&db, 0);
 
     drop(db);
     let _ = std::fs::remove_file(&db_file);
@@ -481,6 +494,7 @@ fn gaf_base_plain_unidirectional() {
     let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt");
     let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
 
     drop(db);
     let _ = std::fs::remove_file(&db_file);
@@ -491,6 +505,7 @@ fn gaf_base_plain_bidirectional() {
     let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt");
     let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, BIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, true);
+    check_gaf_base_tags(&db, 1);
 
     drop(db);
     let _ = std::fs::remove_file(&db_file);
@@ -501,6 +516,7 @@ fn gaf_base_gz_unidirectional() {
     let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt");
     let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
 
     drop(db);
     let _ = std::fs::remove_file(&db_file);
@@ -511,6 +527,7 @@ fn gaf_base_gz_bidirectional() {
     let db_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf.gz", "bidirectional.gbwt");
     let db = internal::open_gaf_base(&db_file);
     check_gaf_base(&db, BIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, true);
+    check_gaf_base_tags(&db, 1);
 
     drop(db);
     let _ = std::fs::remove_file(&db_file);

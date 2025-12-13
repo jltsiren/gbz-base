@@ -1294,7 +1294,7 @@ impl AsRef<[u8]> for Flags {
 ///
 /// ```
 /// use gbz_base::{Alignment, AlignmentBlock};
-/// use gbz_base::utils;
+/// use gbz_base::{formats, utils};
 /// use gbwt::GBWT;
 /// use gbwt::support;
 /// use simple_sds::serialize;
@@ -1303,9 +1303,15 @@ impl AsRef<[u8]> for Flags {
 /// let gbwt_filename = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
 /// let index: GBWT = serialize::load_from(&gbwt_filename).unwrap();
 ///
-/// // Read the some lines from the GAF file.
+/// // Open a GAF file and skip the header.
 /// let gaf_filename = utils::get_test_data("micb-kir3dl1_HG003.gaf");
 /// let mut gaf_file = utils::open_file(&gaf_filename).unwrap();
+/// while formats::peek_gaf_header_line(&mut gaf_file).unwrap() {
+///    let mut buf: Vec<u8> = Vec::new();
+///    let _ = gaf_file.read_until(b'\n', &mut buf).unwrap();
+/// }
+///
+/// // Read some alignments from the GAF file.
 /// let mut alignments = Vec::new();
 /// for _ in 0..10 {
 ///     let mut buf: Vec<u8> = Vec::new();

@@ -7,6 +7,9 @@ use std::{env, io, process, thread};
 use gbwt::GBZ;
 
 use gbz_base::{GAFBase, ReadSet};
+use gbz_base::{formats, utils};
+
+use pggname::GraphName;
 
 use simple_sds::serialize;
 
@@ -22,8 +25,18 @@ fn main() -> Result<(), String> {
     // Inputs.
     let database = GAFBase::open(&config.gaf_base_file)?;
     let graph: GBZ = serialize::load_from(&config.gbz_file).map_err(|x| x.to_string())?;
-    
-    write_gaf(&database, &graph, &config)?;
+
+    // Check that the inputs are compatible.
+    let reference = GraphName::from_gbz(&graph);
+    let alignments = database.graph_name()?;
+    let result = utils::require_valid_reference(&alignments, &reference);
+    if let Err(e) = result {
+        // Print the error manually, as it contains multiple lines.
+        eprint!("Error: {}", e);
+        process::exit(1);
+    }
+
+    write_gaf(&database, &alignments, &graph, &config)?;
 
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
@@ -34,33 +47,34 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
-fn write_gaf(database: &GAFBase, graph: &GBZ, config: &Config) -> Result<(), String> {
+fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: &GBZ, config: &Config) -> Result<(), String> {
     // Decoded ReadSets, with an empty ReadSet signaling the end of input.
     let (to_output, from_decoder) = mpsc::sync_channel(4);
 
     // Status of the output thread as Result<(), String>.
     let (to_decoder, from_output) = mpsc::sync_channel(1);
 
+    // Determine header lines first and pass them to the output thread.
+    let header_lines = alignments.to_gaf_header_lines();
+
     // Output thread.
     let output_thread = thread::spawn(move || {
         let mut output = BufWriter::new(io::stdout().lock());
-        let mut status = Ok(());
-        loop {
+        let mut status = formats::write_gaf_file_header(&mut output)
+            .map_err(|e| e.to_string());
+        if status.is_ok() {
+            status = formats::write_header_lines(&header_lines, &mut output)
+                .map_err(|e| e.to_string());
+        }
+        while status.is_ok() {
             let read_set: ReadSet = from_decoder.recv().unwrap_or(ReadSet::default());
             if read_set.is_empty() {
                 break;
             }
-            let result = read_set.to_gaf(&mut output);
-            if result.is_err() {
-                status = result;
-                break;
-            }
+            status = read_set.to_gaf(&mut output);
         }
         if status.is_ok() {
-            let result = output.flush();
-            if result.is_err() {
-                status = Err(result.unwrap_err().to_string());
-            }
+            status = output.flush().map_err(|e| e.to_string());
         }
         let _ = to_decoder.send(status);
     });

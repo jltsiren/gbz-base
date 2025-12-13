@@ -1,6 +1,7 @@
 use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Chains};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
 use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
+use gbz_base::{formats, utils};
 
 use gbwt::{FullPathName, Orientation, GBZ, REF_SAMPLE};
 use gbwt::support;
@@ -71,8 +72,20 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
         return Ok(());
     }
 
+    // Open the database and check that it is compatible with the graph.
     let gaf_base_file = config.gaf_base.as_ref().unwrap();
     let gaf_base = GAFBase::open(gaf_base_file)?;
+    let mut graph = graph;
+    let reference = graph.graph_name()?;
+    let alignments = gaf_base.graph_name()?;
+    let result = utils::require_valid_reference(&alignments, &reference);
+    if let Err(e) = result {
+        // Print the error manually, as it contains multiple lines.
+        eprint!("Error: {}", e);
+        process::exit(1);
+    }
+
+    // Extract the reads.
     let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.alignment_output)?;
     if config.alignment_output == AlignmentOutput::Clipped {
         eprintln!(
@@ -90,6 +103,16 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     let mut gaf_output = options.open(gaf_output_file).map_err(|x| x.to_string())?;
+    formats::write_gaf_file_header(&mut gaf_output).map_err(
+        |x| format!("Failed to write GAF header to {}: {}", gaf_output_file, x)
+    )?;
+    let graph_name = subgraph.graph_name();
+    if let Some(name) = graph_name {
+        let header_lines = name.to_gaf_header_lines();
+        formats::write_header_lines(&header_lines, &mut gaf_output).map_err(
+            |x| format!("Failed to write GAF header lines to {}: {}", gaf_output_file, x)
+        )?;
+    }
     read_set.to_gaf(&mut gaf_output).map_err(
         |x| format!("Failed to write GAF to {}: {}", gaf_output_file, x)
     )

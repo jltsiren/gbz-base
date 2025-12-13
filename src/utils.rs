@@ -9,6 +9,7 @@ use std::io::{self, BufRead, BufReader, Read, Error, ErrorKind};
 use flate2::read::MultiGzDecoder;
 
 use gbwt::{support, Orientation};
+use pggname::GraphName;
 use simple_sds::int_vector::IntVector;
 use simple_sds::ops::{Vector, Access};
 use simple_sds::serialize::Serialize;
@@ -185,6 +186,24 @@ pub fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
 /// Returns the length of the encoding for a sequence of the given length.
 pub fn encoded_length(sequence_length: usize) -> usize {
     (sequence_length + 2) / 3
+}
+
+//-----------------------------------------------------------------------------
+
+/// Returns an error if the given graph is not a valid reference for the given alignments.
+///
+/// The comparison is based on the provided [`GraphName`] objects.
+/// If either graph name is missing, no error is returned.
+/// Otherwise the graph name for the alignments must be a subgraph of the reference graph.
+pub fn require_valid_reference(alignments: &GraphName, reference: &GraphName) -> Result<(), String> {
+    if !alignments.has_name() || !reference.has_name() {
+        return Ok(());
+    }
+    if !alignments.is_subgraph_of(reference) {
+        let description = alignments.describe_relationship(reference, "alignments", "reference graph");
+        return Err(format!("The graph is not a valid reference for the alignments:\n{}", description));
+    }
+    Ok(())
 }
 
 //-----------------------------------------------------------------------------

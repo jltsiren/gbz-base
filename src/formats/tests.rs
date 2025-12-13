@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::utils;
+
 use gbwt::Metadata;
 
 use simple_sds::serialize;
@@ -431,6 +433,41 @@ fn write_json_path() {
         let result = json_value.to_string();
         let correct = "{\"name\": \"GRCh38#0#chr13[1000-1123]\", \"weight\": 42, \"cigar\": \"10M2D5M\", \"path\": [{\"id\": \"21\", \"is_reverse\": false}, {\"id\": \"22\", \"is_reverse\": true}, {\"id\": \"23\", \"is_reverse\": false}]}";
         assert_eq!(result, correct, "Wrong JSON for a path with weight and a CIGAR string");
+    }
+}
+
+//-----------------------------------------------------------------------------
+
+// Tests for GAF reading.
+
+#[test]
+fn gaf_headers() {
+    // Filename and expected number of header lines.
+    let test_cases = vec![
+        ("empty.gaf", 0),
+        ("good.gaf", 2),
+        ("micb-kir3dl1_HG003.gaf", 2),
+        ("no_header.gaf", 0)
+    ];
+
+    for (filename, expected_lines) in test_cases {
+        let filepath = utils::get_test_data(filename);
+        let mut reader = utils::open_file(&filepath)
+            .expect(&format!("Failed to open test GAF file {}", filename));
+        let headers = read_gaf_header_lines(&mut reader);
+        assert!(headers.is_ok(), "Failed to read GAF headers from file {}: {}", filename, headers.unwrap_err());
+        let headers = headers.unwrap();
+        assert_eq!(headers.len(), expected_lines, "Wrong number of GAF header lines in file {}", filename);
+        for (i, line) in headers.iter().enumerate() {
+            let is_header = is_gaf_header_line(line.as_bytes());
+            assert!(is_header, "Line {} in file {} is not a valid GAF header line", i + 1, filename);
+            let last = line.as_bytes().last();
+            assert_ne!(last, Some(&b'\n'), "Line {} in file {} has a trailing newline", i + 1, filename);
+        }
+        let peek = peek_gaf_header_line(&mut reader);
+        if let Ok(is_header) = peek {
+            assert!(!is_header, "Additional header lines found in file {}", filename);
+        }
     }
 }
 
