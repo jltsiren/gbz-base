@@ -1583,17 +1583,15 @@ impl Subgraph {
 impl Subgraph {
     /// Writes the subgraph in the GFA format to the given output.
     ///
+    /// The output is a full GFA file, including the header.
     /// If `cigar` is true, the CIGAR strings for the non-reference haplotypes are included in the output.
     pub fn write_gfa<T: Write>(&self, output: &mut T, cigar: bool) -> io::Result<()> {
         // Header.
         let reference_samples = self.ref_path.as_ref().map(|path| path.sample.as_ref());
         formats::write_gfa_header(reference_samples, output)?;
         if let Some(graph_name) = self.graph_name.as_ref() {
-            let headers = graph_name.to_gfa_header_lines();
-            for header in headers.iter() {
-                output.write_all(header.as_bytes())?;
-                output.write_all(b"\n")?;
-            }
+            let header_lines = graph_name.to_gfa_header_lines();
+            formats::write_header_lines(&header_lines, output)?;
         }
 
         // Segments.

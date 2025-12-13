@@ -470,6 +470,7 @@ impl ReadSet {
 
     /// Serializes the read set in the GAF format.
     ///
+    /// The output does not include any header lines, as the GAF file may consist of multiple read sets.
     /// Returns an error if the target sequence for a read is invalid or cannot be determined.
     /// Passes through any I/O errors.
     pub fn to_gaf<W: Write>(&self, writer: &mut W) -> Result<(), String> {
