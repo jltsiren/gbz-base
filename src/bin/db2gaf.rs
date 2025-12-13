@@ -7,7 +7,9 @@ use std::{env, io, process, thread};
 use gbwt::GBZ;
 
 use gbz_base::{GAFBase, ReadSet};
-use gbz_base::formats;
+use gbz_base::{formats, utils};
+
+use pggname::GraphName;
 
 use simple_sds::serialize;
 
@@ -23,8 +25,18 @@ fn main() -> Result<(), String> {
     // Inputs.
     let database = GAFBase::open(&config.gaf_base_file)?;
     let graph: GBZ = serialize::load_from(&config.gbz_file).map_err(|x| x.to_string())?;
-    
-    write_gaf(&database, &graph, &config)?;
+
+    // Check that the inputs are compatible.
+    let reference = GraphName::from_gbz(&graph);
+    let alignments = database.graph_name()?;
+    let result = utils::require_valid_reference(&alignments, &reference);
+    if let Err(e) = result {
+        // Print the error manually, as it contains multiple lines.
+        eprint!("Error: {}", e);
+        process::exit(1);
+    }
+
+    write_gaf(&database, &alignments, &graph, &config)?;
 
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
@@ -35,7 +47,7 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
-fn write_gaf(database: &GAFBase, graph: &GBZ, config: &Config) -> Result<(), String> {
+fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: &GBZ, config: &Config) -> Result<(), String> {
     // Decoded ReadSets, with an empty ReadSet signaling the end of input.
     let (to_output, from_decoder) = mpsc::sync_channel(4);
 
@@ -43,8 +55,7 @@ fn write_gaf(database: &GAFBase, graph: &GBZ, config: &Config) -> Result<(), Str
     let (to_decoder, from_output) = mpsc::sync_channel(1);
 
     // Determine header lines first and pass them to the output thread.
-    let graph_name = database.graph_name()?;
-    let header_lines = graph_name.to_gaf_header_lines();
+    let header_lines = alignments.to_gaf_header_lines();
 
     // Output thread.
     let output_thread = thread::spawn(move || {

@@ -1,7 +1,7 @@
 use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Chains};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
 use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
-use gbz_base::formats;
+use gbz_base::{formats, utils};
 
 use gbwt::{FullPathName, Orientation, GBZ, REF_SAMPLE};
 use gbwt::support;
@@ -72,8 +72,20 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
         return Ok(());
     }
 
+    // Open the database and check that it is compatible with the graph.
     let gaf_base_file = config.gaf_base.as_ref().unwrap();
     let gaf_base = GAFBase::open(gaf_base_file)?;
+    let mut graph = graph;
+    let reference = graph.graph_name()?;
+    let alignments = gaf_base.graph_name()?;
+    let result = utils::require_valid_reference(&alignments, &reference);
+    if let Err(e) = result {
+        // Print the error manually, as it contains multiple lines.
+        eprint!("Error: {}", e);
+        process::exit(1);
+    }
+
+    // Extract the reads.
     let read_set = ReadSet::new(graph, subgraph, &gaf_base, config.alignment_output)?;
     if config.alignment_output == AlignmentOutput::Clipped {
         eprintln!(

@@ -1571,6 +1571,23 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
             },
         }
     }
+
+    /// Returns the stable graph name (pggname) for the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an empty object if the corresponding GBZ tags cannot be parsed.
+    /// Passes through any errors from the graph implementation.
+    pub fn graph_name(&mut self) -> Result<GraphName, String> {
+        match self {
+            GraphReference::Gbz(gbz) => {
+                Ok(GraphName::from_gbz(gbz))
+            },
+            GraphReference::Db(db) => {
+                db.graph_name()
+            },
+        }
+    }
 }
 
 /// Returns the starting position of the given path in the given orientation.
