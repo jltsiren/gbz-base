@@ -6,7 +6,8 @@
 //! See [the specification](https://github.com/GFA-spec/GFA-spec/blob/master/GFA1.md) for details.
 //! The following functions support line-by-line writing of GFA version 1.1:
 //!
-//! * [`write_gfa_header`]: Write the header line.
+//! * [`write_gfa_header`]: Write a GFA file header.
+//! * [`write_header_lines`]: Write additional header lines.
 //! * [`write_gfa_segment`]: Write a segment line for a node.
 //! * [`write_gfa_link`]: Write a link line for an edge.
 //! * [`write_gfa_walk`]: Write a walk line for a path.
@@ -31,6 +32,8 @@
 //! * [`is_gaf_header_line`]: Check if a buffer contains a GAF header line.
 //! * [`peek_gaf_header_line`]: Check if the next line in a reader would be a GAF header line.
 //! * [`read_gaf_header_lines`]: Read all successive GAF header lines from a reader.
+//! * [`write_gaf_file_header`]: Write a GAF file header.
+//! * [`write_header_lines`]: Write additional header lines.
 //!
 //! I/O for GAF alignment lines is currently implemented in [`crate::Alignment`].
 
@@ -330,6 +333,13 @@ pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<Strin
     Ok(headers)
 }
 
+/// Writes a GAF file header.
+pub fn write_gaf_file_header<T: Write>(output: &mut T) -> io::Result<()> {
+    let header = format!("@HD\tVN:Z:1.0\n");
+    output.write_all(header.as_bytes())?;
+    Ok(())
+}
+
 //-----------------------------------------------------------------------------
 
 // TODO: These should be shared with gbunzip.
@@ -346,6 +356,21 @@ pub fn write_gfa_header<T: Write>(reference_samples: Option<&str>, output: &mut 
         "H\tVN:Z:1.1\n".to_string()
     };
     output.write_all(header.as_bytes())?;
+    Ok(())
+}
+
+/// Writes the given header lines.
+///
+/// If the lines do not end with a newline character, one is added.
+pub fn write_header_lines<T: Write>(header_lines: &[String], output: &mut T) -> io::Result<()> {
+    for line in header_lines {
+        if line.ends_with('\n') {
+            output.write_all(line.as_bytes())?;
+        } else {
+            output.write_all(line.as_bytes())?;
+            output.write_all(b"\n")?;
+        }
+    }
     Ok(())
 }
 

@@ -7,6 +7,7 @@ use std::{env, io, process, thread};
 use gbwt::GBZ;
 
 use gbz_base::{GAFBase, ReadSet};
+use gbz_base::formats;
 
 use simple_sds::serialize;
 
@@ -41,26 +42,28 @@ fn write_gaf(database: &GAFBase, graph: &GBZ, config: &Config) -> Result<(), Str
     // Status of the output thread as Result<(), String>.
     let (to_decoder, from_output) = mpsc::sync_channel(1);
 
+    // Determine header lines first and pass them to the output thread.
+    let graph_name = database.graph_name()?;
+    let header_lines = graph_name.to_gaf_header_lines();
+
     // Output thread.
     let output_thread = thread::spawn(move || {
         let mut output = BufWriter::new(io::stdout().lock());
-        let mut status = Ok(());
-        loop {
+        let mut status = formats::write_gaf_file_header(&mut output)
+            .map_err(|e| e.to_string());
+        if status.is_ok() {
+            status = formats::write_header_lines(&header_lines, &mut output)
+                .map_err(|e| e.to_string());
+        }
+        while status.is_ok() {
             let read_set: ReadSet = from_decoder.recv().unwrap_or(ReadSet::default());
             if read_set.is_empty() {
                 break;
             }
-            let result = read_set.to_gaf(&mut output);
-            if result.is_err() {
-                status = result;
-                break;
-            }
+            status = read_set.to_gaf(&mut output);
         }
         if status.is_ok() {
-            let result = output.flush();
-            if result.is_err() {
-                status = Err(result.unwrap_err().to_string());
-            }
+            status = output.flush().map_err(|e| e.to_string());
         }
         let _ = to_decoder.send(status);
     });
