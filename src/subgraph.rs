@@ -58,7 +58,7 @@ pub mod query;
 /// It can also be serialized in GFA and JSON formats using [`Subgraph::write_gfa`] and [`Subgraph::write_json`].
 ///
 /// [`Subgraph`] also implements [`Graph`] from the [`pggname`].
-/// That enables computing stable graph names using [`pggname::hash`].
+/// That enables computing stable graph names using [`pggname::stable_name`].
 ///
 /// # Examples
 ///

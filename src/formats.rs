@@ -294,12 +294,26 @@ pub fn peek_gaf_header_line<R: BufRead>(reader: &mut R) -> io::Result<bool> {
     Ok(buffer.first() == Some(&b'@'))
 }
 
-// FIXME: example, tests
 /// Returns all successive GAF header lines from the reader.
 ///
 /// The returned lines do not contain the trailing newline character.
 /// The reader position is advanced past the header lines.
 /// Returns an I/O error if reading from the reader fails.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{formats, utils};
+///
+/// let filename = utils::get_test_data("good.gaf");
+/// let mut reader = utils::open_file(&filename)
+///     .expect("Unable to open test file");
+/// let headers = formats::read_gaf_header_lines(&mut reader)
+///     .expect("Unable to read GAF header lines");
+/// assert_eq!(headers.len(), 2);
+/// assert!(headers[0].starts_with("@HD")); // File header
+/// assert!(headers[1].starts_with("@RN")); // Reference name
+/// ```
 pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<String>> {
     let mut headers: Vec<String> = Vec::new();
     while peek_gaf_header_line(reader)? {

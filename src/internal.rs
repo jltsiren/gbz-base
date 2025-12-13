@@ -1,4 +1,4 @@
-use crate::{GBZBase, GraphInterface};
+use crate::{GBZBase, GraphInterface, formats};
 use crate::{GAFBase, GAFBaseParams};
 use crate::{Alignment, PathIndex, Chains};
 use crate::utils;
@@ -100,6 +100,10 @@ pub(crate) fn load_gaf_base_reads(gzip_compressed: bool) -> Vec<Alignment> {
         let mut buf: Vec<u8> = Vec::new();
         let len = reader.read_until(b'\n', &mut buf);
         assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
+        if formats::is_gaf_header_line(&buf) {
+            line_num += 1;
+            continue;
+        }
         if buf.last() == Some(&b'\n') {
             buf.pop();
         }
