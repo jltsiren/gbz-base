@@ -1505,10 +1505,12 @@ impl AlignmentBlock {
         })
     }
 
+    /// Returns the number of alignments in the block.
     pub fn len(&self) -> usize {
         self.alignments
     }
 
+    /// Returns `true` if the block contains no alignments.
     pub fn is_empty(&self) -> bool {
         self.alignments == 0
     }

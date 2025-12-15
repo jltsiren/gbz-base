@@ -675,6 +675,16 @@ impl AlignmentStats {
             number_bytes: 0,
         }
     }
+
+    pub fn update(&mut self, block: &AlignmentBlock) {
+        self.alignments += block.len();
+        self.start_bytes += block.gbwt_starts.len();
+        self.name_bytes += block.names.len();
+        self.quality_bytes += block.quality_strings.len();
+        self.difference_bytes += block.difference_strings.len();
+        self.flag_bytes += block.flags.bytes();
+        self.number_bytes += block.numbers.len();
+    }
 }
 
 /// GAF-base construction parameters.
@@ -857,8 +867,6 @@ impl GAFBase {
         let mut gaf_file = gaf_file;
         let mut connection = connection;
 
-        // The primary key is the 0-based line number in the GAF file.
-        // `start_node` is a foreign key to `Nodes`, but we do not enforce that for performance reasons.
         connection.execute(
             "CREATE TABLE Alignments (
                 min_handle INTEGER,
@@ -954,13 +962,7 @@ impl GAFBase {
                             // An empty block indicates that we are done.
                             break;
                         }
-                        statistics.alignments += block.len();
-                        statistics.start_bytes += block.gbwt_starts.len();
-                        statistics.name_bytes += block.names.len();
-                        statistics.quality_bytes += block.quality_strings.len();
-                        statistics.difference_bytes += block.difference_strings.len();
-                        statistics.flag_bytes += block.flags.bytes();
-                        statistics.number_bytes += block.numbers.len();
+                        statistics.update(&block);
                         let result = insert.execute((
                             block.min_handle, block.max_handle, block.alignments, block.read_length,
                             block.gbwt_starts, block.names,
