@@ -819,7 +819,7 @@ impl Alignment {
     }
 
     // Creates an empty fragment of this alignment.
-    fn empty_fragment(&self, fragment_id: usize) -> Alignment {
+    fn empty_fragment(&self, fragment_index: usize) -> Alignment {
         let mut aln = Alignment {
             name: self.name.clone(),
             seq_len: self.seq_len,
@@ -836,7 +836,7 @@ impl Alignment {
             pair: self.pair.clone(),
             optional: self.optional.clone(),
         };
-        aln.optional.push(TypedField::Int([b'f', b'i'], fragment_id as isize));
+        aln.optional.push(TypedField::Int([b'f', b'i'], fragment_index as isize));
 
         aln
     }
@@ -917,7 +917,10 @@ impl Alignment {
     /// There will be one alignment fragment for every maximal subpath in the subgraph.
     /// The fragments have the same name, pair, optional fields, and statistics as the original alignment.
     /// Only the aligned intervals and difference strings depend on the fragment.
+    ///
     /// Fragments of the same alignment are identified by a fragment index stored as an optional field `fi:i`.
+    /// The indexes start from 1.
+    /// Fragment index is omitted if the entire alignment is in the subgraph.
     ///
     /// Clipping requires a function that returns the sequence length for the node with the given handle.
     /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
@@ -1012,6 +1015,16 @@ impl Alignment {
         }
         if let Some(aln) = aln {
             result.push(aln);
+        }
+
+        // Clear the fragment index if we have the entire alignment as a single fragment.
+        if result.len() == 1 && result[0].seq_interval == self.seq_interval {
+            result[0].optional.retain(|field| {
+                match field {
+                    TypedField::Int([b'f', b'i'], _) => false,
+                    _ => true,
+                }
+            });
         }
 
         Ok(result)

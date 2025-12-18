@@ -836,8 +836,12 @@ fn clip_alignment<'a>(aln: &Alignment, subgraph: &Subgraph, sequence_len: Arc<im
     clipped.unwrap()
 }
 
-fn add_fragment_ids(truth: &mut [Vec<Alignment>]) {
-    for fragments in truth.iter_mut() {
+fn add_fragment_indexes(truth: &mut [Vec<Alignment>], source: &[Alignment]) {
+    for (i, fragments) in truth.iter_mut().enumerate() {
+        if fragments.len() == 1 && fragments[0].seq_interval == source[i].seq_interval {
+            // No clipping happened, so no fragment IDs.
+            continue;
+        }
         for (i, aln) in fragments.iter_mut().enumerate() {
             aln.optional.push(TypedField::Int([b'f', b'i'], (i + 1) as isize));
         }
@@ -866,11 +870,11 @@ fn clip_and_check<'a>(
     }
 }
 
-fn check_fragment(aln: &Alignment, fragment_id: usize, clipped: &[Alignment], true_subpath: &[usize]) {
-    assert!(fragment_id < clipped.len(), "Missing fragment {} of alignment {}", fragment_id + 1, aln.name);
-    let fragment = &clipped[fragment_id];
+fn check_fragment(aln: &Alignment, fragment_index: usize, clipped: &[Alignment], true_subpath: &[usize]) {
+    assert!(fragment_index < clipped.len(), "Missing fragment {} of alignment {}", fragment_index + 1, aln.name);
+    let fragment = &clipped[fragment_index];
     let fragment_path = fragment.target_path().unwrap();
-    assert_eq!(fragment_path, true_subpath, "Wrong subpath for fragment {} of alignment {}", fragment_id + 1, aln.name);
+    assert_eq!(fragment_path, true_subpath, "Wrong subpath for fragment {} of alignment {}", fragment_index + 1, aln.name);
 }
 
 fn clip_and_check_real<'a>(alignments: &[Alignment], subgraph: &Subgraph, sequence_len: Arc<impl Fn(usize) -> Option<usize> + 'a>) {
@@ -885,7 +889,7 @@ fn clip_and_check_real<'a>(alignments: &[Alignment], subgraph: &Subgraph, sequen
         let target_path = aln.target_path().unwrap();
         let mut target_offset = 0;
         let mut curr: Option<Range<usize>> = None; // Interval of `target_path` in the subgraph.
-        let mut fragment_id = 0;
+        let mut fragment_index = 0;
         for (i, &handle) in target_path.iter().enumerate() {
             let node_len = sequence_len(handle).unwrap();
             let node_is_aligned =
@@ -901,18 +905,18 @@ fn clip_and_check_real<'a>(alignments: &[Alignment], subgraph: &Subgraph, sequen
             } else {
                 if let Some(range) = curr.take() {
                     let true_subpath = &target_path[range];
-                    check_fragment(aln, fragment_id, &clipped, true_subpath);
-                    fragment_id += 1;
+                    check_fragment(aln, fragment_index, &clipped, true_subpath);
+                    fragment_index += 1;
                 }
             }
         }
         if let Some(range) = curr.take() {
             let true_subpath = &target_path[range];
-            check_fragment(aln, fragment_id, &clipped, true_subpath);
-            fragment_id += 1;
+            check_fragment(aln, fragment_index, &clipped, true_subpath);
+            fragment_index += 1;
         }
 
-        assert_eq!(fragment_id, clipped.len(), "Clipped alignment {} has fewer than expected fragments", aln.name);
+        assert_eq!(fragment_index, clipped.len(), "Clipped alignment {} has fewer than expected fragments", aln.name);
     }
 }
 
@@ -1095,7 +1099,7 @@ fn alignment_clip_aligned() {
             ),
         ],
     ];
-    add_fragment_ids(&mut truth);
+    add_fragment_indexes(&mut truth, &alignments);
 
     clip_and_check(&alignments, &truth, &subgraph, sequence_len);
 }
@@ -1194,7 +1198,7 @@ fn alignment_clip_long_nodes() {
             ),
         ],
     ];
-    add_fragment_ids(&mut truth);
+    add_fragment_indexes(&mut truth, &alignments);
 
     clip_and_check(&alignments, &truth, &subgraph, sequence_len);
 }
