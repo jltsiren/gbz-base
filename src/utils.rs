@@ -185,7 +185,7 @@ pub fn encode_sequence(sequence: &[u8]) -> Vec<u8> {
 
 /// Returns the length of the encoding for a sequence of the given length.
 pub fn encoded_length(sequence_length: usize) -> usize {
-    (sequence_length + 2) / 3
+    sequence_length.div_ceil(3)
 }
 
 //-----------------------------------------------------------------------------
@@ -309,7 +309,7 @@ impl Chains {
     ///
     /// Returns an error if the file cannot be opened or [`Self::deserialize`] fails.
     pub fn load_from(filename: &Path) -> Result<Self, String> {
-        let mut file = File::open(&filename).map_err(|x|
+        let mut file = File::open(filename).map_err(|x|
             format!("Failed to open chains file {}: {}", filename.display(), x)
         )?;
         Self::deserialize(&mut file).map_err(|x|
@@ -355,6 +355,12 @@ impl Chains {
     /// Filter using [`support::encoded_edge_is_canonical`] to visit each link in a single orientation.
     pub fn iter(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.next.iter().map(|(k, v)| (*k, *v))
+    }
+}
+
+impl Default for Chains {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -455,16 +461,15 @@ pub fn cluster_node_ids(node_ids: Vec<usize>, threshold: usize) -> Vec<RangeIncl
     }
     stack.push(initial.unwrap());
 
-    while !stack.is_empty() {
-        let curr = stack.pop().unwrap();
+    while let Some(curr) = stack.pop() {
         if let Some(len) = curr.max_gap_length(&node_ids) {
             if len > threshold {
                 let (left, right) = curr.split(&node_ids);
-                if right.is_some() {
-                    stack.push(right.unwrap());
+                if let Some(right) = right {
+                    stack.push(right);
                 }
-                if left.is_some() {
-                    stack.push(left.unwrap());
+                if let Some(left) = left {
+                    stack.push(left);
                 }
             } else {
                 result.push(curr.node_id_range);

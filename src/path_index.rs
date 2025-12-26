@@ -111,15 +111,13 @@ impl PathIndex {
             path_to_offset.insert(ref_path.id, offset);
             offset_to_path[offset] = ref_path.id;
             path_lengths.push(ref_path.len);
-            let mut sequence = SparseBuilder::new(ref_path.len, ref_path.positions.len()).map_err(
-                String::from
-            )?;
+            let mut sequence = SparseBuilder::new(ref_path.len, ref_path.positions.len())?;
             let mut gbwt = Vec::with_capacity(ref_path.positions.len());
             for (sequence_pos, gbwt_pos) in ref_path.positions.iter() {
                 sequence.set(*sequence_pos);
                 gbwt.push(*gbwt_pos);
             }
-            sequence_positions.push(SparseVector::try_from(sequence).map_err(String::from)?);
+            sequence_positions.push(SparseVector::try_from(sequence)?);
             gbwt_positions.push(gbwt);
         }
 

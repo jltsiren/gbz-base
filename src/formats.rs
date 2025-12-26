@@ -335,7 +335,7 @@ pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<Strin
 
 /// Writes a GAF file header.
 pub fn write_gaf_file_header<T: Write>(output: &mut T) -> io::Result<()> {
-    let header = format!("@HD\tVN:Z:1.0\n");
+    let header = String::from("@HD\tVN:Z:1.0\n");
     output.write_all(header.as_bytes())?;
     Ok(())
 }

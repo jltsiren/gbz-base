@@ -210,7 +210,7 @@ impl GBZBase {
     /// Passes through any database errors.
     pub fn create_from_files(gbz_file: &Path, chains_file: Option<&Path>, db_file: &Path) -> Result<(), String> {
         eprintln!("Loading GBZ graph {}", gbz_file.display());
-        let graph: GBZ = serialize::load_from(&gbz_file).map_err(|x| x.to_string())?;
+        let graph: GBZ = serialize::load_from(gbz_file).map_err(|x| x.to_string())?;
         let chains = if let Some(filename) = chains_file {
             eprintln!("Loading top-level chain file {}", filename.display());
             Chains::load_from(filename)?
@@ -727,7 +727,7 @@ impl GAFBase {
         params: &GAFBaseParams
     ) -> Result<(), String> {
         eprintln!("Loading GBWT index {}", gbwt_file.display());
-        let index: Arc<GBWT> = Arc::new(serialize::load_from(&gbwt_file).map_err(|x| x.to_string())?);
+        let index: Arc<GBWT> = Arc::new(serialize::load_from(gbwt_file).map_err(|x| x.to_string())?);
         Self::create(gaf_file, index, db_file, params)
     }
 

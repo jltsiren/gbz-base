@@ -654,16 +654,13 @@ impl Subgraph {
         // Add them to the subgraph if they are not already present.
         let mut graph = graph;
         let mut inserted = 0;
-        while !active.is_empty() {
-            let curr = active.pop().unwrap();
+        while let Some(curr) = active.pop() {
             let (node_id, orientation) = support::decode_node(curr);
             if !self.has_node(node_id) {
-                if let Some(limit) = limit {
-                    if inserted >= limit {
-                        let (start_id, start_o) = support::decode_node(start);
-                        let (end_id, end_o) = support::decode_node(end);
-                        return Err(format!("Found more than {} new nodes between ({}, {}) and ({}, {})", limit, start_id, start_o, end_id, end_o));
-                    }
+                if let Some(limit) = limit && inserted >= limit {
+                    let (start_id, start_o) = support::decode_node(start);
+                    let (end_id, end_o) = support::decode_node(end);
+                    return Err(format!("Found more than {} new nodes between ({}, {}) and ({}, {})", limit, start_id, start_o, end_id, end_o));
                 }
                 self.add_node_internal(&mut graph, node_id)?;
                 inserted += 1;
@@ -1067,12 +1064,10 @@ impl Subgraph {
                 let mut path: Vec<usize> = Vec::new();
                 let mut len = 0;
                 while let Some(pos) = curr {
-                    if let Some(position) = ref_pos.as_ref() {
-                        if pos == position.gbwt_pos() {
-                            self.ref_id = Some(self.paths.len());
-                            ref_offset = Some(path.len());
-                            is_ref = true;
-                        }
+                    if let Some(position) = ref_pos.as_ref() && pos == position.gbwt_pos() {
+                        self.ref_id = Some(self.paths.len());
+                        ref_offset = Some(path.len());
+                        is_ref = true;
                     }
                     path.push(pos.node);
                     len += self.records.get(&pos.node).unwrap().sequence_len();
@@ -1090,10 +1085,10 @@ impl Subgraph {
         }
 
         // Now we can set the reference interval.
-        if ref_pos.is_some() {
+        if let Some(ref_pos) = ref_pos {
             if let Some(offset) = ref_offset {
                 let ref_info = &self.paths[self.ref_id.unwrap()];
-                self.ref_interval = Some(ref_info.path_interval(self, offset, ref_pos.as_ref().unwrap()));
+                self.ref_interval = Some(ref_info.path_interval(self, offset, &ref_pos));
             } else {
                 self.clear_paths();
                 return Err(String::from("Could not find the reference path"));
@@ -1119,10 +1114,8 @@ impl Subgraph {
         let mut ref_id = None;
         for info in self.paths.iter() {
             if new_paths.is_empty() || new_paths.last().unwrap().path != info.path {
-                if let Some(ref_path) = &ref_path {
-                    if info.path == *ref_path {
-                        ref_id = Some(new_paths.len());
-                    }
+                if let Some(ref_path) = &ref_path  && info.path == *ref_path {
+                    ref_id = Some(new_paths.len());
                 }
                 new_paths.push(PathInfo::weighted(info.path.clone(), info.len));
             } else {
@@ -1406,11 +1399,9 @@ impl Subgraph {
         if len == 0 {
             return;
         }
-        if let Some((prev_op, prev_len)) = edits.last_mut() {
-            if *prev_op == op {
-                *prev_len += len;
-                return;
-            }
+        if let Some((prev_op, prev_len)) = edits.last_mut() && *prev_op == op {
+            *prev_len += len;
+            return;
         }
         edits.push((op, len));
     }

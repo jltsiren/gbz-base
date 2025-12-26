@@ -85,8 +85,8 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: &GBZ, config: &C
     while found_alns < database.alignments() {
         let range = rowid..(rowid + config.chunk_size);
         let read_set = ReadSet::from_rows(database, range.clone(), graph);
-        if read_set.is_err() {
-            status = Err(read_set.unwrap_err());
+        if let Err(msg) = &read_set {
+            status = Err(msg.clone());
             let _ = to_output.send(ReadSet::default()); // Signal end of input.
             break;
         }
@@ -110,9 +110,7 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: &GBZ, config: &C
     // Wait for the output thread to finish.
     let output_result = from_output.recv().unwrap_or(Ok(()));
     let _ = output_thread.join();
-    if output_result.is_err() {
-        return output_result;
-    }
+    output_result?;
 
     status
 }

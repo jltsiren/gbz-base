@@ -291,7 +291,7 @@ impl ReadSet {
         for (min_handle, max_handle) in clusters.into_iter() {
             let mut rows = get_reads.query((max_handle, min_handle)).map_err(|x| x.to_string())?;
             while let Some(row) = rows.next().map_err(|x| x.to_string())? {
-                let row_id = Self::get_row_id(&row)?;
+                let row_id = Self::get_row_id(row)?;
                 if row_ids.contains(&row_id) {
                     continue;
                 }

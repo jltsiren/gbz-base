@@ -336,7 +336,7 @@ impl Alignment {
         // Alignment statistics.
         let mut matches = Self::parse_usize(fields[9], "matches")?;
         let alignment_len = Self::parse_usize(fields[10], "alignment length")?;
-        let mut edits = if matches <= alignment_len { alignment_len - matches } else { 0 };
+        let mut edits = alignment_len.saturating_sub(matches);
         let mapq = Self::parse_usize(fields[11], "mapping quality")?;
         let mapq = if mapq == Self::MISSING_MAPQ { None } else { Some(mapq) }; // TODO: Too large values?
 
@@ -383,8 +383,8 @@ impl Alignment {
                 _ => { optional.push(parsed); },
             }
         }
-        if pair.is_some() && properly_paired.is_some() {
-            pair.as_mut().unwrap().is_proper = properly_paired.unwrap();
+        if let (Some(pair), Some(properly_paired)) = (pair.as_mut(), properly_paired) {
+            pair.is_proper = properly_paired;
         }
 
         // TODO: Part of the interval end hack.
@@ -411,8 +411,8 @@ impl Alignment {
 
         // Now we have the final path interval. Flip its orientation if necessary.
         if orientation == Orientation::Reverse {
-            let start = if path_interval.end < path_len { path_len - path_interval.end } else { 0 };
-            let end = if path_interval.start < path_len { path_len - path_interval.start } else { 0 };
+            let start = path_len.saturating_sub(path_interval.end);
+            let end = path_len.saturating_sub(path_interval.start);
             path_interval = start..end;
         }
 
@@ -776,19 +776,15 @@ impl Alignment {
     /// The iterator needs a function that provides the sequence length for each node.
     /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
     pub fn iter<'a>(&'a self, sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>) -> Option<AlignmentIter<'a>> {
-        if self.difference.is_empty() {
-            if !self.seq_interval.is_empty() || !self.path_interval.is_empty() {
-                return None;
-            }
+        if self.difference.is_empty() && (!self.seq_interval.is_empty() || !self.path_interval.is_empty()) {
+            return None;
         }
         if !self.has_target_path() {
             return None;
         }
         let target_path = self.target_path().unwrap();
-        if target_path.is_empty() {
-            if self.path_interval.start != 0 || self.path_interval.end != 0 {
-                return None;
-            }
+        if target_path.is_empty() && (self.path_interval.start != 0 || self.path_interval.end != 0) {
+            return None;
         }
 
         let mut iter = AlignmentIter {
@@ -1020,10 +1016,7 @@ impl Alignment {
         // Clear the fragment index if we have the entire alignment as a single fragment.
         if result.len() == 1 && result[0].seq_interval == self.seq_interval {
             result[0].optional.retain(|field| {
-                match field {
-                    TypedField::Int([b'f', b'i'], _) => false,
-                    _ => true,
-                }
+                !matches!(field, TypedField::Int([b'f', b'i'], _))
             });
         }
 
@@ -1235,7 +1228,7 @@ impl Flags {
     /// Creates a new flags object with the given number of alignments.
     /// The flags are initialized to zero (false).
     pub fn new(num_alignments: usize) -> Self {
-        let bits = vec![0; (num_alignments * Self::NUM_FLAGS + 7) / 8];
+        let bits = vec![0; (num_alignments * Self::NUM_FLAGS).div_ceil(8)];
         Self { bits }
     }
 
