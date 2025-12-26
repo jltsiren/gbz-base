@@ -1,7 +1,8 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.2.0 (2025-12-26)
 
+* Database versions: GBZ-base v0.4.0, GAF-base v0.2.0
 * `db2gaf` tool for converting a GAF-base back to GAF format.
 * Support for [stable graph names](https://github.com/jltsiren/pggname):
   * Uses `pggname::GraphName` for importing graph names and relationships between GBZ tags and GFA/GAF headers.
