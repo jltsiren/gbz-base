@@ -14,3 +14,13 @@
 * Database versions: GBZ-base v0.4.0, GAF-base v0.2.0
 
 This is the initial release of GBZ-base and GAF-base.
+
+## Release process
+
+* Run `cargo clippy`.
+* Run tests with `cargo test`.
+* Update version in `Cargo.toml`.
+* Update `RELEASES.md`.
+* Publish in crates.io with `cargo publish`.
+* Push to GitHub.
+* Draft a new release in GitHub.
