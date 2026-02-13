@@ -10,9 +10,9 @@ use std::{fs, thread};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
-use gbwt::{FullPathName, Orientation, Pos, GBWT, GBZ};
-use gbwt::bwt::{BWT, Record};
-use gbwt::support::{self, Tags};
+use gbz::{FullPathName, Orientation, Pos, GBWT, GBZ};
+use gbz::bwt::{BWT, Record};
+use gbz::support::{self, Tags};
 
 use pggname::GraphName;
 
@@ -33,7 +33,7 @@ mod tests;
 ///
 /// ```
 /// use gbz_base::{utils, GBZBase};
-/// use gbwt::support;
+/// use gbz::support;
 /// use simple_sds::serialize;
 /// use std::fs;
 ///
@@ -847,7 +847,7 @@ impl GAFBase {
             )?;
             let bwt: &BWT = index.as_ref();
             for record_id in bwt.id_iter() {
-                if record_id == gbwt::ENDMARKER {
+                if record_id == gbz::ENDMARKER {
                     continue;
                 }
                 let handle = index.record_to_node(record_id);
@@ -1174,26 +1174,26 @@ impl GBZRecord {
     /// Returns an iterator over the handles of successor nodes.
     #[inline]
     pub fn successors(&self) -> impl Iterator<Item = usize> + '_ {
-        self.edges.iter().filter(|x| x.node != gbwt::ENDMARKER).map(|x| x.node)
+        self.edges.iter().filter(|x| x.node != gbz::ENDMARKER).map(|x| x.node)
     }
 
     /// Returns an iterator over the outgoing edges from the record.
     ///
     /// Each edge is a pair consisting of a destination node handle and a offset in the corresponding GBWT record.
     /// The edges are sorted by destination node.
-    /// This iterator does not list the possible edge to [`gbwt::ENDMARKER`], as it only exists for technical purposes.
+    /// This iterator does not list the possible edge to [`gbz::ENDMARKER`], as it only exists for technical purposes.
     #[inline]
     pub fn edges(&self) -> impl Iterator<Item = Pos> + '_ {
-        self.edges.iter().filter(|x| x.node != gbwt::ENDMARKER).copied()
+        self.edges.iter().filter(|x| x.node != gbz::ENDMARKER).copied()
     }
 
     /// Returns the slice of edges stored in the record.
     ///
     /// Each edge is a pair consisting of a destination node handle and a offset in the corresponding GBWT record.
     /// The edges are sorted by destination node.
-    /// This slice does not list the possible edge to [`gbwt::ENDMARKER`], as it only exists for technical purposes.
+    /// This slice does not list the possible edge to [`gbz::ENDMARKER`], as it only exists for technical purposes.
     pub(crate) fn edges_slice(&self) -> &[Pos] {
-        if !self.edges.is_empty() && self.edges[0].node == gbwt::ENDMARKER {
+        if !self.edges.is_empty() && self.edges[0].node == gbz::ENDMARKER {
             return &self.edges[1..];
         }
         &self.edges
@@ -1300,8 +1300,8 @@ impl AsRef<FullPathName> for GBZPath {
 ///
 /// ```
 /// use gbz_base::{GBZBase, GraphInterface};
-/// use gbwt::{Orientation, FullPathName};
-/// use gbwt::support;
+/// use gbz::{Orientation, FullPathName};
+/// use gbz::support;
 /// use simple_sds::serialize;
 /// use std::fs;
 ///
@@ -1594,9 +1594,9 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
 
 /// Returns the starting position of the given path in the given orientation.
 ///
-/// Returns `(gbwt::ENDMARKER, 0)` if the path is empty or does not exist.
+/// Returns `(gbz::ENDMARKER, 0)` if the path is empty or does not exist.
 pub fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos {
-    index.start(support::encode_path(path_id, orientation)).unwrap_or(Pos::new(gbwt::ENDMARKER, 0))
+    index.start(support::encode_path(path_id, orientation)).unwrap_or(Pos::new(gbz::ENDMARKER, 0))
 }
 
 /// Type of a potential database file.

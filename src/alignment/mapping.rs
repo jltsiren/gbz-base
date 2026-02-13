@@ -13,7 +13,7 @@ use std::ops::Range;
 pub struct Mapping {
     // Aligned interval of the query sequence.
     seq_interval: Range<usize>,
-    // Handle of the target node, or `gbwt::ENDMARKER` for no target node.
+    // Handle of the target node, or `gbz::ENDMARKER` for no target node.
     handle: usize,
     // Length of the target node.
     node_len: usize,
@@ -29,10 +29,10 @@ impl Mapping {
     /// # Panics
     ///
     /// Will panic if the edit extends past the end of the node.
-    /// Will panic if `handle` is [`gbwt::ENDMARKER`].
+    /// Will panic if `handle` is [`gbz::ENDMARKER`].
     pub fn new(seq_offset: usize, handle: usize, node_len: usize, node_offset: usize, edit: Difference) -> Self {
         assert!(node_offset + edit.target_len() <= node_len, "The edit extends past the end of the node");
-        assert!(handle != gbwt::ENDMARKER, "A mapping cannot have {} as the target handle", gbwt::ENDMARKER);
+        assert!(handle != gbz::ENDMARKER, "A mapping cannot have {} as the target handle", gbz::ENDMARKER);
         Self {
             seq_interval: seq_offset..seq_offset + edit.query_len(),
             handle,
@@ -51,7 +51,7 @@ impl Mapping {
         assert!(matches!(edit, Difference::Insertion(_)), "An unaligned mapping must have an insertion edit");
         Self {
             seq_interval: seq_offset..seq_offset + edit.query_len(),
-            handle: gbwt::ENDMARKER,
+            handle: gbz::ENDMARKER,
             node_len: 0,
             node_interval: 0..0,
             edit,
@@ -72,7 +72,7 @@ impl Mapping {
 
     /// Returns the handle of the target node.
     ///
-    /// Returns [`gbwt::ENDMARKER`] for an unaligned insertion.
+    /// Returns [`gbz::ENDMARKER`] for an unaligned insertion.
     #[inline]
     pub fn handle(&self) -> usize {
         self.handle
@@ -81,7 +81,7 @@ impl Mapping {
     /// Returns `true` if this mapping is an unaligned insertion.
     #[inline]
     pub fn is_unaligned(&self) -> bool {
-        self.handle == gbwt::ENDMARKER
+        self.handle == gbz::ENDMARKER
     }
 
     /// Returns the length of the target node.

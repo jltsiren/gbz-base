@@ -3,8 +3,8 @@ use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
 use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
 use gbz_base::{formats, utils};
 
-use gbwt::{FullPathName, Orientation, GBZ, REF_SAMPLE};
-use gbwt::support;
+use gbz::{FullPathName, Orientation, GBZ, GENERIC_SAMPLE};
+use gbz::support;
 
 use simple_sds::serialize;
 
@@ -269,7 +269,7 @@ impl Config {
         }
 
         let path_name = if needs_path_name {
-            let sample = matches.opt_str("sample").unwrap_or(String::from(REF_SAMPLE));
+            let sample = matches.opt_str("sample").unwrap_or(String::from(GENERIC_SAMPLE));
             let contig = matches.opt_str("contig").ok_or(String::from("Contig name must be provided with --contig"))?;
             Some(FullPathName::reference(&sample, &contig))
         } else {

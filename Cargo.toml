@@ -8,9 +8,9 @@ readme = "README.md"
 repository = "https://github.com/jltsiren/gbz-base"
 
 [dependencies]
-gbwt = { git = "https://github.com/jltsiren/gbwt-rs", tag = "v0.4" }
-simple-sds = { version = "0.4.0" }
-pggname = { git = "https://github.com/jltsiren/pggname", tag = "v0.1" }
+gbz = { version = "0.5.1" }
+simple-sds = { version = "0.4" }
+pggname = { version = "0.2" }
 # Use fallible_uint for getting usize values from query results.
 rusqlite = { version = "0.38", features = ["bundled", "fallible_uint"] }
 getopts = { version = "0.2" }

@@ -1,6 +1,6 @@
 use super::*;
 
-use gbwt::support;
+use gbz::support;
 use simple_sds::serialize;
 
 //-----------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 //! Queries for extracting a subgraph from GBZ-base or a GBZ graph.
 
-use gbwt::{support, FullPathName};
+use gbz::{support, FullPathName};
 
 use std::collections::BTreeSet;
 use std::fmt::Display;
@@ -49,7 +49,7 @@ pub(super) enum QueryType {
 ///
 /// ```
 /// use gbz_base::SubgraphQuery;
-/// use gbwt::FullPathName;
+/// use gbz::FullPathName;
 ///
 /// let path_name = FullPathName::generic("path");
 /// let query = SubgraphQuery::path_offset(&path_name, 123);

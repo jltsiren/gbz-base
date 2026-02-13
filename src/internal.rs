@@ -3,8 +3,8 @@ use crate::{GAFBase, GAFBaseParams};
 use crate::{Alignment, PathIndex, Chains};
 use crate::utils;
 
-use gbwt::GBZ;
-use gbwt::support;
+use gbz::GBZ;
+use gbz::support;
 
 use simple_sds::serialize;
 

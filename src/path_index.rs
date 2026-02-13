@@ -2,7 +2,7 @@
 //!
 //! This index extends the functionality of a [`GBZ`] graph to match [`crate::GraphInterface`].
 
-use gbwt::{GBZ, Pos, FullPathName};
+use gbz::{GBZ, Pos, FullPathName};
 
 use simple_sds::sparse_vector::{SparseVector, SparseBuilder};
 use simple_sds::ops::PredSucc;
@@ -14,7 +14,7 @@ mod tests;
 
 //-----------------------------------------------------------------------------
 
-// TODO: Should this be in the `gbwt` crate?
+// TODO: Should this be in the `gbz` crate?
 /// An index for random access to reference and generic paths in a GBZ graph.
 ///
 /// Indexed paths are identified by their offsets in the index.
@@ -29,8 +29,8 @@ mod tests;
 ///
 /// ```
 /// use gbz_base::PathIndex;
-/// use gbwt::{GBZ, FullPathName, Pos, REF_SAMPLE};
-/// use gbwt::support;
+/// use gbz::{GBZ, FullPathName, Pos};
+/// use gbz::support;
 /// use simple_sds::serialize;
 ///
 /// let filename = support::get_test_data("example.gbz");

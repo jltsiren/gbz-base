@@ -45,8 +45,8 @@ use std::{cmp, str};
 use zstd::stream::Encoder as ZstdEncoder;
 use zstd::stream::Decoder as ZstdDecoder;
 
-use gbwt::{GBWT, Orientation, Pos};
-use gbwt::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
+use gbz::{GBWT, Orientation, Pos};
+use gbz::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 #[cfg(test)]
 mod tests;
@@ -71,8 +71,8 @@ pub mod mapping;
 ///
 /// ```
 /// use gbz_base::Alignment;
-/// use gbwt::Orientation;
-/// use gbwt::support;
+/// use gbz::Orientation;
+/// use gbz::support;
 ///
 /// // Unnamed empty sequence.
 /// let empty = Alignment::new();
@@ -774,7 +774,7 @@ impl Alignment {
     /// It may stop early if the alignment is invalid.
     ///
     /// The iterator needs a function that provides the sequence length for each node.
-    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
+    /// This function may be based on [`gbz::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
     pub fn iter<'a>(&'a self, sequence_len: Arc<dyn Fn(usize) -> Option<usize> + 'a>) -> Option<AlignmentIter<'a>> {
         if self.difference.is_empty() && (!self.seq_interval.is_empty() || !self.path_interval.is_empty()) {
             return None;
@@ -919,7 +919,7 @@ impl Alignment {
     /// Fragment index is omitted if the entire alignment is in the subgraph.
     ///
     /// Clipping requires a function that returns the sequence length for the node with the given handle.
-    /// This function may be based on [`gbwt::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
+    /// This function may be based on [`gbz::GBZ`], [`Subgraph`], or [`crate::ReadSet`].
     ///
     /// # Errors
     ///
@@ -929,8 +929,8 @@ impl Alignment {
     /// # Examples
     ///
     /// ```
-    /// use gbwt::{GBZ, Orientation};
-    /// use gbwt::support;
+    /// use gbz::{GBZ, Orientation};
+    /// use gbz::support;
     /// use gbz_base::{Alignment, Difference, Subgraph};
     /// use gbz_base::utils;
     /// use simple_sds::serialize;
@@ -1301,8 +1301,8 @@ impl AsRef<[u8]> for Flags {
 /// ```
 /// use gbz_base::{Alignment, AlignmentBlock};
 /// use gbz_base::{formats, utils};
-/// use gbwt::GBWT;
-/// use gbwt::support;
+/// use gbz::GBWT;
+/// use gbz::support;
 /// use simple_sds::serialize;
 ///
 /// // We need a GBWT index of the paths for compressing alignments.

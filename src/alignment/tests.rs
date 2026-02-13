@@ -3,7 +3,7 @@ use super::*;
 use crate::{Subgraph, SubgraphQuery, GraphReference};
 use crate::utils;
 
-use gbwt::GBZ;
+use gbz::GBZ;
 use simple_sds::serialize;
 
 use rand::Rng;

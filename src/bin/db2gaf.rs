@@ -4,7 +4,7 @@ use std::sync::mpsc;
 use std::time::Instant;
 use std::{env, io, process, thread};
 
-use gbwt::GBZ;
+use gbz::GBZ;
 
 use gbz_base::{GAFBase, ReadSet};
 use gbz_base::{formats, utils};

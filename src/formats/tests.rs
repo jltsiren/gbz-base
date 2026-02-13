@@ -2,7 +2,7 @@ use super::*;
 
 use crate::utils;
 
-use gbwt::Metadata;
+use gbz::Metadata;
 
 use simple_sds::serialize;
 

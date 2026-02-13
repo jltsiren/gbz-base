@@ -44,8 +44,8 @@ use std::io::{self, BufRead, Write};
 use std::ops::Range;
 use std::str;
 
-use gbwt::{Metadata, Orientation, FullPathName};
-use gbwt::support;
+use gbz::{Metadata, Orientation, FullPathName};
+use gbz::support;
 
 #[cfg(test)]
 mod tests;

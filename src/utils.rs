@@ -8,7 +8,7 @@ use std::io::{self, BufRead, BufReader, Read, Error, ErrorKind};
 
 use flate2::read::MultiGzDecoder;
 
-use gbwt::{support, Orientation};
+use gbz::{support, Orientation};
 use pggname::GraphName;
 use simple_sds::int_vector::IntVector;
 use simple_sds::ops::{Vector, Access};
@@ -226,7 +226,7 @@ pub fn require_valid_reference(alignments: &GraphName, reference: &GraphName) ->
 /// ```
 /// use gbz_base::Chains;
 /// use gbz_base::utils;
-/// use gbwt::support::{self, Orientation};
+/// use gbz::support::{self, Orientation};
 ///
 /// let filename = utils::get_test_data("micb-kir3dl1.chains");
 /// let chains = Chains::load_from(&filename);
@@ -490,7 +490,7 @@ mod tests {
 
     use std::collections::HashSet;
 
-    use gbwt::GBZ;
+    use gbz::GBZ;
     use simple_sds::serialize;
 
     #[test]

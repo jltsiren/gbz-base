@@ -1,5 +1,9 @@
 # GBZ-base releases
 
+## Current version
+
+* Support for GBZ version 2 with Zstandard compressed sequences.
+
 ## GBZ-base 0.2.0 (2025-12-26)
 
 * Database versions: GBZ-base v0.4.0, GAF-base v0.2.0

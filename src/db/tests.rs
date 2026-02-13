@@ -2,8 +2,8 @@ use super::*;
 
 use crate::{internal, utils};
 
-use gbwt::REF_SAMPLE;
-use gbwt::{Metadata, GBWT};
+use gbz::GENERIC_SAMPLE;
+use gbz::{Metadata, GBWT};
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -434,7 +434,7 @@ fn check_indexed_positions(gbz_file: &PathBuf, chains_file: Option<&PathBuf>, re
 fn index_generic_paths() {
     let gbz_file = support::get_test_data("example.gbz");
     let chains_file = None;
-    let ref_samples = vec![String::from(REF_SAMPLE)];
+    let ref_samples = vec![String::from(GENERIC_SAMPLE)];
     check_indexed_positions(&gbz_file, chains_file, ref_samples);
 }
 

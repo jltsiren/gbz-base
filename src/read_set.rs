@@ -4,9 +4,9 @@ use crate::{GAFBase, GBZRecord, GraphReference, Subgraph, Alignment, AlignmentBl
 use crate::alignment::{Flags, TargetPath};
 use crate::utils;
 
-use gbwt::{Orientation, Pos, GBZ};
-use gbwt::bwt::Record;
-use gbwt::support;
+use gbz::{Orientation, Pos, GBZ};
+use gbz::bwt::Record;
+use gbz::support;
 
 use rusqlite::{Row, OptionalExtension};
 
@@ -57,7 +57,7 @@ impl Display for AlignmentOutput {
 /// use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
 /// use gbz_base::{GAFBase, GAFBaseParams, ReadSet, AlignmentOutput, GraphReference};
 /// use gbz_base::utils;
-/// use gbwt::GBZ;
+/// use gbz::GBZ;
 /// use simple_sds::serialize;
 ///
 /// // Get an in-memory graph.

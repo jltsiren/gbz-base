@@ -20,9 +20,9 @@ use std::iter::FusedIterator;
 use std::ops::Range;
 use std::cmp;
 
-use gbwt::ENDMARKER;
-use gbwt::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
-use gbwt::{algorithms, support};
+use gbz::ENDMARKER;
+use gbz::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
+use gbz::{algorithms, support};
 
 use pggname::{Graph, GraphName};
 use pggname::graph::NodeInt;
@@ -67,8 +67,8 @@ pub mod query;
 ///
 /// ```
 /// use gbz_base::{GBZRecord, GraphReference, PathIndex, Subgraph, HaplotypeOutput};
-/// use gbwt::{GBZ, FullPathName, Orientation};
-/// use gbwt::support;
+/// use gbz::{GBZ, FullPathName, Orientation};
+/// use gbz::support;
 /// use simple_sds::serialize;
 ///
 /// // Get the graph.
@@ -170,8 +170,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz_base::{GBZRecord, Subgraph, GraphReference, PathIndex};
-    /// use gbwt::{GBZ, FullPathName, Orientation};
-    /// use gbwt::support;
+    /// use gbz::{GBZ, FullPathName, Orientation};
+    /// use gbz::support;
     /// use simple_sds::serialize;
     ///
     /// // Get the graph.
@@ -253,8 +253,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz_base::{GBZBase, GraphInterface, Subgraph};
-    /// use gbwt::{FullPathName, Orientation};
-    /// use gbwt::support;
+    /// use gbz::{FullPathName, Orientation};
+    /// use gbz::support;
     /// use simple_sds::serialize;
     /// use std::fs;
     ///
@@ -498,8 +498,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz_base::{GBZRecord, Subgraph, GraphReference};
-    /// use gbwt::GBZ;
-    /// use gbwt::support;
+    /// use gbz::GBZ;
+    /// use gbz::support;
     /// use simple_sds::serialize;
     /// use std::collections::BTreeSet;
     ///
@@ -624,8 +624,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz_base::{GBZRecord, Subgraph, GraphReference};
-    /// use gbwt::{GBZ, Orientation};
-    /// use gbwt::support;
+    /// use gbz::{GBZ, Orientation};
+    /// use gbz::support;
     /// use simple_sds::serialize;
     ///
     /// let graph_file = support::get_test_data("example.gbz");
@@ -695,8 +695,8 @@ impl Subgraph {
     /// # Examples
     ///
     /// ```
-    /// use gbwt::{GBZ, Orientation};
-    /// use gbwt::support;
+    /// use gbz::{GBZ, Orientation};
+    /// use gbz::support;
     /// use gbz_base::{Chains, Subgraph, GraphReference};
     /// use gbz_base::utils;
     /// use simple_sds::serialize;
@@ -765,8 +765,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz_base::{PathIndex, Subgraph, SubgraphQuery, HaplotypeOutput};
-    /// use gbwt::{GBZ, FullPathName};
-    /// use gbwt::support;
+    /// use gbz::{GBZ, FullPathName};
+    /// use gbz::support;
     /// use simple_sds::serialize;
     ///
     /// // Get the graph.
@@ -867,8 +867,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz_base::{GBZBase, GraphInterface, Subgraph, SubgraphQuery, HaplotypeOutput};
-    /// use gbwt::FullPathName;
-    /// use gbwt::support;
+    /// use gbz::FullPathName;
+    /// use gbz::support;
     /// use simple_sds::serialize;
     /// use std::fs;
     ///
@@ -977,8 +977,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz_base::{GBZRecord, Subgraph, HaplotypeOutput};
-    /// use gbwt::GBZ;
-    /// use gbwt::support;
+    /// use gbz::GBZ;
+    /// use gbz::support;
     /// use simple_sds::serialize;
     ///
     /// // Get the graph.
@@ -1984,7 +1984,7 @@ impl Display for EditOperation {
 /// These values encode the identifier and the orientation of the node.
 /// Successor nodes are always listed in sorted order.
 /// Predecessor nodes are sorted by their identifiers, but the reverse orientation is listed before the forward orientation.
-/// Like [`gbwt::gbz::EdgeIter`], but only for edges in the subgraph.
+/// Like [`gbz::gbz::EdgeIter`], but only for edges in the subgraph.
 #[derive(Clone, Debug)]
 pub struct EdgeIter<'a> {
     parent: &'a Subgraph,
