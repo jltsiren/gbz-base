@@ -61,29 +61,36 @@ pub fn file_exists<P: AsRef<Path>>(filename: P) -> bool {
     fs::metadata(filename).is_ok()
 }
 
-// FIXME: Take a buffered reader instead and put the magic numbers back into the buffer.
-/// Returns `true` if the file appears to be gzip-compressed.
-pub fn is_gzipped<P: AsRef<Path>>(filename: P) -> bool {
-    let file = File::open(filename).ok();
-    if file.is_none() {
-        return false;
-    }
-    let mut reader = BufReader::new(file.unwrap());
-    let mut magic = [0; 2];
-    let len = reader.read(&mut magic).ok();
-    len == Some(2) && magic == [0x1F, 0x8B]
+/// Returns `true` if the reader appears to be gzip-compressed.
+///
+/// # Errors
+///
+/// Passes through all I/O errors from the reader.
+pub fn is_gzipped<R: BufRead>(reader: &mut R) -> io::Result<bool> {
+    let buffer = reader.fill_buf()?;
+    let result = buffer.len() >= 2 && buffer[0..2] == [0x1F, 0x8B];
+    Ok(result)
 }
 
-// FIXME: Use - to indicate stdin.
 /// Returns a buffered reader for the file, which may be gzip-compressed.
+///
+/// Use `-` as the file name to read from standard input.
+///
+/// # Errors
+///
+/// Passes through any I/O errors from trying to open and read the file.
 pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String> {
-    let file = File::open(&filename).map_err(|x| x.to_string())?;
-    let inner = BufReader::new(file);
-    if is_gzipped(&filename) {
-        let inner = MultiGzDecoder::new(inner);
-        Ok(Box::new(BufReader::new(inner)))
+    let mut inner = if filename.as_ref() == Path::new("-") {
+        Box::new(BufReader::new(io::stdin())) as Box<dyn BufRead>
     } else {
-        Ok(Box::new(inner))
+        let file = File::open(&filename).map_err(|x| format!("Failed to open file {}: {}", filename.as_ref().display(), x))?;
+        Box::new(BufReader::new(file)) as Box<dyn BufRead>
+    };
+    if is_gzipped(&mut inner).map_err(|x| format!("Failed to read file {}: {}", filename.as_ref().display(), x))? {
+        let gz_inner = MultiGzDecoder::new(inner);
+        Ok(Box::new(BufReader::new(gz_inner)))
+    } else {
+        Ok(inner)
     }
 }
 
