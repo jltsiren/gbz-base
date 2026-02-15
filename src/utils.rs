@@ -208,8 +208,13 @@ pub fn require_valid_reference(alignments: &GraphName, reference: &GraphName) ->
 
 //-----------------------------------------------------------------------------
 
+// TODO: Find chains from a graph:
+// 1. Find all weakly connected components.
+// 2. For each component (in parallel?):
+//    a. Build a tree of biconnected components.
+//    b. Find the longest path in the tree, upweighting the nodes on reference paths.
+//    c. Use the longest path as a chain.
 // TODO: Move to gbwt-rs?
-// TODO: Do we want to support nested chains as well?
 /// A set of top-level chains represented as links between boundary nodes.
 ///
 /// Top-level chains provide a linear high-level structure for each weakly connected component in the graph.

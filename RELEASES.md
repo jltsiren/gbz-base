@@ -23,6 +23,7 @@ This is the initial release of GBZ-base and GAF-base.
 
 * Run `cargo clippy`.
 * Run tests with `cargo test`.
+* Update database versions to non-dev versions in `db.rs`.
 * Update version in `Cargo.toml`.
 * Update `RELEASES.md`.
 * Publish in crates.io with `cargo publish`.

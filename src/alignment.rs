@@ -1197,6 +1197,7 @@ impl<'a> Iterator for AlignmentIter<'a> {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: split the perfect alignment flag into full alignment / perfect alignment flags
 /// An ad hoc bitvector for flags in [`AlignmentBlock`].
 #[derive(Debug, Clone)]
 pub struct Flags {
@@ -1444,6 +1445,9 @@ impl AlignmentBlock {
         Self::zstd_compress(&quality_strings)
     }
 
+    // FIXME: Option to choose whether we should store quality strings
+    // FIXME: make vectors empty if there is no data to store
+    // FIXME: full alignment / perfect alignment flags
     /// Creates a new alignment block from the given read alignments and GBWT index.
     ///
     /// If the reads are aligned, they correspond to paths `first_id` to `first_id + alignments.len() - 1` in the GBWT index.
@@ -1593,6 +1597,7 @@ impl AlignmentBlock {
         Ok(())
     }
 
+    // FIXME: full alignment / perfect alignment flags
     fn decompress_numbers(&self, result: &mut [Alignment]) -> Result<(), String> {
         let mut decoder = ByteCodeIter::new(&self.numbers[..]);
         for (i, aln) in result.iter_mut().enumerate() {
@@ -1633,6 +1638,7 @@ impl AlignmentBlock {
         Ok(())
     }
 
+    // FIXME: Handle the case where some vectors are empty
     pub fn decode(&self) -> Result<Vec<Alignment>, String> {
         let mut result = vec![Alignment::default(); self.len()];
         self.decompress_gbwt_starts(&mut result)?;

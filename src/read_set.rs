@@ -235,6 +235,8 @@ impl ReadSet {
     pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, output: AlignmentOutput) -> Result<Self, String> {
         let mut read_set = ReadSet::default();
 
+        // FIXME: Take the sequence from GAF-base if it is non-empty
+        // FIXME: But then we need an option without a graph
         // Build a record from the databases.
         let mut get_node = database.connection.prepare(
             "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
