@@ -61,6 +61,7 @@ pub fn file_exists<P: AsRef<Path>>(filename: P) -> bool {
     fs::metadata(filename).is_ok()
 }
 
+// FIXME: Take a buffered reader instead and put the magic numbers back into the buffer.
 /// Returns `true` if the file appears to be gzip-compressed.
 pub fn is_gzipped<P: AsRef<Path>>(filename: P) -> bool {
     let file = File::open(filename).ok();
@@ -73,6 +74,7 @@ pub fn is_gzipped<P: AsRef<Path>>(filename: P) -> bool {
     len == Some(2) && magic == [0x1F, 0x8B]
 }
 
+// FIXME: Use - to indicate stdin.
 /// Returns a buffered reader for the file, which may be gzip-compressed.
 pub fn open_file<P: AsRef<Path>>(filename: P) -> Result<Box<dyn BufRead>, String> {
     let file = File::open(&filename).map_err(|x| x.to_string())?;

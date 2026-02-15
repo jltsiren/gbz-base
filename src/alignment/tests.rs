@@ -368,6 +368,10 @@ fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
 
     for (i, aln) in decoded.iter_mut().enumerate() {
         aln.extract_target_path(index);
+        // NOTE: We do not store the true target path length in the alignment block.
+        // Because we do not have the reference graph here, we simply assume that it is correct.
+        assert_eq!(aln.path_len, aln.path_interval.end, "Non-zero right flank for target path of alignment {} in decoded block {}..{}", i, range.start, range.end);
+        aln.path_len = block[i].path_len;
         assert_eq!(*aln, block[i], "Wrong alignment {} in the decoded block {}..{}", range.start + i, range.start, range.end);
     }
 }

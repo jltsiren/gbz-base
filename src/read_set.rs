@@ -141,7 +141,7 @@ impl ReadSet {
         block.decode()
     }
 
-    // Replaces the GBWT starting position of the alignment with the path.
+    // Replaces the GBWT starting position of the alignment with the path and sets the true target path length.
     // Requires that the path overlaps with / is fully contained in the subgraph.
     // If the path is valid, inserts all missing node records into the read set.
     fn set_target_path(
@@ -156,6 +156,7 @@ impl ReadSet {
 
         let mut path = Vec::new();
         let mut overlap = false;
+        let mut target_path_len = 0;
         while let Some(p) = pos {
             if subgraph.has_handle(p.node) {
                 overlap = true;
@@ -174,17 +175,19 @@ impl ReadSet {
             // Navigate to the next position.
             path.push(p.node);
             let record = record.unwrap();
+            target_path_len += record.sequence_len();
             pos = record.to_gbwt_record().lf(p.offset);
         }
 
         // Set the target path in the alignment.
         if overlap {
             alignment.set_target_path(path);
+            alignment.set_target_path_len(target_path_len);
         }
         Ok(())
     }
 
-    // Replaces the GBWT starting position of the alignment with the path.
+    // Replaces the GBWT starting position of the alignment with the path and sets the true target path length.
     // Inserts all missing node records into the read set.
     fn set_target_path_simple(
         &mut self, alignment: &mut Alignment,
@@ -196,6 +199,7 @@ impl ReadSet {
         };
 
         let mut path = Vec::new();
+        let mut target_path_len = 0;
         while let Some(p) = pos {
             // Now get the record for the node.
             let mut record = self.nodes.get(&p.node);
@@ -208,11 +212,13 @@ impl ReadSet {
             // Navigate to the next position.
             path.push(p.node);
             let record = record.unwrap();
+            target_path_len += record.sequence_len();
             pos = record.to_gbwt_record().lf(p.offset);
         }
 
         // Set the target path in the alignment.
         alignment.set_target_path(path);
+        alignment.set_target_path_len(target_path_len);
         Ok(())
     }
 

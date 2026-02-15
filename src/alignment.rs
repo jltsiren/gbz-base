@@ -605,12 +605,12 @@ impl Alignment {
         }
 
         // Target path coordinates. We again write the aligned length first.
-        let (left_flank, length, right_flank) = Self::normalize_coordinates(self.path_interval.clone(), self.path_len);
+        // We do not store the right flank, because it can be derived from the path itself.
+        let (left_flank, length, _) = Self::normalize_coordinates(self.path_interval.clone(), self.path_len);
         if !(exact_alignment || known_alignment) {
             encoder.write(length);
         }
         encoder.write(left_flank);
-        encoder.write(right_flank); // FIXME: This is redundant, but we do not have access to the graph for the moment.
 
         // Alignment statistics.
         if !(exact_alignment || known_alignment) {
@@ -781,6 +781,11 @@ impl Alignment {
     /// Sets the given path as the target path.
     pub fn set_target_path(&mut self, path: Vec<usize>) {
         self.path = TargetPath::Path(path);
+    }
+
+    /// Sets the length of the target path.
+    pub fn set_target_path_len(&mut self, len: usize) {
+        self.path_len = len;
     }
 
     /// Returns an iterator over the alignment as a sequence of mappings.
@@ -1364,6 +1369,8 @@ impl AsRef<[u8]> for Flags {
 /// assert_eq!(decompressed.len(), alignments.len());
 /// for (i, aln) in decompressed.iter_mut().enumerate() {
 ///     aln.extract_target_path(&index);
+///     // NOTE: We need the reference graph to determine the true target path length.
+///     aln.path_len = alignments[i].path_len;
 ///     assert_eq!(*aln, alignments[i]);
 /// }
 /// ```
@@ -1396,7 +1403,6 @@ impl AlignmentBlock {
     /// Compression level for Zstandard.
     pub const COMPRESSION_LEVEL: i32 = 7;
 
-    // TODO: Allow outliers instead of requiring the same length from every read.
     fn expected_read_length(alignments: &[Alignment]) -> Option<usize> {
         let mut read_length = None;
         for aln in alignments.iter() {
@@ -1660,7 +1666,7 @@ impl AlignmentBlock {
                 target_len = decoder.next().ok_or(format!("Missing target path alignedlength for alignment {}", i))?;
             }
             let target_left = decoder.next().ok_or(format!("Missing target path left flank for alignment {}", i))?;
-            let target_right = decoder.next().ok_or(format!("Missing target path right flank for alignment {}", i))?; // FIXME: this is redundant
+            let target_right = 0; // We can determine the length of the right flank later.
             aln.path_interval = target_left..(target_left + target_len);
             aln.path_len = target_len + target_left + target_right;
 
@@ -1685,6 +1691,18 @@ impl AlignmentBlock {
         Ok(())
     }
 
+    /// Decompresses the block into a vector of alignments.
+    ///
+    /// Aligned query sequences have target paths represented as GBWT starting positions.
+    /// The path can be set with [`Alignment::set_target_path`] or extracted from a GBWT index with [`Alignment::extract_target_path`].
+    /// Unaligned query sequences have empty target paths.
+    ///
+    /// The true length of the target path cannot be determined from the alignment block alone.
+    /// It can be set later using [`Alignment::set_target_path_len`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if decompression fails or if data required for decoding the block is missing.
     pub fn decode(&self) -> Result<Vec<Alignment>, String> {
         let mut result = vec![Alignment::default(); self.len()];
 

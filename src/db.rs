@@ -521,7 +521,7 @@ impl GAFBase {
 
     // FIXME: "GAF-base version 3" for release
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base version 3-dev-1";
+    pub const VERSION: &'static str = "GAF-base version 3-dev-2";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -688,7 +688,7 @@ impl AlignmentStats {
     }
 }
 
-// FIXME: store sequences, store quality strings
+// FIXME: store sequences, store quality strings, store optional fields
 // FIXME: to tag
 /// GAF-base construction parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
