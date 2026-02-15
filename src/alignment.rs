@@ -558,15 +558,14 @@ impl Alignment {
 
 /// Encoding / decoding the alignment in the format used in GAF-base.
 impl Alignment {
-    // Normalizes the interval and encodes it as (left flank, length, right flank).
-    fn encode_coordinates(interval: Range<usize>, len: usize, include_redundant: bool, encoder: &mut ByteCode) {
+    // Normalizes the interval so that `start <= end <= len` and returns it as (left flank, length, right flank).
+    fn normalize_coordinates(interval: Range<usize>, len: usize) -> (usize, usize, usize) {
         let start = if interval.start <= interval.end { interval.start } else { interval.end };
         let end = if interval.end <= len { interval.end } else { len };
-        encoder.write(start);
-        if include_redundant {
-            encoder.write(end - start);
-        }
-        encoder.write(len - end);
+        let left_flank = start;
+        let length = end - start;
+        let right_flank = len - end;
+        (left_flank, length, right_flank)
     }
 
     // Encodes a signed integer. Small absolute values are represented as small numbers.
@@ -584,26 +583,37 @@ impl Alignment {
     // * Alignment statistics: `matches`, `edits`, `mapq`, `score`.
     //
     // The coordinates are normalized so that `start <= end <= len`.
-    // If `perfect_alignment` is set, this is assumed to be a perfect alignment of the expected length.
-    // In that case, numbers that can be derived from the length are not stored.
-    // If a difference string is present, numbers that can be derived from it are not stored.
+    // If `known_length` is set, the length of the query sequence is assumed to be stored externally.
+    // We also assume that the decoder knows whether this is a full and/or exact alignment, or whether a difference string is present.
+    // Numbers that can be derived from these properties are not stored to save space.
     //
     // Mapping quality and alignment score are stored if they are present.
     // Their presence should be stored separately.
-    fn encode_numbers_into(&self, encoder: &mut ByteCode, perfect_alignment: bool) {
-        let include_redundant = self.difference.is_empty();
+    fn encode_numbers_into(&self, encoder: &mut ByteCode, known_length: bool) {
+        let full_alignment = self.is_full();
+        let exact_alignment = self.is_exact();
+        let known_alignment = self.has_difference_string();
 
-        // Coordinates.
-        if perfect_alignment {
-            // We can also derive target interval length from the sequence length.
-            Self::encode_coordinates(self.path_interval.clone(), self.path_len, false, encoder);
-        } else {
-            Self::encode_coordinates(self.seq_interval.clone(), self.seq_len, include_redundant, encoder);
-            Self::encode_coordinates(self.path_interval.clone(), self.path_len, include_redundant, encoder);
+        // Query sequence coordinates. We write the aligned length first to simplify the logic.
+        let (left_flank, length, right_flank) = Self::normalize_coordinates(self.seq_interval.clone(), self.seq_len);
+        if !(known_length || known_alignment) {
+            encoder.write(length);
+        }
+        if !full_alignment {
+            encoder.write(left_flank);
+            encoder.write(right_flank);
         }
 
+        // Target path coordinates. We again write the aligned length first.
+        let (left_flank, length, right_flank) = Self::normalize_coordinates(self.path_interval.clone(), self.path_len);
+        if !(exact_alignment || known_alignment) {
+            encoder.write(length);
+        }
+        encoder.write(left_flank);
+        encoder.write(right_flank); // FIXME: This is redundant, but we do not have access to the graph for the moment.
+
         // Alignment statistics.
-        if include_redundant {
+        if !(exact_alignment || known_alignment) {
             encoder.write(self.matches);
             encoder.write(self.edits);
         }
@@ -617,38 +627,29 @@ impl Alignment {
 
     // Encodes the difference string into the given encoder.
     //
+    // Also encodes empty / missing difference strings.
     // [`Difference::End`] values are not included in the encoding, but one is always added at the end.
     fn encode_difference_into(&self, encoder: &mut RLE) {
-        if !self.difference.is_empty() {
-            for diff in self.difference.iter() {
-                match diff {
-                    Difference::Match(len) => encoder.write(Run::new(0, *len)),
-                    Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
-                    Difference::Insertion(seq) => {
-                        let len = utils::encoded_length(seq.len());
-                        encoder.write(Run::new(2, len));
-                        let encoded = utils::encode_sequence(seq);
-                        for byte in encoded {
-                            encoder.write_byte(byte);
-                        }
-                    },
-                    Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
-                    Difference::End => {},
-                }
+        for diff in self.difference.iter() {
+            match diff {
+                Difference::Match(len) => encoder.write(Run::new(0, *len)),
+                Difference::Mismatch(base) => encoder.write(Run::new(1, utils::encode_base(*base))),
+                Difference::Insertion(seq) => {
+                    let len = utils::encoded_length(seq.len());
+                    encoder.write(Run::new(2, len));
+                    let encoded = utils::encode_sequence(seq);
+                    for byte in encoded {
+                        encoder.write_byte(byte);
+                    }
+                },
+                Difference::Deletion(len) => encoder.write(Run::new(3, *len)),
+                Difference::End => {},
             }
         }
         encoder.write(Run::new(4, 1));
     }
 
     // TODO: encode optional fields
-
-    // Decodes an interval and a length from the iterator.
-    fn decode_coordinates(iter: &mut ByteCodeIter, include_redundant: bool) -> Option<(Range<usize>, usize)> {
-        let left_flank = iter.next()?;
-        let interval_len = if include_redundant { iter.next()? } else { 0 };
-        let right_flank = iter.next()?;
-        Some((left_flank..left_flank + interval_len, left_flank + interval_len + right_flank))
-    }
 
     // Decodes a signed integer from the iterator.
     fn decode_signed(iter: &mut ByteCodeIter) -> Option<isize> {
@@ -694,20 +695,35 @@ impl Alignment {
 // TODO: Add an operation for reconstructing the query sequence.
 /// Operations on the Alignment object.
 impl Alignment {
-    /// Returns `true` if the read is unaligned.
+    /// Returns `true` if the query sequence is unaligned.
     ///
-    /// An aligned read has a non-empty query interval aligned to a non-empty target interval.
+    /// An aligned sequence has a non-empty query interval aligned to a non-empty target interval.
     /// NOTE: An empty sequence is by definition unaligned.
     pub fn is_unaligned(&self) -> bool {
         self.seq_interval.is_empty() || self.path_interval.is_empty()
     }
 
-    /// Returns `true` if this is a perfect alignment of the entire read.
-    pub fn is_perfect(&self) -> bool {
+    /// Returns `true` if this is an alignment of the entire query sequence.
+    ///
+    /// NOTE: An empty sequence is by definition unaligned.
+    pub fn is_full(&self) -> bool {
         self.seq_len > 0 &&
             self.seq_interval.start == 0 &&
-            self.seq_interval.end == self.seq_len &&
+            self.seq_interval.end == self.seq_len
+    }
+
+    /// Returns `true` if this is an exact alignment.
+    ///
+    /// NOTE: An empty sequence is by definition unaligned.
+    pub fn is_exact(&self) -> bool {
+        self.seq_len > 0 &&
+            !self.seq_interval.is_empty() &&
             self.edits == 0
+    }
+
+    /// Returns `true` if there is a non-empty difference string for the alignment.
+    pub fn has_difference_string(&self) -> bool {
+        !self.difference.is_empty()
     }
 
     /// Returns the minimum GBWT node identifier in the target path, or [`None`] if there is no path.
@@ -1197,7 +1213,6 @@ impl<'a> Iterator for AlignmentIter<'a> {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: split the perfect alignment flag into full alignment / perfect alignment flags
 /// An ad hoc bitvector for flags in [`AlignmentBlock`].
 #[derive(Debug, Clone)]
 pub struct Flags {
@@ -1206,7 +1221,7 @@ pub struct Flags {
 
 impl Flags {
     /// Number of flags per alignment.
-    pub const NUM_FLAGS: usize = 5;
+    pub const NUM_FLAGS: usize = 6;
 
     // Flags expressed as a bit offset.
     // TODO: As enum?
@@ -1223,8 +1238,15 @@ impl Flags {
     /// Flag: An alignment score is present.
     pub const FLAG_HAS_SCORE: usize = 3;
 
-    /// Flag: This is a perfect alignment of the entire read, and read length is as expected.
-    pub const FLAG_PERFECT_ALIGNMENT: usize = 4;
+    /// Flag: This is an alignment of the entire query sequence.
+    ///
+    /// We do not encode the lengths of the unaligned flanks.
+    pub const FLAG_FULL_ALIGNMENT: usize = 4;
+
+    /// Flag: This is an exact alignment.
+    ///
+    /// We do not encode the difference string, matches, or edits.
+    pub const FLAG_EXACT_ALIGNMENT: usize = 5;
 
     /// Creates a new flags object with the given number of alignments.
     /// The flags are initialized to zero (false).
@@ -1446,8 +1468,6 @@ impl AlignmentBlock {
     }
 
     // FIXME: Option to choose whether we should store quality strings
-    // FIXME: make vectors empty if there is no data to store
-    // FIXME: full alignment / perfect alignment flags
     /// Creates a new alignment block from the given read alignments and GBWT index.
     ///
     /// If the reads are aligned, they correspond to paths `first_id` to `first_id + alignments.len() - 1` in the GBWT index.
@@ -1477,8 +1497,11 @@ impl AlignmentBlock {
         let mut numbers = ByteCode::new();
 
         for (i, aln) in alignments.iter().enumerate() {
-            let perfect_alignment = aln.is_perfect() && Some(aln.seq_len) == read_length;
-            if !perfect_alignment {
+            let full_alignment = aln.is_full();
+            let exact_alignment = aln.is_exact();
+            if !exact_alignment {
+                // If the alignment is exact, we can reconstruct the difference string from
+                // the length of the aligned interval.
                 aln.encode_difference_into(&mut difference_strings);
             }
 
@@ -1496,9 +1519,10 @@ impl AlignmentBlock {
             if aln.score.is_some() {
                 flags.set(i, Flags::FLAG_HAS_SCORE, true);
             }
-            flags.set(i, Flags::FLAG_PERFECT_ALIGNMENT, perfect_alignment);
+            flags.set(i, Flags::FLAG_FULL_ALIGNMENT, full_alignment);
+            flags.set(i, Flags::FLAG_EXACT_ALIGNMENT, exact_alignment);
 
-            aln.encode_numbers_into(&mut numbers, perfect_alignment);
+            aln.encode_numbers_into(&mut numbers, read_length.is_some());
         }
 
         Ok(Self {
@@ -1586,30 +1610,65 @@ impl AlignmentBlock {
     fn decompress_difference_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
         let mut decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
         for (i, aln) in result.iter_mut().enumerate() {
-            if self.flags.get(i, Flags::FLAG_PERFECT_ALIGNMENT) {
-                let len = self.read_length.ok_or(format!("Missing read length for perfect alignment {}", i))?;
-                aln.difference = vec![Difference::Match(len)];
-            } else {
+            if !self.flags.get(i, Flags::FLAG_EXACT_ALIGNMENT) {
                 let res = Alignment::decode_difference_from(&self.difference_strings, &mut decoder);
                 aln.difference = res.map_err(|err| format!("Missing difference string for alignment {}: {}", i, err))?;
             }
+            // If the alignment is exact, we will reconstruct the difference string once we know
+            // the length of the aligned interval.
         }
         Ok(())
     }
 
-    // FIXME: full alignment / perfect alignment flags
     fn decompress_numbers(&self, result: &mut [Alignment]) -> Result<(), String> {
         let mut decoder = ByteCodeIter::new(&self.numbers[..]);
         for (i, aln) in result.iter_mut().enumerate() {
-            // If this is a perfect alignment, we created a difference string even if the original alignment did not have one.
-            let include_redundant = aln.difference.is_empty();
-            if !self.flags.get(i, Flags::FLAG_PERFECT_ALIGNMENT) {
-                (aln.seq_interval, aln.seq_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
-                    .ok_or(format!("Missing query sequence coordinates for alignment {}", i))?;
+            let full_alignment = self.flags.get(i, Flags::FLAG_FULL_ALIGNMENT);
+            let exact_alignment = self.flags.get(i, Flags::FLAG_EXACT_ALIGNMENT);
+            let known_alignment = aln.has_difference_string();
+
+            // Derive the numbers from the difference string first.
+            // If the difference string is empty, we get zeros and update them later.
+            let (mut query_len, mut target_len, num_matches, num_edits) = Difference::stats(&aln.difference);
+            aln.matches = num_matches;
+            aln.edits = num_edits;
+
+            // Query sequence coordinates.
+            if let Some(len) = self.read_length {
+                query_len = len;
+            } else if !known_alignment {
+                query_len = decoder.next().ok_or(format!("Missing query sequence aligned length for alignment {}", i))?;
             }
-            (aln.path_interval, aln.path_len) = Alignment::decode_coordinates(&mut decoder, include_redundant)
-                .ok_or(format!("Missing target path coordinates for alignment {}", i))?;
-            if include_redundant {
+            let (query_left, query_right) = if full_alignment {
+                (0, 0)
+            } else {
+                let query_left = decoder.next().ok_or(format!("Missing query sequence left flank for alignment {}", i))?;
+                let query_right = decoder.next().ok_or(format!("Missing query sequence right flank for alignment {}", i))?;
+                (query_left, query_right)
+            };
+            if self.read_length.is_some() {
+                // The known length was for the entire query sequence, including the flanks.
+                query_len -= query_left + query_right;
+            }
+            aln.seq_interval = query_left..(query_left + query_len);
+            aln.seq_len = query_len + query_left + query_right;
+
+            // Target path coordinates.
+            if exact_alignment {
+                target_len = query_len;
+            } else if !known_alignment {
+                target_len = decoder.next().ok_or(format!("Missing target path alignedlength for alignment {}", i))?;
+            }
+            let target_left = decoder.next().ok_or(format!("Missing target path left flank for alignment {}", i))?;
+            let target_right = decoder.next().ok_or(format!("Missing target path right flank for alignment {}", i))?; // FIXME: this is redundant
+            aln.path_interval = target_left..(target_left + target_len);
+            aln.path_len = target_len + target_left + target_right;
+
+            // Alignment statistics.
+            if exact_alignment {
+                aln.matches = query_len;
+                aln.edits = 0;
+            } else if !known_alignment {
                 aln.matches = decoder.next().ok_or(format!("Missing number of matches for alignment {}", i))?;
                 aln.edits = decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?;
             }
@@ -1621,32 +1680,39 @@ impl AlignmentBlock {
                     format!("Missing alignment score for alignment {}", i)
                 )?);
             }
-
-            // Derive redundant numbers from the difference string.
-            // This also handles numbers derived from a perfect alignment.
-            if !include_redundant {
-                let (query_len, target_len, num_matches, num_edits) = Difference::stats(&aln.difference);
-                aln.seq_interval.end = aln.seq_interval.start + query_len;
-                aln.seq_len += query_len;
-                aln.path_interval.end = aln.path_interval.start + target_len;
-                aln.path_len += target_len;
-                aln.matches = num_matches;
-                aln.edits = num_edits;
-            }
         }
 
         Ok(())
     }
 
-    // FIXME: Handle the case where some vectors are empty
     pub fn decode(&self) -> Result<Vec<Alignment>, String> {
         let mut result = vec![Alignment::default(); self.len()];
+
+        // In a block of aligned reads, we have a GBWT start for every alignment.
+        // In a block of unaligned reads, we have no GBWT starts.
         self.decompress_gbwt_starts(&mut result)?;
+
+        // Missing query / pair names are encoded as empty strings.
         self.decompress_names_pairs(&mut result)?;
+
+        // FIXME: Handle the case with no quality strings.
         self.decompress_quality_strings(&mut result)?;
+
+        // The encoding includes empty / missing difference strings but no difference strings
+        // for exact alignments.
         self.decompress_difference_strings(&mut result)?;
-        // We decompress the numbers last, as their presence may depend on the other fields.
+
+        // We need the flags and the difference strings (for non-exact alignments) to decode the numbers.
         self.decompress_numbers(&mut result)?;
+
+        // Reconstruct the difference strings for exact alignments as the last step.
+        // We may not know the aligned interval length until we have decompressed the numbers.
+        for (i, aln) in result.iter_mut().enumerate() {
+            if self.flags.get(i, Flags::FLAG_EXACT_ALIGNMENT) {
+                aln.difference = vec![Difference::Match(aln.seq_interval.len())];
+            }
+        }
+
         Ok(result)
     }
 }

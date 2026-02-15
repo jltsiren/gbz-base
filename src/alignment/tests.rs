@@ -242,7 +242,9 @@ fn alignment_known_bad() {
 fn alignment_default() {
     let default = Alignment::default();
     assert!(default.is_unaligned(), "A default alignment should be unaligned");
-    assert!(!default.is_perfect(), "An empty alignment should not be perfect");
+    assert!(!default.is_full(), "A default alignment should not be a full alignment");
+    assert!(!default.is_exact(), "An empty alignment should not be exact");
+    assert!(!default.has_difference_string(), "A default alignment should not have a difference string");
 
     assert!(default.name.is_empty(), "A default alignment should not have a name");
     assert_eq!(default.seq_len, 0, "A default alignment should have a sequence length of 0");
@@ -257,7 +259,7 @@ fn alignment_default() {
     assert!(default.mapq.is_none(), "A default alignment should not have a mapping quality");
     assert!(default.score.is_none(), "A default alignment should not have a score");
     assert!(default.base_quality.is_empty(), "A default alignment should not have base quality values");
-    assert!(default.difference.is_empty(), "A default alignment should not have a difference string");
+    assert!(default.difference.is_empty(), "A default alignment should have an empty difference string");
     assert!(default.pair.is_none(), "A default alignment should not have a paired read");
     assert!(default.optional.is_empty(), "A default alignment should not have any optional fields");
 }
@@ -272,7 +274,9 @@ fn alignment_operations() {
     aln.matches = 10;
 
     assert!(!aln.is_unaligned(), "The alignment should be aligned");
-    assert!(aln.is_perfect(), "The alignment should be perfect");
+    assert!(aln.is_full(), "The alignment should be full");
+    assert!(aln.is_exact(), "The alignment should be exact");
+    assert!(!aln.has_difference_string(), "The alignment should not have a difference string");
 
     // Various ways of making the alignment imperfect.
     {
@@ -280,20 +284,20 @@ fn alignment_operations() {
         wrong_start.seq_interval.start += 1;
         wrong_start.path_interval.start += 1;
         wrong_start.matches -= 1;
-        assert!(!wrong_start.is_perfect(), "An alignment starting after query start should not be perfect");
+        assert!(!wrong_start.is_full(), "An alignment starting after query start should not be full");
     }
     {
         let mut wrong_end = aln.clone();
         wrong_end.seq_interval.end -= 1;
         wrong_end.path_interval.end -= 1;
         wrong_end.matches -= 1;
-        assert!(!wrong_end.is_perfect(), "An alignment ending before query end should not be perfect");
+        assert!(!wrong_end.is_full(), "An alignment ending before query end should not be full");
     }
     {
         let mut has_edits = aln.clone();
         has_edits.matches -= 1;
         has_edits.edits += 1;
-        assert!(!has_edits.is_perfect(), "An alignment with edits should not be perfect");
+        assert!(!has_edits.is_exact(), "An alignment with edits should not be exact");
     }
 
     // We have a GBWT start position.
