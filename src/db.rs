@@ -519,9 +519,9 @@ impl GAFBase {
     // Key for database version.
     const KEY_VERSION: &'static str = "version";
 
-    // FIXME: "GAF-base version 3-dev" during development, "GAF-base version 3" for release
+    // FIXME: "GAF-base version 3" for release
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base v0.2.0";
+    pub const VERSION: &'static str = "GAF-base version 3-dev-1";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -880,10 +880,10 @@ impl GAFBase {
         let mut gaf_file = gaf_file;
         let mut connection = connection;
 
-        // FIXME: make rowid an explicit primary key
         // FIXME: set everything except min_handle, max_handle, read_length NOT NULL
         connection.execute(
             "CREATE TABLE Alignments (
+                id INTEGER PRIMARY KEY,
                 min_handle INTEGER,
                 max_handle INTEGER CHECK (min_handle <= max_handle),
                 alignments INTEGER NOT NULL,

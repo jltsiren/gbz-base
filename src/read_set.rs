@@ -286,7 +286,7 @@ impl ReadSet {
         // we have encountered to avoid duplicating reads that overlap multiple clusters.
         let mut row_ids: HashSet<usize> = HashSet::new();
         let mut get_reads = database.connection.prepare(
-            "SELECT rowid, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT id, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
             FROM Alignments
             WHERE min_handle <= ?1 AND max_handle >= ?2"
         ).map_err(|x| x.to_string())?;
@@ -380,7 +380,7 @@ impl ReadSet {
         let mut get_reads = database.connection.prepare(
             "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
             FROM Alignments
-            WHERE rowid >= ?1 AND rowid < ?2"
+            WHERE id >= ?1 AND id < ?2"
         ).map_err(|x| x.to_string())?;
         let mut rows = get_reads.query((row_range.start, row_range.end)).map_err(|x| x.to_string())?;
         while let Some(row) = rows.next().map_err(|x| x.to_string())? {
