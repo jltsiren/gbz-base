@@ -1,5 +1,5 @@
 use crate::{GBZBase, GraphInterface, formats};
-use crate::{GAFBase, GAFBaseParams};
+use crate::{GAFBase, GAFBaseParams, GraphReference};
 use crate::{Alignment, PathIndex, Chains};
 use crate::utils;
 
@@ -52,7 +52,7 @@ pub(crate) fn create_gaf_base(gaf_part: &'static str, gbwt_part: &'static str) -
     let gbwt_file = utils::get_test_data(gbwt_part);
     let db_file = serialize::temp_file_name("gaf-base");
     let params = GAFBaseParams::default();
-    let result = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+    let result = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, GraphReference::None, &params);
     assert!(result.is_ok(), "Failed to create GAF-base database: {}", result.unwrap_err());
     db_file
 }

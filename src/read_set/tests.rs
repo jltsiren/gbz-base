@@ -204,7 +204,7 @@ fn read_set_from_rows() {
         let mut rowid = 1; // SQLite row ids start from 1.
         while found_alns < gaf_base.alignments() {
             let range = rowid..(rowid + chunk_size);
-            let read_set = ReadSet::from_rows(&gaf_base, range.clone(), &graph);
+            let read_set = ReadSet::from_rows(&gaf_base, range.clone(), Some(&graph));
             assert!(read_set.is_ok(), "Failed to extract reads from rows {}..{}: {}", range.start, range.end, read_set.unwrap_err());
             let read_set = read_set.unwrap();
 

@@ -74,8 +74,9 @@ impl Display for AlignmentOutput {
 /// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
 /// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
 /// let db_file = serialize::temp_file_name("gaf-base");
+/// let graph_ref = GraphReference::None; // Do not store sequences in the database.
 /// let params = GAFBaseParams::default();
-/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, graph_ref, &params);
 /// assert!(db.is_ok());
 ///
 /// // Extract all reads fully within the subgraph.
@@ -229,7 +230,7 @@ impl ReadSet {
     ///
     /// # Arguments
     ///
-    /// * `graph`: A GBZ-compatible graph.
+    /// * `graph`: A GBZ-compatible graph, or no graph if the GAF-base contains sequences.
     /// * `subgraph`: The subgraph used as the query region.
     /// * `database`: A database storing reads aligned to the graph.
     /// * `output`: Which reads to include in the read set.
@@ -241,38 +242,40 @@ impl ReadSet {
     pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, output: AlignmentOutput) -> Result<Self, String> {
         let mut read_set = ReadSet::default();
 
-        // FIXME: Take the sequence from GAF-base if it is non-empty
-        // FIXME: But then we need an option without a graph
         // Build a record from the databases.
         let mut get_node = database.connection.prepare(
-            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
+            "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
         let mut graph = graph;
         let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
-            // Get the edges and the BWT fragment from the GAF-base.
+            // Get the node record from the GAF-base.
             let gaf_result = get_node.query_row(
                 (handle,),
-                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
+                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>, Vec<u8>)> {
                     let edge_bytes: Vec<u8> = row.get(0)?;
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
-                    Ok((edges, bwt))
+                    let sequence: Vec<u8> = row.get(2)?;
+                    Ok((edges, bwt, sequence))
                 }
             ).optional().map_err(|x| x.to_string())?;
             if gaf_result.is_none() {
                 return Err(format!("Could not find the record for handle {} in GAF-base", handle));
             }
-            let (edges, bwt) = gaf_result.unwrap();
+            let (edges, bwt, mut sequence) = gaf_result.unwrap();
 
-            // Get the sequence from the subgraph or from the GBZ-base.
-            let sequence = subgraph.sequence_for_handle(handle);
-            let sequence = match sequence {
-                Some(seq) => seq.to_vec(),
-                None => {
-                    let gbz_record = graph.gbz_record(handle)?;
-                    gbz_record.sequence().to_vec()
-                }
-            };
+            // If the GAF-base does not contain node sequences, try to get the sequence from the
+            // subgraph or the original graph.
+            if sequence.is_empty() {
+                let seq = subgraph.sequence_for_handle(handle);
+                sequence = match seq {
+                    Some(seq) => seq.to_vec(),
+                    None => {
+                        let gbz_record = graph.gbz_record(handle)?;
+                        gbz_record.sequence().to_vec()
+                    }
+                };
+            }
 
             unsafe {
                 Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence, None))
@@ -339,43 +342,45 @@ impl ReadSet {
     ///
     /// * `database`: A database storing reads aligned to the graph.
     /// * `row_range`: The range of row ids to extract.
-    /// * `graph`: A GBZ graph.
+    /// * `graph`: A GBZ graph if the database does not contain node sequences.
     ///
     /// # Errors
     ///
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
-    pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: &GBZ) -> Result<Self, String> {
+    pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: Option<&GBZ>) -> Result<Self, String> {
         let mut read_set = ReadSet::default();
         read_set.clusters = 1;
 
-        // Build a record from the GAF-base, with the sequence from the GBZ graph.
+        // Build a record from the GAF-base, with the sequence possibly from the GBZ graph.
         let mut get_node = database.connection.prepare(
-            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
+            "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
         let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
             // Get the edges and the BWT fragment from the GAF-base.
             let gaf_result = get_node.query_row(
                 (handle,),
-                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
+                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>, Vec<u8>)> {
                     let edge_bytes: Vec<u8> = row.get(0)?;
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
-                    Ok((edges, bwt))
+                    let sequence: Vec<u8> = row.get(2)?;
+                    Ok((edges, bwt, sequence))
                 }
             ).optional().map_err(|x| x.to_string())?;
             if gaf_result.is_none() {
                 return Err(format!("Could not find the record for handle {} in GAF-base", handle));
             }
-            let (edges, bwt) = gaf_result.unwrap();
-            let sequence = graph.sequence(support::node_id(handle)).ok_or(
-                format!("Could not find the sequence for handle {} in GBZ", handle)
-            )?;
-            let sequence = if support::node_orientation(handle) == Orientation::Forward {
-                sequence.to_vec()
-            } else {
-                support::reverse_complement(sequence)
-            };
+            let (edges, bwt, mut sequence) = gaf_result.unwrap();
+            if sequence.is_empty() && let Some(graph) = graph {
+                let seq = graph.sequence(support::node_id(handle)).ok_or(
+                    format!("Could not find the sequence for handle {} in GBZ", handle)
+                )?;
+                sequence = seq.to_vec();
+            }
+            if support::node_orientation(handle) == Orientation::Reverse {
+                sequence = support::reverse_complement(&sequence);
+            }
 
             unsafe {
                 Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence, None))

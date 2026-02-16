@@ -690,6 +690,7 @@ impl Subgraph {
     ///
     /// # Errors
     ///
+    /// Returns an error if the graph reference is [`GraphReference::None`].
     /// Passes through errors from accessing the graph.
     ///
     /// # Examples
@@ -732,6 +733,9 @@ impl Subgraph {
                 }
                 GraphReference::Db(graph) => {
                     inserted += self.between_nodes(GraphReference::Db(graph), start, end, None)?;
+                },
+                GraphReference::None => {
+                    return Err(String::from("No graph reference provided"));
                 }
             }
         }

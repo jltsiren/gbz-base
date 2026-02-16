@@ -2,12 +2,15 @@ use std::path::PathBuf;
 use std::time::Instant;
 use std::{env, fs, process};
 
-use gbz_base::{GAFBase, GAFBaseParams};
+use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
 use gbz_base::utils;
 
 use getopts::Options;
 
 //-----------------------------------------------------------------------------
+
+// FIXME: An option to store node sequences by providing a graph.
+// FIXME: An option to not store quality strings.
 
 fn main() -> Result<(), String> {
     let start_time = Instant::now();
@@ -26,7 +29,7 @@ fn main() -> Result<(), String> {
     }
 
     // Create the database.
-    GAFBase::create_from_files(&config.gaf_file, &config.gbwt_file, &config.db_file, &config.params)?;
+    GAFBase::create_from_files(&config.gaf_file, &config.gbwt_file, &config.db_file, GraphReference::None, &config.params)?;
 
     // Statistics.
     let database = GAFBase::open(&config.db_file)?;

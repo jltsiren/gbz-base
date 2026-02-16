@@ -17,6 +17,8 @@ use getopts::Options;
 
 //-----------------------------------------------------------------------------
 
+// FIXME: Make the graph optional in case the GAF-base contains sequences.
+
 fn main() -> Result<(), String> {
     let start_time = Instant::now();
 
@@ -36,7 +38,7 @@ fn main() -> Result<(), String> {
         process::exit(1);
     }
 
-    write_gaf(&database, &alignments, &graph, &config)?;
+    write_gaf(&database, &alignments, Some(&graph), &config)?;
 
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
@@ -47,7 +49,7 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
-fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: &GBZ, config: &Config) -> Result<(), String> {
+fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, config: &Config) -> Result<(), String> {
     // Decoded ReadSets, with an empty ReadSet signaling the end of input.
     let (to_output, from_decoder) = mpsc::sync_channel(4);
 
