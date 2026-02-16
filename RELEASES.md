@@ -7,7 +7,8 @@
 * GAF-base version 3:
   * More space-efficient representation of numerical values in table `Alignments`.
   * Database construction parameters stored in table `Tags`.
-  * Option to store sequences in table `Nodes` for reference-free use.
+  * Reference-free GAF-base with an option to store sequences in table `Nodes`.
+  * Option to leave out base quality strings.
 
 ## GBZ-base 0.2.0 (2025-12-26)
 

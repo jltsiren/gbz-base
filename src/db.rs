@@ -756,8 +756,8 @@ impl Default for GAFBaseParams {
 // other path visits to that node. If a path is the (i+1)-th path starting from GBWT node v,
 // the GBWT starting position is (v, i).
 
-// FIXME: Option to create without quality strings; with optional fields
-// FIXME: tests with a GAF-base with sequences
+// FIXME: Option to create with optional fields
+// FIXME: tests for GAF-base with sequences; without quality strings
 /// Creating the database.
 impl GAFBase {
     /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
@@ -1104,6 +1104,10 @@ impl GAFBase {
             );
             match aln {
                 Ok(aln) => {
+                    let mut aln = aln;
+                    if !params.store_quality_strings {
+                        aln.base_quality.clear();
+                    }
                     if aln.is_unaligned() != unaligned_block {
                         // We have a new block.
                         if !block.is_empty() {

@@ -1470,10 +1470,13 @@ impl AlignmentBlock {
             }
             quality_strings.push(0);
         }
+        if quality_strings.len() <= alignments.len() {
+            // If we have no quality strings, we can store an empty blob.
+            return Ok(Vec::new());
+        }
         Self::zstd_compress(&quality_strings)
     }
 
-    // FIXME: Option to choose whether we should store quality strings
     /// Creates a new alignment block from the given read alignments and GBWT index.
     ///
     /// If the reads are aligned, they correspond to paths `first_id` to `first_id + alignments.len() - 1` in the GBWT index.
@@ -1530,6 +1533,8 @@ impl AlignmentBlock {
 
             aln.encode_numbers_into(&mut numbers, read_length.is_some());
         }
+
+        // TODO: Also consider using an empty blob for no difference strings, as we do for quality strings.
 
         Ok(Self {
             min_handle,
@@ -1602,6 +1607,11 @@ impl AlignmentBlock {
     }
 
     fn decompress_quality_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+        if self.quality_strings.is_empty() {
+            // An empty blob indicates no quality strings.
+            return Ok(());
+        }
+
         let buffer = Self::zstd_decompress(&self.quality_strings[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
@@ -1614,6 +1624,8 @@ impl AlignmentBlock {
     }
 
     fn decompress_difference_strings(&self, result: &mut [Alignment]) -> Result<(), String> {
+        // TODO: Also consider using an empty blob for no difference strings, as we do for quality strings.
+
         let mut decoder = RLEIter::with_sigma(&self.difference_strings[..], Difference::NUM_TYPES);
         for (i, aln) in result.iter_mut().enumerate() {
             if !self.flags.get(i, Flags::FLAG_EXACT_ALIGNMENT) {
@@ -1713,7 +1725,7 @@ impl AlignmentBlock {
         // Missing query / pair names are encoded as empty strings.
         self.decompress_names_pairs(&mut result)?;
 
-        // FIXME: Handle the case with no quality strings.
+        // This could be an empty blob if we have no quality strings.
         self.decompress_quality_strings(&mut result)?;
 
         // The encoding includes empty / missing difference strings but no difference strings
