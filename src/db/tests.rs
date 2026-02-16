@@ -459,7 +459,7 @@ fn check_gaf_base(db: &GAFBase, nodes: usize, alignments: usize, rows: usize, bi
 
 fn check_gaf_base_tags(db: &GAFBase, name_tags: usize) {
     let tags = db.tags();
-    let expected_tags = 4 + name_tags; // version, nodes, alignments, bidirectional
+    let expected_tags = 5 + name_tags; // version, nodes, alignments, bidirectional, params
     assert_eq!(tags.len(), expected_tags, "Wrong number of tags in GAF-base database");
     if name_tags > 0 {
         let graph_name = GraphName::from_tags(&tags);

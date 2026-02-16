@@ -1,6 +1,7 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
 use crate::{Alignment, AlignmentBlock, Chains};
+use crate::formats::JSONValue;
 use crate::{formats, utils};
 
 use std::io::BufRead;
@@ -532,8 +533,8 @@ impl GAFBase {
     // Key for bidirectional GBWT flag.
     const KEY_BIDIRECTIONAL_GBWT: &'static str = "bidirectional_gbwt";
 
-    /// Default block size in alignments.
-    pub const BLOCK_SIZE: usize = 1000;
+    // Key for database parameters.
+    const KEY_PARAMS: &'static str = "params";
 
     fn get_string_value(tags: &Tags, key: &str) -> String {
         tags.get(key).cloned().unwrap_or_default()
@@ -688,19 +689,59 @@ impl AlignmentStats {
     }
 }
 
-// FIXME: store sequences, store quality strings, store optional fields
-// FIXME: to tag
 /// GAF-base construction parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GAFBaseParams {
     /// Number of alignments in a block (database row).
+    ///
+    /// Default: [`Self::BLOCK_SIZE`].
     pub block_size: usize,
+    /// Store sequences in table `Nodes`, allowing queries without a reference graph.
+    ///
+    /// Default: `false`.
+    pub store_sequences: bool,
+    /// Store base quality strings for the alignments.
+    ///
+    /// Default: `true`.
+    pub store_quality_strings: bool,
+    /// Store unknown optional fields with the alignments.
+    ///
+    /// Default: `false`.
+    pub store_optional_fields: bool,
+}
+
+impl GAFBaseParams {
+    /// Default block size in alignments.
+    pub const BLOCK_SIZE: usize = 1000;
+
+    /// Returns a JSON description of the parameters that can be stored as a tag.
+    pub fn to_json(&self) -> String {
+        let mut fields = Vec::new();
+        if self.store_sequences {
+            fields.push(JSONValue::String(String::from("sequences")));
+        }
+        if self.store_quality_strings {
+            fields.push(JSONValue::String(String::from("quality_strings")));
+        }
+        if self.store_optional_fields {
+            fields.push(JSONValue::String(String::from("optional")));
+        }
+        let fields = JSONValue::Array(fields);
+        let json = JSONValue::Object(vec![
+            (String::from("block_size"), JSONValue::Number(self.block_size)),
+            (String::from("fields"), fields),
+        ]);
+        json.to_string()
+    }
 }
 
 impl Default for GAFBaseParams {
     fn default() -> Self {
         Self {
-            block_size: GAFBase::BLOCK_SIZE,
+            block_size: Self::BLOCK_SIZE,
+            store_sequences: false,
+            store_quality_strings: true,
+            store_optional_fields: false,
         }
     }
 }
@@ -714,8 +755,7 @@ impl Default for GAFBaseParams {
 // other path visits to that node. If a path is the (i+1)-th path starting from GBWT node v,
 // the GBWT starting position is (v, i).
 
-// FIXME: Option to create with sequences; without quality strings
-// FIXME: Store options as a tag
+// FIXME: Option to create with sequences; without quality strings; with optional fields
 /// Creating the database.
 impl GAFBase {
     /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
@@ -774,7 +814,7 @@ impl GAFBase {
 
         // We parse additional tags from GAF headers.
         let mut gaf_file = utils::open_file(gaf_file)?;
-        Self::insert_tags(&index, nodes, &mut gaf_file, &mut connection)?;
+        Self::insert_tags(&index, nodes, &mut gaf_file, &mut connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
@@ -790,7 +830,7 @@ impl GAFBase {
     }
 
     // We also include tags parsed from GAF headers.
-    fn insert_tags(index: &GBWT, nodes: usize, gaf_file: &mut impl BufRead, connection: &mut Connection) -> Result<(), String> {
+    fn insert_tags(index: &GBWT, nodes: usize, gaf_file: &mut impl BufRead, connection: &mut Connection, params: &GAFBaseParams) -> Result<(), String> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -822,7 +862,8 @@ impl GAFBase {
             insert.execute((Self::KEY_ALIGNMENTS, alignments)).map_err(|x| x.to_string())?;
             let bidirectional: usize = if index.is_bidirectional() { 1 } else { 0 };
             insert.execute((Self::KEY_BIDIRECTIONAL_GBWT, bidirectional)).map_err(|x| x.to_string())?;
-            inserted += 4;
+            insert.execute((Self::KEY_PARAMS, params.to_json())).map_err(|x| x.to_string())?;
+            inserted += 5;
 
             for (key, value) in additional_tags.iter() {
                 insert.execute((key, value)).map_err(|x| x.to_string())?;

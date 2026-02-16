@@ -2,7 +2,11 @@
 
 ## Current version
 
+* Database versions: GBZ-base v0.4.0, GAF-base version 3
 * Support for GBZ version 2 with Zstandard compressed sequences.
+* GAF-base version 3:
+  * More space-efficient representation of numerical values in table `Alignments`.
+  * Database construction parameters stored in table `Tags`.
 
 ## GBZ-base 0.2.0 (2025-12-26)
 
