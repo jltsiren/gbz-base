@@ -93,8 +93,9 @@ impl Config {
             process::exit(1);
         };
         if db_file.is_none() {
-            // TODO: add_extension is still experimental
-            db_file = Some(PathBuf::from(format!("{}.db", gbz_file.display())));
+            let mut name = gbz_file.clone();
+            name.add_extension("db");
+            db_file = Some(name);
         }
 
         let overwrite = matches.opt_present("overwrite");

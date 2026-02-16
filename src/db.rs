@@ -756,6 +756,9 @@ impl Default for GAFBaseParams {
 // other path visits to that node. If a path is the (i+1)-th path starting from GBWT node v,
 // the GBWT starting position is (v, i).
 
+// TODO: If we are willing to use a reference, we could reuse `edges` in the `Nodes` table from it.
+// We can similarly speed up GBWT construction by having the GBWT of the graph available.
+
 // FIXME: Option to create with optional fields
 // FIXME: tests for GAF-base with sequences; without quality strings
 /// Creating the database.
@@ -900,6 +903,8 @@ impl GAFBase {
         eprintln!("Inserting nodes");
 
         // Create the nodes table.
+        // In a reference-based GAF-base, `sequence` will be empty.
+        // In a reference-free GAF-base, it will store node sequences.
         connection.execute(
             "CREATE TABLE Nodes (
                 handle INTEGER PRIMARY KEY,

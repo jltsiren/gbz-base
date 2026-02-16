@@ -10,7 +10,6 @@ use getopts::Options;
 //-----------------------------------------------------------------------------
 
 // FIXME: An option to store node sequences by providing a graph.
-// FIXME: An option to not store quality strings.
 
 fn main() -> Result<(), String> {
     let start_time = Instant::now();
@@ -70,6 +69,7 @@ impl Config {
         opts.optopt("g", "gbwt", "GBWT file name (required)", "FILE");
         let block_desc = format!("number of alignments per block (default: {})", params.block_size);
         opts.optopt("b", "block-size", &block_desc, "INT");
+        opts.optflag("q", "no-quality", "do not store quality strings");
         opts.optopt("o", "output", "output file name (default: <input>.db)", "FILE");
         opts.optflag("", "overwrite", "overwrite the database file if it exists");
         let matches = match opts.parse(&args[1..]) {
@@ -102,8 +102,9 @@ impl Config {
             process::exit(1);
         };
         if db_file.is_none() {
-            // TODO: add_extension is still experimental
-            db_file = Some(PathBuf::from(format!("{}.db", gaf_file.display())));
+            let mut name = gaf_file.clone();
+            name.add_extension("db");
+            db_file = Some(name);
         }
 
         // Parameters.
@@ -115,6 +116,9 @@ impl Config {
                     process::exit(1);
                 }
             }
+        }
+        if matches.opt_present("q") {
+            params.store_quality_strings = false;
         }
 
         let overwrite = matches.opt_present("overwrite");
