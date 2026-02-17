@@ -88,7 +88,11 @@ When building a database of long read alignments, it can be changed with `--bloc
 
 The default GAF-base is reference-based, like the GAF format itself.
 The alignments can only be decoded by using the corresponding GBZ graph or GBZ-base.
-FIXME: reference-free GAF-base.
+
+A reference-free GAF-base can be built by providing a reference graph during construction with option `--ref-free graph`.
+The graph file should be a GBZ graph.
+A GBZ-base can also be used, but the construction will be much slower.
+Reference-free GAF-bases can be used without a reference graph.
 
 If quality strings are not required, it is possible to drop them with option `--no-quality`.
 This will make the database much smaller, particularly with long reads.
