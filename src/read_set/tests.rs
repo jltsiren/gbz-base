@@ -110,7 +110,7 @@ fn read_set_default() {
 fn test_read_set_gbz(gbwt_part: &'static str, params: &GAFBaseParams) {
     // Load GBZ.
     let graph = internal::load_gaf_base_gbz();
-    let graph_ref = if params.store_sequences {
+    let graph_ref = if params.reference_free {
         GraphReference::Gbz(&graph)
     } else {
         GraphReference::None
@@ -131,7 +131,7 @@ fn test_read_set_gbz(gbwt_part: &'static str, params: &GAFBaseParams) {
 
         for output in [AlignmentOutput::Overlapping, AlignmentOutput::Clipped, AlignmentOutput::Contained] {
             // The graph reference we use for querying is the opposite of the one used for building the database.
-            let graph_ref = if params.store_sequences {
+            let graph_ref = if params.reference_free {
                 GraphReference::None
             } else {
                 GraphReference::Gbz(&graph)
@@ -169,7 +169,7 @@ fn read_set_gbz_no_quality() {
 #[test]
 fn read_set_gbz_ref_free() {
     let mut params = GAFBaseParams::default();
-    params.store_sequences = true;
+    params.reference_free = true;
     test_read_set_gbz("micb-kir3dl1_HG003.gbwt", &params);
 }
 
@@ -177,7 +177,7 @@ fn test_read_set_db(gbwt_part: &'static str, params: &GAFBaseParams) {
     // Open GBZ-base.
     let (gbz_base, gbz_base_file) = internal::create_gaf_base_db();
     let mut graph = internal::create_graph_interface(&gbz_base);
-    let graph_ref = if params.store_sequences {
+    let graph_ref = if params.reference_free {
         GraphReference::Db(&mut graph)
     } else {
         GraphReference::None
@@ -198,7 +198,7 @@ fn test_read_set_db(gbwt_part: &'static str, params: &GAFBaseParams) {
 
         for output in [AlignmentOutput::Overlapping, AlignmentOutput::Clipped, AlignmentOutput::Contained] {
             // The graph reference we use for querying is the opposite of the one used for building the database.
-            let graph_ref = if params.store_sequences {
+            let graph_ref = if params.reference_free {
                 GraphReference::None
             } else {
                 GraphReference::Db(&mut graph)
@@ -239,7 +239,7 @@ fn read_set_db_no_quality() {
 #[test]
 fn read_set_db_ref_free() {
     let mut params = GAFBaseParams::default();
-    params.store_sequences = true;
+    params.reference_free = true;
     test_read_set_db("micb-kir3dl1_HG003.gbwt", &params);
 }
 

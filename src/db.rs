@@ -703,7 +703,7 @@ pub struct GAFBaseParams {
     /// Build a reference-free GAF-base that stores sequences in table `Nodes`.
     ///
     /// Default: `false`.
-    pub store_sequences: bool,
+    pub reference_free: bool,
 
     /// Store base quality strings for the alignments.
     ///
@@ -723,8 +723,8 @@ impl GAFBaseParams {
     /// Returns a JSON description of the parameters that can be stored as a tag.
     pub fn to_json(&self) -> String {
         let mut fields = Vec::new();
-        if self.store_sequences {
-            fields.push(JSONValue::String(String::from("sequences")));
+        if self.reference_free {
+            fields.push(JSONValue::String(String::from("reference_free")));
         }
         if self.store_quality_strings {
             fields.push(JSONValue::String(String::from("quality_strings")));
@@ -745,7 +745,7 @@ impl Default for GAFBaseParams {
     fn default() -> Self {
         Self {
             block_size: Self::BLOCK_SIZE,
-            store_sequences: false,
+            reference_free: false,
             store_quality_strings: true,
             store_optional_fields: false,
         }
@@ -837,7 +837,7 @@ impl GAFBase {
 
         // We will only use the graph if we actually need it.
         let mut graph = graph;
-        if params.store_sequences {
+        if params.reference_free {
             if graph.is_none() {
                 return Err(String::from("The construction of a reference-free GAF-base requires a graph"));
             }
