@@ -86,6 +86,13 @@ Options `--output` and `--overwrite` are the same as in GBZ-base construction.
 The default block size (1000 alignments) is appropriate for short reads.
 When building a database of long read alignments, it can be changed with `--block-size N` (e.g. `--block-size 10` for 20 kbp reads).
 
+The default GAF-base is reference-based, like the GAF format itself.
+The alignments can only be decoded by using the corresponding GBZ graph or GBZ-base.
+FIXME: reference-free GAF-base.
+
+If quality strings are not required, it is possible to drop them with option `--no-quality`.
+This will make the database much smaller, particularly with long reads.
+
 ## Subgraph queries
 
 The `query` tool supports extracting subgraphs from a database or a GBZ graph.

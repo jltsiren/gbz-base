@@ -230,7 +230,7 @@ impl ReadSet {
     ///
     /// # Arguments
     ///
-    /// * `graph`: A GBZ-compatible graph, or no graph if the GAF-base contains sequences.
+    /// * `graph`: A GBZ-compatible graph for querying a reference-based GAF-base, or no graph for a reference-free one.
     /// * `subgraph`: The subgraph used as the query region.
     /// * `database`: A database storing reads aligned to the graph.
     /// * `output`: Which reads to include in the read set.
@@ -264,7 +264,7 @@ impl ReadSet {
             }
             let (edges, bwt, mut sequence) = gaf_result.unwrap();
 
-            // If the GAF-base does not contain node sequences, try to get the sequence from the
+            // If we have a reference-based database, try to get the sequence from the
             // subgraph or the original graph.
             if sequence.is_empty() {
                 let seq = subgraph.sequence_for_handle(handle);
@@ -342,7 +342,7 @@ impl ReadSet {
     ///
     /// * `database`: A database storing reads aligned to the graph.
     /// * `row_range`: The range of row ids to extract.
-    /// * `graph`: A GBZ graph if the database does not contain node sequences.
+    /// * `graph`: A GBZ graph if the database is reference-based, or [`None`] for a reference-free one.
     ///
     /// # Errors
     ///

@@ -10,6 +10,7 @@ use getopts::Options;
 //-----------------------------------------------------------------------------
 
 // FIXME: An option to store node sequences by providing a graph.
+// FIXME: Also check that the graph and the GAF match by pggname.
 
 fn main() -> Result<(), String> {
     let start_time = Instant::now();

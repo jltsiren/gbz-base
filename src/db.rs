@@ -697,14 +697,17 @@ pub struct GAFBaseParams {
     ///
     /// Default: [`Self::BLOCK_SIZE`].
     pub block_size: usize,
-    /// Store sequences in table `Nodes`, allowing queries without a reference graph.
+
+    /// Build a reference-free GAF-base that stores sequences in table `Nodes`.
     ///
     /// Default: `false`.
     pub store_sequences: bool,
+
     /// Store base quality strings for the alignments.
     ///
     /// Default: `true`.
     pub store_quality_strings: bool,
+
     /// Store unknown optional fields with the alignments.
     ///
     /// Default: `false`.
@@ -774,12 +777,13 @@ impl GAFBase {
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `gbwt_file`: GBWT file storing the target paths.
     /// * `db_file`: Output database file.
-    /// * `graph`: A GBZ-compatible graph, or [`GraphReference::None`] if node sequences will not be stored.
+    /// * `graph`: A GBZ-compatible graph for building a reference-free database, or [`GraphReference::None`] for a reference-based one.
     /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
     /// Returns an error if the input files do not exist or the database already exists.
+    /// Returns an error if trying to build a reference-free GAF-base without a graph.
     /// Passes through any database errors.
     pub fn create_from_files(
         gaf_file: &Path, gbwt_file: &Path, db_file: &Path,
@@ -802,12 +806,13 @@ impl GAFBase {
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `index`: GBWT index storing the target paths.
     /// * `db_file`: Output database file.
-    /// * `graph`: A GBZ-compatible graph, or [`GraphReference::None`] if node sequences will not be stored.
+    /// * `graph`: A GBZ-compatible graph for building a reference-free database, or [`GraphReference::None`] for a reference-based one.
     /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
     /// Returns an error if the GAF file does not exist or if the database already exists.
+    /// Returns an error if trying to build a reference-free GAF-base without a graph.
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(
         gaf_file: P, index: Arc<GBWT>, db_file: Q,
@@ -823,7 +828,7 @@ impl GAFBase {
         let mut graph = graph;
         if params.store_sequences {
             if graph.is_none() {
-                return Err(String::from("Node sequences cannot be stored without a graph"));
+                return Err(String::from("The construction of a reference-free GAF-base requires a graph"));
             }
         } else {
             graph = GraphReference::None;
