@@ -639,6 +639,8 @@ impl GAFBase {
         self.bidirectional_gbwt
     }
 
+    // TODO: Parse tag `KEY_PARAMS` and have an interface to report the database construction parameters.
+
     /// Returns all tags stored in the database.
     pub fn tags(&self) -> &Tags {
         &self.tags
@@ -763,7 +765,6 @@ impl Default for GAFBaseParams {
 // We can similarly speed up GBWT construction by having the GBWT of the graph available.
 
 // FIXME: Option to create with optional fields
-// FIXME: tests for GAF-base with sequences; without quality strings
 /// Creating the database.
 impl GAFBase {
     /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
@@ -782,8 +783,13 @@ impl GAFBase {
     ///
     /// # Errors
     ///
-    /// Returns an error if the input files do not exist or the database already exists.
-    /// Returns an error if trying to build a reference-free GAF-base without a graph.
+    /// Returns an error, if:
+    ///
+    /// * The GAF file does not exist.
+    /// * The database already exists.
+    /// * Trying to build a reference-free GAF-base without a graph.
+    /// * The graph is not a valid reference for the alignments.
+    ///
     /// Passes through any database errors.
     pub fn create_from_files(
         gaf_file: &Path, gbwt_file: &Path, db_file: &Path,
@@ -811,8 +817,13 @@ impl GAFBase {
     ///
     /// # Errors
     ///
-    /// Returns an error if the GAF file does not exist or if the database already exists.
-    /// Returns an error if trying to build a reference-free GAF-base without a graph.
+    /// Returns an error, if:
+    ///
+    /// * The GAF file does not exist.
+    /// * The database already exists.
+    /// * Trying to build a reference-free GAF-base without a graph.
+    /// * The graph is not a valid reference for the alignments.
+    ///
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(
         gaf_file: P, index: Arc<GBWT>, db_file: Q,
@@ -834,13 +845,17 @@ impl GAFBase {
             graph = GraphReference::None;
         }
 
+        // Parse GAF headers and check that the graph is a valid reference.
+        let mut gaf_file = utils::open_file(gaf_file)?;
+        let aln_name = Self::parse_gaf_headers(&mut gaf_file)?;
+        let graph_name = graph.graph_name()?;
+        utils::require_valid_reference(&aln_name, &graph_name)?;
+
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(&index, graph, &mut connection)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
-        // We parse additional tags from GAF headers.
-        let mut gaf_file = utils::open_file(gaf_file)?;
-        Self::insert_tags(&index, nodes, &mut gaf_file, &mut connection, params)?;
+        Self::insert_tags(&index, nodes, &aln_name, &mut connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
@@ -850,13 +865,18 @@ impl GAFBase {
         Ok(())
     }
 
+    fn parse_gaf_headers(gaf_file: &mut impl BufRead) -> Result<GraphName, String> {
+        let header_lines = formats::read_gaf_header_lines(gaf_file).map_err(|x| x.to_string())?;
+        Ok(GraphName::from_header_lines(&header_lines).unwrap_or_default())
+    }
+
     // Returns the number of paths / alignments in the GBWT index.
     fn gbwt_paths(index: &GBWT) -> usize {
         if index.is_bidirectional() { index.sequences() / 2 } else { index.sequences() }
     }
 
     // We also include tags parsed from GAF headers.
-    fn insert_tags(index: &GBWT, nodes: usize, gaf_file: &mut impl BufRead, connection: &mut Connection, params: &GAFBaseParams) -> Result<(), String> {
+    fn insert_tags(index: &GBWT, nodes: usize, aln_name: &GraphName, connection: &mut Connection, params: &GAFBaseParams) -> Result<(), String> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -869,10 +889,8 @@ impl GAFBase {
         ).map_err(|x| x.to_string())?;
 
         // We currently only care about tags related to stable graph names.
-        let header_lines = formats::read_gaf_header_lines(gaf_file).map_err(|x| x.to_string())?;
-        let graph_name = GraphName::from_header_lines(&header_lines).unwrap_or_default();
         let mut additional_tags = Tags::new();
-        graph_name.set_tags(&mut additional_tags);
+        aln_name.set_tags(&mut additional_tags);
 
         // Insert header and selected tags.
         let mut inserted = 0;
@@ -909,7 +927,7 @@ impl GAFBase {
 
         // Create the nodes table.
         // In a reference-based GAF-base, `sequence` will be empty.
-        // In a reference-free GAF-base, it will store node sequences.
+        // In a reference-free GAF-base, it will store the sequence label.
         connection.execute(
             "CREATE TABLE Nodes (
                 handle INTEGER PRIMARY KEY,
@@ -1676,6 +1694,8 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
 
     /// Returns the stable graph name (pggname) for the graph.
     ///
+    /// Returns an empty name if the graph reference is [`Self::None`].
+    ///
     /// # Errors
     ///
     /// Returns an empty object if the corresponding GBZ tags cannot be parsed.
@@ -1688,7 +1708,7 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
             GraphReference::Db(db) => {
                 db.graph_name()
             },
-            GraphReference::None => Err(String::from("No graph reference provided")),
+            GraphReference::None => Ok(GraphName::default()),
         }
     }
 
