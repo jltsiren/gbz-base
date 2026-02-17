@@ -523,7 +523,7 @@ impl GAFBase {
 
     // FIXME: "GAF-base version 3" for release
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base version 3-dev-3";
+    pub const VERSION: &'static str = "GAF-base version 3-dev-4";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -957,7 +957,7 @@ impl GAFBase {
                     Vec::new()
                 } else {
                     let record = graph.gbz_record(handle)?;
-                    record.sequence().to_vec()
+                    utils::encode_sequence(record.sequence())
                 };
                 insert.execute((handle, edge_bytes, bwt_bytes, sequence)).map_err(|x| x.to_string())?;
                 inserted += 1;
@@ -1726,48 +1726,55 @@ pub fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos
     index.start(support::encode_path(path_id, orientation)).unwrap_or(Pos::new(gbz::ENDMARKER, 0))
 }
 
-/// Type of a potential database file.
+/// Type of a potential GBZ / database file.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DatabaseFileType {
-    /// The file does not exist.
+pub enum FileType {
+    /// The name does not refer to anything.
     Missing,
-    /// The file is not a valid SQLite database.
-    NotDatabase,
+    /// The name refers to a directory, a symbolic link, or some other non-file.
+    NotFile,
+    /// The type of the file is unknown.
+    UnknownFile,
+    /// The file is a GBZ graph.
+    Gbz,
     /// The file is an unknown SQLite database.
     UnknownDatabase,
     /// The file is a known SQLite database with the given version string.
     Version(String),
 }
 
-/// Determines the type of the given file, which may be a SQLite database.
-pub fn identify_database<P: AsRef<Path>>(filename: P) -> DatabaseFileType {
+/// Determines the type of the given file, which may be a GBZ graph or a SQLite database.
+pub fn identify_file<P: AsRef<Path>>(filename: P) -> FileType {
     let metadata = fs::metadata(&filename);
     if metadata.is_err() {
-        return DatabaseFileType::Missing;
+        return FileType::Missing;
     }
     let metadata = metadata.unwrap();
     if !metadata.is_file() {
-        return DatabaseFileType::NotDatabase;
+        return FileType::NotFile;
     }
 
+    if GBZ::is_gbz(&filename) {
+        return FileType::Gbz;
+    }
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = Connection::open_with_flags(filename, flags);
     if connection.is_err() {
-        return DatabaseFileType::NotDatabase;
+        return FileType::UnknownFile;
     }
     let connection = connection.unwrap();
 
     let statement = connection.prepare("SELECT value FROM Tags WHERE key = 'version'");
     if statement.is_err() {
-        return DatabaseFileType::UnknownDatabase;
+        return FileType::UnknownDatabase;
     }
     let mut statement = statement.unwrap();
 
     let version: rusqlite::Result<String> = statement.query_row([], |row| row.get(0));
     if version.is_err() {
-        return DatabaseFileType::UnknownDatabase;
+        return FileType::UnknownDatabase;
     }
-    DatabaseFileType::Version(version.unwrap())
+    FileType::Version(version.unwrap())
 }
 
 // Executes the statement, which is expected to return a single string value.

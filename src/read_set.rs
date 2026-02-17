@@ -255,7 +255,8 @@ impl ReadSet {
                     let edge_bytes: Vec<u8> = row.get(0)?;
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
-                    let sequence: Vec<u8> = row.get(2)?;
+                    let encoded_sequence: Vec<u8> = row.get(2)?;
+                    let sequence = utils::decode_sequence(&encoded_sequence);
                     Ok((edges, bwt, sequence))
                 }
             ).optional().map_err(|x| x.to_string())?;
@@ -364,7 +365,8 @@ impl ReadSet {
                     let edge_bytes: Vec<u8> = row.get(0)?;
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
-                    let sequence: Vec<u8> = row.get(2)?;
+                    let encoded_sequence: Vec<u8> = row.get(2)?;
+                    let sequence = utils::decode_sequence(&encoded_sequence);
                     Ok((edges, bwt, sequence))
                 }
             ).optional().map_err(|x| x.to_string())?;
