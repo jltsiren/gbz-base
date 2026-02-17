@@ -1688,7 +1688,7 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
             GraphReference::Db(db) => {
                 db.get_record(handle)?.ok_or_else(|| format!("The graph does not contain handle {}", handle))
             },
-            GraphReference::None => Err(String::from("No graph reference provided")),
+            GraphReference::None => Err(String::from("No reference graph provided")),
         }
     }
 

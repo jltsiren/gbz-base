@@ -374,11 +374,15 @@ impl ReadSet {
                 return Err(format!("Could not find the record for handle {} in GAF-base", handle));
             }
             let (edges, bwt, mut sequence) = gaf_result.unwrap();
-            if sequence.is_empty() && let Some(graph) = graph {
-                let seq = graph.sequence(support::node_id(handle)).ok_or(
-                    format!("Could not find the sequence for handle {} in GBZ", handle)
-                )?;
-                sequence = seq.to_vec();
+            if sequence.is_empty() {
+                if let Some(graph) = graph {
+                    let seq = graph.sequence(support::node_id(handle)).ok_or(
+                        format!("Could not find the sequence for handle {} in GBZ", handle)
+                    )?;
+                    sequence = seq.to_vec();
+                } else {
+                    return Err(String::from("No reference provided for a reference-based GAF-base"));
+                }
             }
             if support::node_orientation(handle) == Orientation::Reverse {
                 sequence = support::reverse_complement(&sequence);
