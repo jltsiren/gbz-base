@@ -551,6 +551,23 @@ fn gaf_base_no_quality() {
 }
 
 #[test]
+fn gaf_base_no_optional() {
+    let mut params = GAFBaseParams::default();
+    params.store_optional_fields = false;
+
+    let db_file = internal::create_gaf_base_with_params(
+        "micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt",
+        GraphReference::None, &params
+    );
+    let db = internal::open_gaf_base(&db_file);
+    check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
 fn gaf_base_ref_free() {
     let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();

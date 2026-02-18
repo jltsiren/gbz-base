@@ -167,6 +167,13 @@ fn read_set_gbz_no_quality() {
 }
 
 #[test]
+fn read_set_gbz_no_optional() {
+    let mut params = GAFBaseParams::default();
+    params.store_optional_fields = false;
+    test_read_set_gbz("micb-kir3dl1_HG003.gbwt", &params);
+}
+
+#[test]
 fn read_set_gbz_ref_free() {
     let mut params = GAFBaseParams::default();
     params.reference_free = true;
@@ -233,6 +240,13 @@ fn read_set_db_bidirectional() {
 fn read_set_db_no_quality() {
     let mut params = GAFBaseParams::default();
     params.store_quality_strings = false;
+    test_read_set_db("micb-kir3dl1_HG003.gbwt", &params);
+}
+
+#[test]
+fn read_set_db_no_optional() {
+    let mut params = GAFBaseParams::default();
+    params.store_optional_fields = false;
     test_read_set_db("micb-kir3dl1_HG003.gbwt", &params);
 }
 

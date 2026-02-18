@@ -1476,6 +1476,7 @@ impl AlignmentBlock {
         Self::zstd_compress(&quality_strings)
     }
 
+    // TODO: Instead of TAG:TYPE:VALUE, we could drop the separators.
     fn compress_optional_fields(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
         let mut optional: Vec<u8> = Vec::new();
         for aln in alignments.iter() {
