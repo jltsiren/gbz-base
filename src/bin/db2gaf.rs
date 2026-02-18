@@ -161,11 +161,7 @@ impl Config {
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
-        let gbz_file = if let Some(s) = matches.opt_str("r") {
-            Some(PathBuf::from(s))
-        } else {
-            None
-        };
+        let gbz_file = matches.opt_str("r").map(PathBuf::from);
         let chunk_size = if let Some(s) = matches.opt_str("c") {
             match s.parse::<usize>() {
                 Ok(x) => x,
