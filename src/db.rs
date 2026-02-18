@@ -521,9 +521,8 @@ impl GAFBase {
     // Key for database version.
     const KEY_VERSION: &'static str = "version";
 
-    // FIXME: "GAF-base version 3" for release
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base version 3-dev-5";
+    pub const VERSION: &'static str = "GAF-base version 3";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
