@@ -104,7 +104,8 @@ impl Config {
         opts.optopt("r", "ref-free", "build a reference-free GAF-base using this graph", "FILE");
         let block_desc = format!("number of alignments per block (default: {})", params.block_size);
         opts.optopt("b", "block-size", &block_desc, "INT");
-        opts.optflag("q", "no-quality", "do not store quality strings");
+        opts.optflag("", "no-quality", "do not store quality strings");
+        opts.optflag("", "no-optional", "do not store unsupported optional fields");
         opts.optopt("o", "output", "output file name (default: <input>.db)", "FILE");
         opts.optflag("", "overwrite", "overwrite the database file if it exists");
         let matches = match opts.parse(&args[1..]) {
@@ -158,8 +159,11 @@ impl Config {
                 }
             }
         }
-        if matches.opt_present("q") {
+        if matches.opt_present("no-quality") {
             params.store_quality_strings = false;
+        }
+        if matches.opt_present("no-optional") {
+            params.store_optional_fields = false;
         }
 
         let overwrite = matches.opt_present("overwrite");

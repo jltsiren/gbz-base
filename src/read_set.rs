@@ -133,11 +133,13 @@ impl ReadSet {
         let difference_strings: Vec<u8> = row.get(from_idx + 7).map_err(|x| x.to_string())?;
         let flags: Vec<u8> = row.get(from_idx + 8).map_err(|x| x.to_string())?;
         let numbers: Vec<u8> = row.get(from_idx + 9).map_err(|x| x.to_string())?;
+        let optional: Vec<u8> = row.get(from_idx + 10).map_err(|x| x.to_string())?;
         let block = AlignmentBlock {
             min_handle, max_handle, alignments, read_length,
             gbwt_starts, names,
             quality_strings, difference_strings,
-            flags: Flags::from(flags), numbers
+            flags: Flags::from(flags), numbers,
+            optional,
         };
         block.decode()
     }
@@ -296,7 +298,7 @@ impl ReadSet {
         // we have encountered to avoid duplicating reads that overlap multiple clusters.
         let mut row_ids: HashSet<usize> = HashSet::new();
         let mut get_reads = database.connection.prepare(
-            "SELECT id, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT id, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional
             FROM Alignments
             WHERE min_handle <= ?1 AND max_handle >= ?2"
         ).map_err(|x| x.to_string())?;
@@ -395,7 +397,7 @@ impl ReadSet {
 
         // Get the reads in the given range of row ids.
         let mut get_reads = database.connection.prepare(
-            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional
             FROM Alignments
             WHERE id >= ?1 AND id < ?2"
         ).map_err(|x| x.to_string())?;

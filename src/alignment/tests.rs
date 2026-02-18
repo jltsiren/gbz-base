@@ -384,13 +384,8 @@ fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
 fn integration_test(gaf_file: &'static str, gbwt_file: &'static str, block_size: usize) {
     // Parse the alignments.
     let gaf_file = utils::get_test_data(gaf_file);
-    let mut alignments = parse_alignments(&gaf_file, false);
+    let alignments = parse_alignments(&gaf_file, false);
     assert_eq!(alignments.len(), 12439, "Unexpected number of parsed alignments");
-
-    // Remove the optional fields as we do not encode them for now.
-    for aln in &mut alignments {
-        aln.optional.clear();
-    }
 
     // Load the GBWT index.
     let gbwt_file = utils::get_test_data(gbwt_file);

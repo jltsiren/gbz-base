@@ -253,7 +253,7 @@ fn read_set_from_rows() {
     let gaf_base = internal::open_gaf_base(&gaf_base_file);
 
     // Parse the reads as a source of truth.
-    let mut all_reads = internal::load_gaf_base_reads(false);
+    let all_reads = internal::load_gaf_base_reads(false);
 
     let chunk_sizes = vec![1, 2, 5];
     for chunk_size in chunk_sizes {
@@ -269,8 +269,7 @@ fn read_set_from_rows() {
             assert_eq!(read_set.len(), read_set.unclipped(), "Extracted clipped alignments from rows {}..{}", range.start, range.end);
             assert!(found_alns + read_set.len() <= all_reads.len(), "Extracted too many alignments from rows {}..{}", range.start, range.end);
             for (i, aln) in read_set.iter().enumerate() {
-                let truth = &mut all_reads[found_alns + i];
-                truth.optional.clear(); // We do not store unknown optional fields for the moment.
+                let truth = &all_reads[found_alns + i];
                 assert_eq!(aln, truth, "Wrong read {} from rows {}..{}", i, range.start, range.end);
             }
 

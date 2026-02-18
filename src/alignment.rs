@@ -31,7 +31,6 @@
 //! Matches are represented as a match length rather than as the matching sequence.
 //!
 //! The order of optional fields is not preserved.
-//! Compression with [`AlignmentBlock`] discards unsupported optional fields.
 
 use crate::{Subgraph, Mapping, Difference};
 use crate::formats::{self, TypedField};
@@ -1350,11 +1349,9 @@ impl AsRef<[u8]> for Flags {
 /// for _ in 0..10 {
 ///     let mut buf: Vec<u8> = Vec::new();
 ///     let _ = gaf_file.read_until(b'\n', &mut buf).unwrap();
-///     let mut aln = Alignment::from_gaf(&buf).unwrap();
+///     let aln = Alignment::from_gaf(&buf).unwrap();
 ///     // A block cannot have a mix of aligned and unaligned reads.
 ///     assert!(!aln.is_unaligned());
-///     // We do not store unsupported optional fields.
-///     aln.optional.clear();
 ///     alignments.push(aln);
 /// }
 ///
@@ -1396,6 +1393,8 @@ pub struct AlignmentBlock {
     pub flags: Flags,
     /// Encoded numerical information that cannot be derived from the other fields.
     pub numbers: Vec<u8>,
+    /// Optional typed fields that have not been interpreted.
+    pub optional: Vec<u8>,
 }
 
 impl AlignmentBlock {
@@ -1477,6 +1476,22 @@ impl AlignmentBlock {
         Self::zstd_compress(&quality_strings)
     }
 
+    fn compress_optional_fields(alignments: &[Alignment]) -> Result<Vec<u8>, String> {
+        let mut optional: Vec<u8> = Vec::new();
+        for aln in alignments.iter() {
+            // Optional fields as a sequence of typed fields.
+            for (i, field) in aln.optional.iter().enumerate() {
+                field.append_to(&mut optional, i > 0);
+            }
+            optional.push(0); // Terminator for the optional fields of each alignment.
+        }
+        if optional.len() <= alignments.len() {
+            // If we have no optional fields, we can store an empty blob.
+            return Ok(Vec::new());
+        }
+        Self::zstd_compress(&optional)
+    }
+
     /// Creates a new alignment block from the given read alignments and GBWT index.
     ///
     /// If the reads are aligned, they correspond to paths `first_id` to `first_id + alignments.len() - 1` in the GBWT index.
@@ -1499,6 +1514,7 @@ impl AlignmentBlock {
         let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_handle)?;
         let names = Self::compress_names_pairs(alignments)?;
         let quality_strings = Self::compress_quality_strings(alignments)?;
+        let optional = Self::compress_optional_fields(alignments)?;
 
         // We encode the remaining fields together, as they depend on each other.
         let mut difference_strings = RLE::with_sigma(Difference::NUM_TYPES);
@@ -1547,6 +1563,7 @@ impl AlignmentBlock {
             difference_strings: Vec::from(difference_strings),
             flags,
             numbers: Vec::from(numbers),
+            optional,
         })
     }
 
@@ -1703,6 +1720,27 @@ impl AlignmentBlock {
         Ok(())
     }
 
+    fn decompress_optional_fields(&self, result: &mut [Alignment]) -> Result<(), String> {
+        if self.optional.is_empty() {
+            // An empty blob indicates no optional fields.
+            return Ok(());
+        }
+
+        let buffer = Self::zstd_decompress(&self.optional[..])?;
+        let mut iter = buffer.split(|&c| c == 0);
+        for (i, aln) in result.iter_mut().enumerate() {
+            let optional = iter.next().ok_or(format!("Missing optional fields for alignment {}", i))?;
+            let fields = optional.split(|&c| c == b'\t');
+            for field in fields {
+                let parsed = TypedField::parse(field)?;
+                aln.optional.push(parsed);
+            }
+        }
+        // There should be an empty slice at the end, as the buffer is 0-terminated.
+        // TODO: Should we check this?
+        Ok(())
+    }
+
     /// Decompresses the block into a vector of alignments.
     ///
     /// Aligned query sequences have target paths represented as GBWT starting positions.
@@ -1734,6 +1772,9 @@ impl AlignmentBlock {
 
         // We need the flags and the difference strings (for non-exact alignments) to decode the numbers.
         self.decompress_numbers(&mut result)?;
+
+        // This could be an empty blob if we have no optional fields.
+        self.decompress_optional_fields(&mut result)?;
 
         // Reconstruct the difference strings for exact alignments as the last step.
         // We may not know the aligned interval length until we have decompressed the numbers.

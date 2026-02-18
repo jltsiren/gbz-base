@@ -96,6 +96,7 @@ Reference-free GAF-bases can be used without a reference graph.
 
 If quality strings are not required, it is possible to drop them with option `--no-quality`.
 This will make the database much smaller, particularly with long reads.
+Similarly, optional fields not supported directly by GAF-base can be dropped with option `--no-optional`.
 
 ## Subgraph queries
 

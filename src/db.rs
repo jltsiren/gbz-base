@@ -523,7 +523,7 @@ impl GAFBase {
 
     // FIXME: "GAF-base version 3" for release
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base version 3-dev-4";
+    pub const VERSION: &'static str = "GAF-base version 3-dev-5";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -666,6 +666,7 @@ impl GAFBase {
     pub difference_bytes: usize,
     pub flag_bytes: usize,
     pub number_bytes: usize,
+    pub optional_bytes: usize,
 }
 
 impl AlignmentStats {
@@ -678,6 +679,7 @@ impl AlignmentStats {
             difference_bytes: 0,
             flag_bytes: 0,
             number_bytes: 0,
+            optional_bytes: 0,
         }
     }
 
@@ -689,6 +691,7 @@ impl AlignmentStats {
         self.difference_bytes += block.difference_strings.len();
         self.flag_bytes += block.flags.bytes();
         self.number_bytes += block.numbers.len();
+        self.optional_bytes += block.optional.len();
     }
 }
 
@@ -698,6 +701,7 @@ pub struct GAFBaseParams {
     /// Number of alignments in a block (database row).
     ///
     /// Default: [`Self::BLOCK_SIZE`].
+    /// Note that values `0` and `1` are functionally equivalent.
     pub block_size: usize,
 
     /// Build a reference-free GAF-base that stores sequences in table `Nodes`.
@@ -712,13 +716,15 @@ pub struct GAFBaseParams {
 
     /// Store unknown optional fields with the alignments.
     ///
-    /// Default: `false`.
+    /// Default: `true`.
     pub store_optional_fields: bool,
 }
 
 impl GAFBaseParams {
     /// Default block size in alignments.
     pub const BLOCK_SIZE: usize = 1000;
+
+    // TODO: from_json
 
     /// Returns a JSON description of the parameters that can be stored as a tag.
     pub fn to_json(&self) -> String {
@@ -747,7 +753,7 @@ impl Default for GAFBaseParams {
             block_size: Self::BLOCK_SIZE,
             reference_free: false,
             store_quality_strings: true,
-            store_optional_fields: false,
+            store_optional_fields: true,
         }
     }
 }
@@ -764,7 +770,6 @@ impl Default for GAFBaseParams {
 // TODO: If we are willing to use a reference, we could reuse `edges` in the `Nodes` table from it.
 // We can similarly speed up GBWT construction by having the GBWT of the graph available.
 
-// FIXME: Option to create with optional fields
 /// Creating the database.
 impl GAFBase {
     /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
@@ -988,7 +993,8 @@ impl GAFBase {
                 quality_strings BLOB NOT NULL,
                 difference_strings BLOB NOT NULL,
                 flags BLOB NOT NULL,
-                numbers BLOB NOT NULL
+                numbers BLOB NOT NULL,
+                optional BLOB NOT NULL
             ) STRICT",
             (),
         ).map_err(|x| x.to_string())?;
@@ -1053,8 +1059,8 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+                    Alignments(min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
                 let _ = to_report.send(Err(message));
@@ -1077,7 +1083,7 @@ impl GAFBase {
                             block.min_handle, block.max_handle, block.alignments, block.read_length,
                             block.gbwt_starts, block.names,
                             block.quality_strings, block.difference_strings,
-                            block.flags.as_ref(), block.numbers
+                            block.flags.as_ref(), block.numbers, block.optional
                         )).map_err(|x| x.to_string());
                         if let Err(message) = result {
                             let _ = to_report.send(Err(message));
@@ -1136,6 +1142,9 @@ impl GAFBase {
                     if !params.store_quality_strings {
                         aln.base_quality.clear();
                     }
+                    if !params.store_optional_fields {
+                        aln.optional.clear();
+                    }
                     if aln.is_unaligned() != unaligned_block {
                         // We have a new block.
                         if !block.is_empty() {
@@ -1177,13 +1186,14 @@ impl GAFBase {
             eprintln!("Warning: Expected {} alignments", expected_alignments);
         }
         eprintln!(
-            "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}",
+            "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}, optional {}",
             utils::human_readable_size(statistics.start_bytes),
             utils::human_readable_size(statistics.name_bytes),
             utils::human_readable_size(statistics.quality_bytes),
             utils::human_readable_size(statistics.difference_bytes),
             utils::human_readable_size(statistics.flag_bytes),
-            utils::human_readable_size(statistics.number_bytes)
+            utils::human_readable_size(statistics.number_bytes),
+            utils::human_readable_size(statistics.optional_bytes),
         );
 
         Ok(())
