@@ -24,19 +24,25 @@ fn main() -> Result<(), String> {
 
     // Inputs.
     let database = GAFBase::open(&config.gaf_base_file)?;
-    let graph: GBZ = serialize::load_from(&config.gbz_file).map_err(|x| x.to_string())?;
+    let graph = if let Some(gbz_file) = &config.gbz_file {
+        Some(serialize::load_from(gbz_file).map_err(|x| x.to_string())?)
+    } else {
+        None
+    };
 
     // Check that the inputs are compatible.
-    let reference = GraphName::from_gbz(&graph);
     let alignments = database.graph_name()?;
-    let result = utils::require_valid_reference(&alignments, &reference);
-    if let Err(e) = result {
-        // Print the error manually, as it contains multiple lines.
-        eprint!("Error: {}", e);
-        process::exit(1);
+    if let Some(graph) = &graph {
+        let reference = GraphName::from_gbz(graph);
+        let result = utils::require_valid_reference(&alignments, &reference);
+        if let Err(e) = result {
+            // Print the error manually, as it contains multiple lines.
+            eprint!("Error: {}", e);
+            process::exit(1);
+        }
     }
 
-    write_gaf(&database, &alignments, &graph, &config)?;
+    write_gaf(&database, &alignments, graph.as_ref(), &config)?;
 
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
@@ -47,7 +53,7 @@ fn main() -> Result<(), String> {
 
 //-----------------------------------------------------------------------------
 
-fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: &GBZ, config: &Config) -> Result<(), String> {
+fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, config: &Config) -> Result<(), String> {
     // Decoded ReadSets, with an empty ReadSet signaling the end of input.
     let (to_output, from_decoder) = mpsc::sync_channel(4);
 
@@ -119,7 +125,7 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: &GBZ, config: &C
 
 struct Config {
     gaf_base_file: PathBuf,
-    gbz_file: PathBuf,
+    gbz_file: Option<PathBuf>,
     chunk_size: usize,
 }
 
@@ -130,7 +136,7 @@ impl Config {
     pub fn new() -> Config {
         let args: Vec<String> = env::args().collect();
         let program = args[0].clone();
-        let header = format!("Usage: {} [options] -r graph.gbz gaf_base.db > output.gaf", program);
+        let header = format!("Usage: {} [options] gaf_base.db > output.gaf", program);
 
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");
@@ -155,12 +161,7 @@ impl Config {
             eprint!("{}", opts.usage(&header));
             process::exit(1);
         };
-        let gbz_file = if let Some(s) = matches.opt_str("r") {
-            PathBuf::from(s)
-        } else {
-            eprint!("{}", opts.usage(&header));
-            process::exit(1);
-        };
+        let gbz_file = matches.opt_str("r").map(PathBuf::from);
         let chunk_size = if let Some(s) = matches.opt_str("c") {
             match s.parse::<usize>() {
                 Ok(x) => x,

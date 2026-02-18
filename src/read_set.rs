@@ -74,8 +74,9 @@ impl Display for AlignmentOutput {
 /// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
 /// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
 /// let db_file = serialize::temp_file_name("gaf-base");
+/// let graph_ref = GraphReference::None; // Do not store sequences in the database.
 /// let params = GAFBaseParams::default();
-/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, graph_ref, &params);
 /// assert!(db.is_ok());
 ///
 /// // Extract all reads fully within the subgraph.
@@ -132,16 +133,18 @@ impl ReadSet {
         let difference_strings: Vec<u8> = row.get(from_idx + 7).map_err(|x| x.to_string())?;
         let flags: Vec<u8> = row.get(from_idx + 8).map_err(|x| x.to_string())?;
         let numbers: Vec<u8> = row.get(from_idx + 9).map_err(|x| x.to_string())?;
+        let optional: Vec<u8> = row.get(from_idx + 10).map_err(|x| x.to_string())?;
         let block = AlignmentBlock {
             min_handle, max_handle, alignments, read_length,
             gbwt_starts, names,
             quality_strings, difference_strings,
-            flags: Flags::from(flags), numbers
+            flags: Flags::from(flags), numbers,
+            optional,
         };
         block.decode()
     }
 
-    // Replaces the GBWT starting position of the alignment with the path.
+    // Replaces the GBWT starting position of the alignment with the path and sets the true target path length.
     // Requires that the path overlaps with / is fully contained in the subgraph.
     // If the path is valid, inserts all missing node records into the read set.
     fn set_target_path(
@@ -156,6 +159,7 @@ impl ReadSet {
 
         let mut path = Vec::new();
         let mut overlap = false;
+        let mut target_path_len = 0;
         while let Some(p) = pos {
             if subgraph.has_handle(p.node) {
                 overlap = true;
@@ -174,17 +178,19 @@ impl ReadSet {
             // Navigate to the next position.
             path.push(p.node);
             let record = record.unwrap();
+            target_path_len += record.sequence_len();
             pos = record.to_gbwt_record().lf(p.offset);
         }
 
         // Set the target path in the alignment.
         if overlap {
             alignment.set_target_path(path);
+            alignment.set_target_path_len(target_path_len);
         }
         Ok(())
     }
 
-    // Replaces the GBWT starting position of the alignment with the path.
+    // Replaces the GBWT starting position of the alignment with the path and sets the true target path length.
     // Inserts all missing node records into the read set.
     fn set_target_path_simple(
         &mut self, alignment: &mut Alignment,
@@ -196,6 +202,7 @@ impl ReadSet {
         };
 
         let mut path = Vec::new();
+        let mut target_path_len = 0;
         while let Some(p) = pos {
             // Now get the record for the node.
             let mut record = self.nodes.get(&p.node);
@@ -208,11 +215,13 @@ impl ReadSet {
             // Navigate to the next position.
             path.push(p.node);
             let record = record.unwrap();
+            target_path_len += record.sequence_len();
             pos = record.to_gbwt_record().lf(p.offset);
         }
 
         // Set the target path in the alignment.
         alignment.set_target_path(path);
+        alignment.set_target_path_len(target_path_len);
         Ok(())
     }
 
@@ -223,7 +232,7 @@ impl ReadSet {
     ///
     /// # Arguments
     ///
-    /// * `graph`: A GBZ-compatible graph.
+    /// * `graph`: A GBZ-compatible graph for querying a reference-based GAF-base, or no graph for a reference-free one.
     /// * `subgraph`: The subgraph used as the query region.
     /// * `database`: A database storing reads aligned to the graph.
     /// * `output`: Which reads to include in the read set.
@@ -235,38 +244,41 @@ impl ReadSet {
     pub fn new(graph: GraphReference<'_, '_>, subgraph: &Subgraph, database: &GAFBase, output: AlignmentOutput) -> Result<Self, String> {
         let mut read_set = ReadSet::default();
 
-        // FIXME: Take the sequence from GAF-base if it is non-empty
-        // FIXME: But then we need an option without a graph
         // Build a record from the databases.
         let mut get_node = database.connection.prepare(
-            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
+            "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
         let mut graph = graph;
         let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
-            // Get the edges and the BWT fragment from the GAF-base.
+            // Get the node record from the GAF-base.
             let gaf_result = get_node.query_row(
                 (handle,),
-                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
+                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>, Vec<u8>)> {
                     let edge_bytes: Vec<u8> = row.get(0)?;
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
-                    Ok((edges, bwt))
+                    let encoded_sequence: Vec<u8> = row.get(2)?;
+                    let sequence = utils::decode_sequence(&encoded_sequence);
+                    Ok((edges, bwt, sequence))
                 }
             ).optional().map_err(|x| x.to_string())?;
             if gaf_result.is_none() {
                 return Err(format!("Could not find the record for handle {} in GAF-base", handle));
             }
-            let (edges, bwt) = gaf_result.unwrap();
+            let (edges, bwt, mut sequence) = gaf_result.unwrap();
 
-            // Get the sequence from the subgraph or from the GBZ-base.
-            let sequence = subgraph.sequence_for_handle(handle);
-            let sequence = match sequence {
-                Some(seq) => seq.to_vec(),
-                None => {
-                    let gbz_record = graph.gbz_record(handle)?;
-                    gbz_record.sequence().to_vec()
-                }
-            };
+            // If we have a reference-based database, try to get the sequence from the
+            // subgraph or the original graph.
+            if sequence.is_empty() {
+                let seq = subgraph.sequence_for_handle(handle);
+                sequence = match seq {
+                    Some(seq) => seq.to_vec(),
+                    None => {
+                        let gbz_record = graph.gbz_record(handle)?;
+                        gbz_record.sequence().to_vec()
+                    }
+                };
+            }
 
             unsafe {
                 Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence, None))
@@ -286,7 +298,7 @@ impl ReadSet {
         // we have encountered to avoid duplicating reads that overlap multiple clusters.
         let mut row_ids: HashSet<usize> = HashSet::new();
         let mut get_reads = database.connection.prepare(
-            "SELECT rowid, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT id, min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional
             FROM Alignments
             WHERE min_handle <= ?1 AND max_handle >= ?2"
         ).map_err(|x| x.to_string())?;
@@ -333,43 +345,50 @@ impl ReadSet {
     ///
     /// * `database`: A database storing reads aligned to the graph.
     /// * `row_range`: The range of row ids to extract.
-    /// * `graph`: A GBZ graph.
+    /// * `graph`: A GBZ graph if the database is reference-based, or [`None`] for a reference-free one.
     ///
     /// # Errors
     ///
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
-    pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: &GBZ) -> Result<Self, String> {
+    pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: Option<&GBZ>) -> Result<Self, String> {
         let mut read_set = ReadSet::default();
         read_set.clusters = 1;
 
-        // Build a record from the GAF-base, with the sequence from the GBZ graph.
+        // Build a record from the GAF-base, with the sequence possibly from the GBZ graph.
         let mut get_node = database.connection.prepare(
-            "SELECT edges, bwt FROM Nodes WHERE handle = ?1"
+            "SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?1"
         ).map_err(|x| x.to_string())?;
         let mut get_record = |handle: usize| -> Result<GBZRecord, String> {
             // Get the edges and the BWT fragment from the GAF-base.
             let gaf_result = get_node.query_row(
                 (handle,),
-                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>)> {
+                |row: &Row<'_>| -> rusqlite::Result<(Vec<Pos>, Vec<u8>, Vec<u8>)> {
                     let edge_bytes: Vec<u8> = row.get(0)?;
                     let (edges, _) = Record::decompress_edges(&edge_bytes).unwrap();
                     let bwt: Vec<u8> = row.get(1)?;
-                    Ok((edges, bwt))
+                    let encoded_sequence: Vec<u8> = row.get(2)?;
+                    let sequence = utils::decode_sequence(&encoded_sequence);
+                    Ok((edges, bwt, sequence))
                 }
             ).optional().map_err(|x| x.to_string())?;
             if gaf_result.is_none() {
                 return Err(format!("Could not find the record for handle {} in GAF-base", handle));
             }
-            let (edges, bwt) = gaf_result.unwrap();
-            let sequence = graph.sequence(support::node_id(handle)).ok_or(
-                format!("Could not find the sequence for handle {} in GBZ", handle)
-            )?;
-            let sequence = if support::node_orientation(handle) == Orientation::Forward {
-                sequence.to_vec()
-            } else {
-                support::reverse_complement(sequence)
-            };
+            let (edges, bwt, mut sequence) = gaf_result.unwrap();
+            if sequence.is_empty() {
+                if let Some(graph) = graph {
+                    let seq = graph.sequence(support::node_id(handle)).ok_or(
+                        format!("Could not find the sequence for handle {} in GBZ", handle)
+                    )?;
+                    sequence = seq.to_vec();
+                } else {
+                    return Err(String::from("No reference provided for a reference-based GAF-base"));
+                }
+            }
+            if support::node_orientation(handle) == Orientation::Reverse {
+                sequence = support::reverse_complement(&sequence);
+            }
 
             unsafe {
                 Ok(GBZRecord::from_raw_parts(handle, edges, bwt, sequence, None))
@@ -378,9 +397,9 @@ impl ReadSet {
 
         // Get the reads in the given range of row ids.
         let mut get_reads = database.connection.prepare(
-            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers
+            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional
             FROM Alignments
-            WHERE rowid >= ?1 AND rowid < ?2"
+            WHERE id >= ?1 AND id < ?2"
         ).map_err(|x| x.to_string())?;
         let mut rows = get_reads.query((row_range.start, row_range.end)).map_err(|x| x.to_string())?;
         while let Some(row) = rows.next().map_err(|x| x.to_string())? {

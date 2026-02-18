@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::{Subgraph, SubgraphQuery, HaplotypeOutput};
+use crate::GAFBaseParams;
 use crate::internal;
 
 //-----------------------------------------------------------------------------
@@ -13,7 +14,7 @@ fn gaf_base_subgraph_queries() -> Vec<(SubgraphQuery, String)> {
     ]
 }
 
-fn validate_read_set(read_set: &ReadSet, subgraph: &Subgraph, all_reads: &[Alignment], name: &str, output: AlignmentOutput) {
+fn validate_read_set(read_set: &ReadSet, subgraph: &Subgraph, all_reads: &[Alignment], name: &str, output: AlignmentOutput, params: &GAFBaseParams) {
     // Select the alignments that should be included in the read set.
     let mut expected_reads = Vec::new();
     let mut unclipped = 0;
@@ -33,7 +34,12 @@ fn validate_read_set(read_set: &ReadSet, subgraph: &Subgraph, all_reads: &[Align
         }
         if take {
             let mut aln = aln.clone();
-            aln.optional.clear(); // We do not store unknown optional fields for the moment.
+            if !params.store_quality_strings {
+                aln.base_quality.clear();
+            }
+            if !params.store_optional_fields {
+                aln.optional.clear();
+            }
             if output == AlignmentOutput::Clipped {
                 // Because we ran the test first with overlapping reads, we can assume that
                 // the read set contains the necessary node records for clipping.
@@ -101,12 +107,17 @@ fn read_set_default() {
     assert!(read_set.iter().next().is_none(), "Default ReadSet iterator is not empty");
 }
 
-fn test_read_set_gbz(gbwt_part: &'static str) {
+fn test_read_set_gbz(gbwt_part: &'static str, params: &GAFBaseParams) {
     // Load GBZ.
     let graph = internal::load_gaf_base_gbz();
+    let graph_ref = if params.reference_free {
+        GraphReference::Gbz(&graph)
+    } else {
+        GraphReference::None
+    };
 
     // Build and open GAF-base.
-    let gaf_base_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", gbwt_part);
+    let gaf_base_file = internal::create_gaf_base_with_params("micb-kir3dl1_HG003.gaf", gbwt_part, graph_ref, params);
     let gaf_base = internal::open_gaf_base(&gaf_base_file);
 
     // Parse the reads as a source of truth.
@@ -119,10 +130,17 @@ fn test_read_set_gbz(gbwt_part: &'static str) {
         assert!(result.is_ok(), "Failed to extract subgraph for {}: {}", name, result.unwrap_err());
 
         for output in [AlignmentOutput::Overlapping, AlignmentOutput::Clipped, AlignmentOutput::Contained] {
-            let read_set = ReadSet::new(GraphReference::Gbz(&graph), &subgraph, &gaf_base, output);
+            // The graph reference we use for querying is the opposite of the one used for building the database.
+            let graph_ref = if params.reference_free {
+                GraphReference::None
+            } else {
+                GraphReference::Gbz(&graph)
+            };
+
+            let read_set = ReadSet::new(graph_ref, &subgraph, &gaf_base, output);
             assert!(read_set.is_ok(), "Failed to extract {} reads for {}: {}", output, name, read_set.unwrap_err());
             let read_set = read_set.unwrap();
-            validate_read_set(&read_set, &subgraph, &all_reads, &name, output);
+            validate_read_set(&read_set, &subgraph, &all_reads, &name, output, params);
         }
     }
 
@@ -133,22 +151,48 @@ fn test_read_set_gbz(gbwt_part: &'static str) {
 
 #[test]
 fn read_set_gbz_unidirectional() {
-    test_read_set_gbz("micb-kir3dl1_HG003.gbwt");
+    test_read_set_gbz("micb-kir3dl1_HG003.gbwt", &GAFBaseParams::default());
 }
 
 #[test]
 fn read_set_gbz_bidirectional() {
-    test_read_set_gbz("bidirectional.gbwt");
+    test_read_set_gbz("bidirectional.gbwt", &GAFBaseParams::default());
 }
 
-fn test_read_set_db(gbwt_part: &'static str) {
-    // Build and open GAF-base.
-    let gaf_base_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", gbwt_part);
-    let gaf_base = internal::open_gaf_base(&gaf_base_file);
+#[test]
+fn read_set_gbz_no_quality() {
+    let mut params = GAFBaseParams::default();
+    params.store_quality_strings = false;
+    test_read_set_gbz("micb-kir3dl1_HG003.gbwt", &params);
+}
 
+#[test]
+fn read_set_gbz_no_optional() {
+    let mut params = GAFBaseParams::default();
+    params.store_optional_fields = false;
+    test_read_set_gbz("micb-kir3dl1_HG003.gbwt", &params);
+}
+
+#[test]
+fn read_set_gbz_ref_free() {
+    let mut params = GAFBaseParams::default();
+    params.reference_free = true;
+    test_read_set_gbz("micb-kir3dl1_HG003.gbwt", &params);
+}
+
+fn test_read_set_db(gbwt_part: &'static str, params: &GAFBaseParams) {
     // Open GBZ-base.
     let (gbz_base, gbz_base_file) = internal::create_gaf_base_db();
     let mut graph = internal::create_graph_interface(&gbz_base);
+    let graph_ref = if params.reference_free {
+        GraphReference::Db(&mut graph)
+    } else {
+        GraphReference::None
+    };
+
+    // Build and open GAF-base.
+    let gaf_base_file = internal::create_gaf_base_with_params("micb-kir3dl1_HG003.gaf", gbwt_part, graph_ref, params);
+    let gaf_base = internal::open_gaf_base(&gaf_base_file);
 
     // Parse the reads as a source of truth.
     let all_reads = internal::load_gaf_base_reads(false);
@@ -160,10 +204,17 @@ fn test_read_set_db(gbwt_part: &'static str) {
         assert!(result.is_ok(), "Failed to extract subgraph for {}: {}", name, result.unwrap_err());
 
         for output in [AlignmentOutput::Overlapping, AlignmentOutput::Clipped, AlignmentOutput::Contained] {
-            let read_set = ReadSet::new(GraphReference::Db(&mut graph), &subgraph, &gaf_base, output);
+            // The graph reference we use for querying is the opposite of the one used for building the database.
+            let graph_ref = if params.reference_free {
+                GraphReference::None
+            } else {
+                GraphReference::Db(&mut graph)
+            };
+
+            let read_set = ReadSet::new(graph_ref, &subgraph, &gaf_base, output);
             assert!(read_set.is_ok(), "Failed to extract {} reads for {}: {}", output, name, read_set.unwrap_err());
             let read_set = read_set.unwrap();
-            validate_read_set(&read_set, &subgraph, &all_reads, &name, output);
+            validate_read_set(&read_set, &subgraph, &all_reads, &name, output, params);
         }
     }
 
@@ -177,12 +228,33 @@ fn test_read_set_db(gbwt_part: &'static str) {
 
 #[test]
 fn read_set_db_unidirectional() {
-    test_read_set_db("micb-kir3dl1_HG003.gbwt");
+    test_read_set_db("micb-kir3dl1_HG003.gbwt", &GAFBaseParams::default());
 }
 
 #[test]
 fn read_set_db_bidirectional() {
-    test_read_set_db("bidirectional.gbwt");
+    test_read_set_db("bidirectional.gbwt", &GAFBaseParams::default());
+}
+
+#[test]
+fn read_set_db_no_quality() {
+    let mut params = GAFBaseParams::default();
+    params.store_quality_strings = false;
+    test_read_set_db("micb-kir3dl1_HG003.gbwt", &params);
+}
+
+#[test]
+fn read_set_db_no_optional() {
+    let mut params = GAFBaseParams::default();
+    params.store_optional_fields = false;
+    test_read_set_db("micb-kir3dl1_HG003.gbwt", &params);
+}
+
+#[test]
+fn read_set_db_ref_free() {
+    let mut params = GAFBaseParams::default();
+    params.reference_free = true;
+    test_read_set_db("micb-kir3dl1_HG003.gbwt", &params);
 }
 
 #[test]
@@ -195,7 +267,7 @@ fn read_set_from_rows() {
     let gaf_base = internal::open_gaf_base(&gaf_base_file);
 
     // Parse the reads as a source of truth.
-    let mut all_reads = internal::load_gaf_base_reads(false);
+    let all_reads = internal::load_gaf_base_reads(false);
 
     let chunk_sizes = vec![1, 2, 5];
     for chunk_size in chunk_sizes {
@@ -204,15 +276,14 @@ fn read_set_from_rows() {
         let mut rowid = 1; // SQLite row ids start from 1.
         while found_alns < gaf_base.alignments() {
             let range = rowid..(rowid + chunk_size);
-            let read_set = ReadSet::from_rows(&gaf_base, range.clone(), &graph);
+            let read_set = ReadSet::from_rows(&gaf_base, range.clone(), Some(&graph));
             assert!(read_set.is_ok(), "Failed to extract reads from rows {}..{}: {}", range.start, range.end, read_set.unwrap_err());
             let read_set = read_set.unwrap();
 
             assert_eq!(read_set.len(), read_set.unclipped(), "Extracted clipped alignments from rows {}..{}", range.start, range.end);
             assert!(found_alns + read_set.len() <= all_reads.len(), "Extracted too many alignments from rows {}..{}", range.start, range.end);
             for (i, aln) in read_set.iter().enumerate() {
-                let truth = &mut all_reads[found_alns + i];
-                truth.optional.clear(); // We do not store unknown optional fields for the moment.
+                let truth = &all_reads[found_alns + i];
                 assert_eq!(aln, truth, "Wrong read {} from rows {}..{}", i, range.start, range.end);
             }
 

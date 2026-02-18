@@ -35,6 +35,9 @@
 //! It is mostly compatible with the GAF format.
 //! Target paths are stored as a GBWT index in table `Nodes`, which is similar to the table in GBZ-base.
 //!
+//! The default GAF-base is reference-based and requires the corresponding GBZ graph or GBZ-base for decoding the alignments.
+//! It is also possible to build a reference-free GAF-base that stores the node sequences in table `Nodes`.
+//!
 //! Alignment metadata is stored in table `Alignments`.
 //! Each row in the table corresponds to a block of alignments, which are assumed to be close in the graph.
 //! The metadata is stored space-efficiently using column-based compression.

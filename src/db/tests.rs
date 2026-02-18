@@ -459,7 +459,7 @@ fn check_gaf_base(db: &GAFBase, nodes: usize, alignments: usize, rows: usize, bi
 
 fn check_gaf_base_tags(db: &GAFBase, name_tags: usize) {
     let tags = db.tags();
-    let expected_tags = 4 + name_tags; // version, nodes, alignments, bidirectional
+    let expected_tags = 5 + name_tags; // version, nodes, alignments, bidirectional, params
     assert_eq!(tags.len(), expected_tags, "Wrong number of tags in GAF-base database");
     if name_tags > 0 {
         let graph_name = GraphName::from_tags(&tags);
@@ -531,6 +531,79 @@ fn gaf_base_gz_bidirectional() {
 
     drop(db);
     let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_no_quality() {
+    let mut params = GAFBaseParams::default();
+    params.store_quality_strings = false;
+
+    let db_file = internal::create_gaf_base_with_params(
+        "micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt",
+        GraphReference::None, &params
+    );
+    let db = internal::open_gaf_base(&db_file);
+    check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_no_optional() {
+    let mut params = GAFBaseParams::default();
+    params.store_optional_fields = false;
+
+    let db_file = internal::create_gaf_base_with_params(
+        "micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt",
+        GraphReference::None, &params
+    );
+    let db = internal::open_gaf_base(&db_file);
+    check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_ref_free() {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+
+    let db_file = internal::create_gaf_base_with_params(
+        "micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt",
+        GraphReference::Gbz(&graph), &GAFBaseParams::default()
+    );
+    let db = internal::open_gaf_base(&db_file);
+    check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
+fn gaf_base_ref_free_db() {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let gbz_base_file = internal::create_gbz_base_from_files(&gbz_file, None);
+    let gbz_base = internal::open_gbz_base(&gbz_base_file);
+    let mut interface = internal::create_graph_interface(&gbz_base);
+
+    let db_file = internal::create_gaf_base_with_params(
+        "micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt",
+        GraphReference::Db(&mut interface), &GAFBaseParams::default()
+    );
+    let db = internal::open_gaf_base(&db_file);
+    check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+    drop(interface);
+    drop(gbz_base);
+    let _ = std::fs::remove_file(&gbz_base_file);
 }
 
 //-----------------------------------------------------------------------------

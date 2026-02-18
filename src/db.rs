@@ -1,6 +1,7 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
 use crate::{Alignment, AlignmentBlock, Chains};
+use crate::formats::JSONValue;
 use crate::{formats, utils};
 
 use std::io::BufRead;
@@ -10,7 +11,7 @@ use std::{fs, thread};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
-use gbz::{FullPathName, Orientation, Pos, GBWT, GBZ};
+use gbz::{FullPathName, GBWT, GBZ, Orientation, Pos};
 use gbz::bwt::{BWT, Record};
 use gbz::support::{self, Tags};
 
@@ -479,7 +480,7 @@ impl GBZBase {
 /// # Examples
 ///
 /// ```
-/// use gbz_base::{GAFBase, GAFBaseParams};
+/// use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
 /// use gbz_base::utils;
 /// use simple_sds::serialize;
 ///
@@ -488,8 +489,9 @@ impl GBZBase {
 /// let db_file = serialize::temp_file_name("gaf-base");
 ///
 /// // Create the database.
+/// let graph = GraphReference::None;
 /// let params = GAFBaseParams::default();
-/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, &params);
+/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, graph, &params);
 /// assert!(db.is_ok());
 ///
 /// // Now open it and check some statistics.
@@ -519,9 +521,9 @@ impl GAFBase {
     // Key for database version.
     const KEY_VERSION: &'static str = "version";
 
-    // FIXME: "GAF-base version 3-dev" during development, "GAF-base version 3" for release
+    // FIXME: "GAF-base version 3" for release
     /// Current database version.
-    pub const VERSION: &'static str = "GAF-base v0.2.0";
+    pub const VERSION: &'static str = "GAF-base version 3-dev-5";
 
     // Key for node count.
     const KEY_NODES: &'static str = "nodes";
@@ -532,8 +534,8 @@ impl GAFBase {
     // Key for bidirectional GBWT flag.
     const KEY_BIDIRECTIONAL_GBWT: &'static str = "bidirectional_gbwt";
 
-    /// Default block size in alignments.
-    pub const BLOCK_SIZE: usize = 1000;
+    // Key for database parameters.
+    const KEY_PARAMS: &'static str = "params";
 
     fn get_string_value(tags: &Tags, key: &str) -> String {
         tags.get(key).cloned().unwrap_or_default()
@@ -637,6 +639,8 @@ impl GAFBase {
         self.bidirectional_gbwt
     }
 
+    // TODO: Parse tag `KEY_PARAMS` and have an interface to report the database construction parameters.
+
     /// Returns all tags stored in the database.
     pub fn tags(&self) -> &Tags {
         &self.tags
@@ -662,6 +666,7 @@ impl GAFBase {
     pub difference_bytes: usize,
     pub flag_bytes: usize,
     pub number_bytes: usize,
+    pub optional_bytes: usize,
 }
 
 impl AlignmentStats {
@@ -674,6 +679,7 @@ impl AlignmentStats {
             difference_bytes: 0,
             flag_bytes: 0,
             number_bytes: 0,
+            optional_bytes: 0,
         }
     }
 
@@ -685,22 +691,69 @@ impl AlignmentStats {
         self.difference_bytes += block.difference_strings.len();
         self.flag_bytes += block.flags.bytes();
         self.number_bytes += block.numbers.len();
+        self.optional_bytes += block.optional.len();
     }
 }
 
-// FIXME: store sequences, store quality strings
-// FIXME: to tag
 /// GAF-base construction parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GAFBaseParams {
     /// Number of alignments in a block (database row).
+    ///
+    /// Default: [`Self::BLOCK_SIZE`].
+    /// Note that values `0` and `1` are functionally equivalent.
     pub block_size: usize,
+
+    /// Build a reference-free GAF-base that stores sequences in table `Nodes`.
+    ///
+    /// Default: `false`.
+    pub reference_free: bool,
+
+    /// Store base quality strings for the alignments.
+    ///
+    /// Default: `true`.
+    pub store_quality_strings: bool,
+
+    /// Store unknown optional fields with the alignments.
+    ///
+    /// Default: `true`.
+    pub store_optional_fields: bool,
+}
+
+impl GAFBaseParams {
+    /// Default block size in alignments.
+    pub const BLOCK_SIZE: usize = 1000;
+
+    // TODO: from_json
+
+    /// Returns a JSON description of the parameters that can be stored as a tag.
+    pub fn to_json(&self) -> String {
+        let mut fields = Vec::new();
+        if self.reference_free {
+            fields.push(JSONValue::String(String::from("reference_free")));
+        }
+        if self.store_quality_strings {
+            fields.push(JSONValue::String(String::from("quality_strings")));
+        }
+        if self.store_optional_fields {
+            fields.push(JSONValue::String(String::from("optional")));
+        }
+        let fields = JSONValue::Array(fields);
+        let json = JSONValue::Object(vec![
+            (String::from("block_size"), JSONValue::Number(self.block_size)),
+            (String::from("fields"), fields),
+        ]);
+        json.to_string()
+    }
 }
 
 impl Default for GAFBaseParams {
     fn default() -> Self {
         Self {
-            block_size: GAFBase::BLOCK_SIZE,
+            block_size: Self::BLOCK_SIZE,
+            reference_free: false,
+            store_quality_strings: true,
+            store_optional_fields: true,
         }
     }
 }
@@ -714,53 +767,72 @@ impl Default for GAFBaseParams {
 // other path visits to that node. If a path is the (i+1)-th path starting from GBWT node v,
 // the GBWT starting position is (v, i).
 
-// FIXME: Option to create with sequences; without quality strings
-// FIXME: Store options as a tag
+// TODO: If we are willing to use a reference, we could reuse `edges` in the `Nodes` table from it.
+// We can similarly speed up GBWT construction by having the GBWT of the graph available.
+
 /// Creating the database.
 impl GAFBase {
     /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
     ///
     /// The GBWT index can be forward-only or bidirectional.
     /// Path `i` in the GBWT index corresponds to line `i` in the GAF file.
+    /// If the parameters indicate that node sequences should be stored in the database, a GBZ-compatible graph must be provided.
     ///
     /// # Arguments
     ///
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `gbwt_file`: GBWT file storing the target paths.
     /// * `db_file`: Output database file.
+    /// * `graph`: A GBZ-compatible graph for building a reference-free database, or [`GraphReference::None`] for a reference-based one.
     /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
-    /// Returns an error if the input files do not exist or the database already exists.
+    /// Returns an error, if:
+    ///
+    /// * The GAF file does not exist.
+    /// * The database already exists.
+    /// * Trying to build a reference-free GAF-base without a graph.
+    /// * The graph is not a valid reference for the alignments.
+    ///
     /// Passes through any database errors.
     pub fn create_from_files(
         gaf_file: &Path, gbwt_file: &Path, db_file: &Path,
+        graph: GraphReference<'_, '_>,
         params: &GAFBaseParams
     ) -> Result<(), String> {
         eprintln!("Loading GBWT index {}", gbwt_file.display());
         let index: Arc<GBWT> = Arc::new(serialize::load_from(gbwt_file).map_err(|x| x.to_string())?);
-        Self::create(gaf_file, index, db_file, params)
+        Self::create(gaf_file, index, db_file, graph, params)
     }
 
     /// Creates a new database in file `filename` from the given [`GBWT`] index.
     ///
     /// The GBWT index can be forward-only or bidirectional.
     /// Path `i` in the GBWT index corresponds to line `i` in the GAF file.
+    /// If the parameters indicate that node sequences should be stored in the database, a GBZ-compatible graph must be provided.
     ///
     /// # Arguments
     ///
     /// * `gaf_file`: GAF file storing the alignments. Can be gzip-compressed.
     /// * `index`: GBWT index storing the target paths.
     /// * `db_file`: Output database file.
+    /// * `graph`: A GBZ-compatible graph for building a reference-free database, or [`GraphReference::None`] for a reference-based one.
     /// * `params`: Construction parameters.
     ///
     /// # Errors
     ///
-    /// Returns an error if the GAF file does not exist or if the database already exists.
+    /// Returns an error, if:
+    ///
+    /// * The GAF file does not exist.
+    /// * The database already exists.
+    /// * Trying to build a reference-free GAF-base without a graph.
+    /// * The graph is not a valid reference for the alignments.
+    ///
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>, Q: AsRef<Path>>(
         gaf_file: P, index: Arc<GBWT>, db_file: Q,
+        graph: GraphReference<'_, '_>,
         params: &GAFBaseParams
     ) -> Result<(), String> {
         eprintln!("Creating database {}", db_file.as_ref().display());
@@ -768,13 +840,27 @@ impl GAFBase {
             return Err(format!("Database {} already exists", db_file.as_ref().display()));
         }
 
+        // We will only use the graph if we actually need it.
+        let mut graph = graph;
+        if params.reference_free {
+            if graph.is_none() {
+                return Err(String::from("The construction of a reference-free GAF-base requires a graph"));
+            }
+        } else {
+            graph = GraphReference::None;
+        }
+
+        // Parse GAF headers and check that the graph is a valid reference.
+        let mut gaf_file = utils::open_file(gaf_file)?;
+        let aln_name = Self::parse_gaf_headers(&mut gaf_file)?;
+        let graph_name = graph.graph_name()?;
+        utils::require_valid_reference(&aln_name, &graph_name)?;
+
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
-        let nodes = Self::insert_nodes(&index, &mut connection).map_err(|x| x.to_string())?;
+        let nodes = Self::insert_nodes(&index, graph, &mut connection)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
-        // We parse additional tags from GAF headers.
-        let mut gaf_file = utils::open_file(gaf_file)?;
-        Self::insert_tags(&index, nodes, &mut gaf_file, &mut connection)?;
+        Self::insert_tags(&index, nodes, &aln_name, &mut connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         // `insert_alignments` consumes the connection, as it is moved to another thread.
@@ -784,13 +870,18 @@ impl GAFBase {
         Ok(())
     }
 
+    fn parse_gaf_headers(gaf_file: &mut impl BufRead) -> Result<GraphName, String> {
+        let header_lines = formats::read_gaf_header_lines(gaf_file).map_err(|x| x.to_string())?;
+        Ok(GraphName::from_header_lines(&header_lines).unwrap_or_default())
+    }
+
     // Returns the number of paths / alignments in the GBWT index.
     fn gbwt_paths(index: &GBWT) -> usize {
         if index.is_bidirectional() { index.sequences() / 2 } else { index.sequences() }
     }
 
     // We also include tags parsed from GAF headers.
-    fn insert_tags(index: &GBWT, nodes: usize, gaf_file: &mut impl BufRead, connection: &mut Connection) -> Result<(), String> {
+    fn insert_tags(index: &GBWT, nodes: usize, aln_name: &GraphName, connection: &mut Connection, params: &GAFBaseParams) -> Result<(), String> {
         eprintln!("Inserting header and tags");
 
         // Create the tags table.
@@ -803,10 +894,8 @@ impl GAFBase {
         ).map_err(|x| x.to_string())?;
 
         // We currently only care about tags related to stable graph names.
-        let header_lines = formats::read_gaf_header_lines(gaf_file).map_err(|x| x.to_string())?;
-        let graph_name = GraphName::from_header_lines(&header_lines).unwrap_or_default();
         let mut additional_tags = Tags::new();
-        graph_name.set_tags(&mut additional_tags);
+        aln_name.set_tags(&mut additional_tags);
 
         // Insert header and selected tags.
         let mut inserted = 0;
@@ -822,7 +911,8 @@ impl GAFBase {
             insert.execute((Self::KEY_ALIGNMENTS, alignments)).map_err(|x| x.to_string())?;
             let bidirectional: usize = if index.is_bidirectional() { 1 } else { 0 };
             insert.execute((Self::KEY_BIDIRECTIONAL_GBWT, bidirectional)).map_err(|x| x.to_string())?;
-            inserted += 4;
+            insert.execute((Self::KEY_PARAMS, params.to_json())).map_err(|x| x.to_string())?;
+            inserted += 5;
 
             for (key, value) in additional_tags.iter() {
                 insert.execute((key, value)).map_err(|x| x.to_string())?;
@@ -837,27 +927,30 @@ impl GAFBase {
     }
 
     // Returns the number of nodes in the graph.
-    fn insert_nodes(index: &GBWT, connection: &mut Connection) -> rusqlite::Result<usize> {
+    fn insert_nodes(index: &GBWT, graph: GraphReference<'_, '_>, connection: &mut Connection) -> Result<usize, String> {
         eprintln!("Inserting nodes");
 
-        // FIXME: sequence NOT NULL; keep empty if no sequence
         // Create the nodes table.
+        // In a reference-based GAF-base, `sequence` will be empty.
+        // In a reference-free GAF-base, it will store the sequence label.
         connection.execute(
             "CREATE TABLE Nodes (
                 handle INTEGER PRIMARY KEY,
                 edges BLOB NOT NULL,
-                bwt BLOB NOT NULL
+                bwt BLOB NOT NULL,
+                sequence BLOB NOT NULL
             ) STRICT",
             (),
-        )?;
+        ).map_err(|x| x.to_string())?;
 
         // Insert the nodes.
         let mut inserted = 0;
-        let transaction = connection.transaction()?;
+        let mut graph = graph;
+        let transaction = connection.transaction().map_err(|x| x.to_string())?;
         {
             let mut insert = transaction.prepare(
-                "INSERT INTO Nodes(handle, edges, bwt) VALUES (?1, ?2, ?3)"
-            )?;
+                "INSERT INTO Nodes(handle, edges, bwt, sequence) VALUES (?1, ?2, ?3, ?4)"
+            ).map_err(|x| x.to_string())?;
             let bwt: &BWT = index.as_ref();
             for record_id in bwt.id_iter() {
                 if record_id == gbz::ENDMARKER {
@@ -865,11 +958,17 @@ impl GAFBase {
                 }
                 let handle = index.record_to_node(record_id);
                 let (edge_bytes, bwt_bytes) = bwt.compressed_record(record_id).unwrap();
-                insert.execute((handle, edge_bytes, bwt_bytes))?;
+                let sequence = if graph.is_none() {
+                    Vec::new()
+                } else {
+                    let record = graph.gbz_record(handle)?;
+                    utils::encode_sequence(record.sequence())
+                };
+                insert.execute((handle, edge_bytes, bwt_bytes, sequence)).map_err(|x| x.to_string())?;
                 inserted += 1;
             }
         }
-        transaction.commit()?;
+        transaction.commit().map_err(|x| x.to_string())?;
 
         eprintln!("Inserted {} node records", inserted);
         Ok(inserted / 2)
@@ -880,20 +979,22 @@ impl GAFBase {
         let mut gaf_file = gaf_file;
         let mut connection = connection;
 
-        // FIXME: make rowid an explicit primary key
-        // FIXME: set everything except min_handle, max_handle, read_length NOT NULL
+        // min_handle and max_handle will be NULL for a block of unaligned reads.
+        // read_length will be NULL if the lengths vary within the block.
         connection.execute(
             "CREATE TABLE Alignments (
+                id INTEGER PRIMARY KEY,
                 min_handle INTEGER,
                 max_handle INTEGER CHECK (min_handle <= max_handle),
                 alignments INTEGER NOT NULL,
                 read_length INTEGER,
-                gbwt_starts BLOB,
-                names BLOB,
-                quality_strings BLOB,
-                difference_strings BLOB,
-                flags BLOB,
-                numbers BLOB
+                gbwt_starts BLOB NOT NULL,
+                names BLOB NOT NULL,
+                quality_strings BLOB NOT NULL,
+                difference_strings BLOB NOT NULL,
+                flags BLOB NOT NULL,
+                numbers BLOB NOT NULL,
+                optional BLOB NOT NULL
             ) STRICT",
             (),
         ).map_err(|x| x.to_string())?;
@@ -958,8 +1059,8 @@ impl GAFBase {
 
             let insert = transaction.prepare(
                 "INSERT INTO
-                    Alignments(min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers)
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+                    Alignments(min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
             ).map_err(|x| x.to_string());
             if let Err(message) = insert {
                 let _ = to_report.send(Err(message));
@@ -982,7 +1083,7 @@ impl GAFBase {
                             block.min_handle, block.max_handle, block.alignments, block.read_length,
                             block.gbwt_starts, block.names,
                             block.quality_strings, block.difference_strings,
-                            block.flags.as_ref(), block.numbers
+                            block.flags.as_ref(), block.numbers, block.optional
                         )).map_err(|x| x.to_string());
                         if let Err(message) = result {
                             let _ = to_report.send(Err(message));
@@ -1037,6 +1138,13 @@ impl GAFBase {
             );
             match aln {
                 Ok(aln) => {
+                    let mut aln = aln;
+                    if !params.store_quality_strings {
+                        aln.base_quality.clear();
+                    }
+                    if !params.store_optional_fields {
+                        aln.optional.clear();
+                    }
                     if aln.is_unaligned() != unaligned_block {
                         // We have a new block.
                         if !block.is_empty() {
@@ -1078,13 +1186,14 @@ impl GAFBase {
             eprintln!("Warning: Expected {} alignments", expected_alignments);
         }
         eprintln!(
-            "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}",
+            "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}, optional {}",
             utils::human_readable_size(statistics.start_bytes),
             utils::human_readable_size(statistics.name_bytes),
             utils::human_readable_size(statistics.quality_bytes),
             utils::human_readable_size(statistics.difference_bytes),
             utils::human_readable_size(statistics.flag_bytes),
-            utils::human_readable_size(statistics.number_bytes)
+            utils::human_readable_size(statistics.number_bytes),
+            utils::human_readable_size(statistics.optional_bytes),
         );
 
         Ok(())
@@ -1569,6 +1678,8 @@ pub enum GraphReference<'reference, 'graph> {
     Gbz(&'reference GBZ),
     /// A [`GraphInterface`].
     Db(&'reference mut GraphInterface<'graph>),
+    /// No graph provided.
+    None,
 }
 
 impl<'reference, 'graph> GraphReference<'reference, 'graph> {
@@ -1577,6 +1688,7 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
     /// # Errors
     ///
     /// Returns an error if the handle does not exist in the graph.
+    /// Returns an error if the graph reference is [`Self::None`].
     /// Passes through any errors from the graph implementation.
     pub fn gbz_record(&mut self, handle: usize) -> Result<GBZRecord, String> {
         match self {
@@ -1586,10 +1698,13 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
             GraphReference::Db(db) => {
                 db.get_record(handle)?.ok_or_else(|| format!("The graph does not contain handle {}", handle))
             },
+            GraphReference::None => Err(String::from("No reference graph provided")),
         }
     }
 
     /// Returns the stable graph name (pggname) for the graph.
+    ///
+    /// Returns an empty name if the graph reference is [`Self::None`].
     ///
     /// # Errors
     ///
@@ -1603,7 +1718,14 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
             GraphReference::Db(db) => {
                 db.graph_name()
             },
+            GraphReference::None => Ok(GraphName::default()),
         }
+    }
+
+    /// Returns `true` if the graph reference is [`Self::None`].
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        matches!(self, GraphReference::None)
     }
 }
 
@@ -1614,48 +1736,55 @@ pub fn path_start(index: &GBWT, path_id: usize, orientation: Orientation) -> Pos
     index.start(support::encode_path(path_id, orientation)).unwrap_or(Pos::new(gbz::ENDMARKER, 0))
 }
 
-/// Type of a potential database file.
+/// Type of a potential GBZ / database file.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DatabaseFileType {
-    /// The file does not exist.
+pub enum FileType {
+    /// The name does not refer to anything.
     Missing,
-    /// The file is not a valid SQLite database.
-    NotDatabase,
+    /// The name refers to a directory, a symbolic link, or some other non-file.
+    NotFile,
+    /// The type of the file is unknown.
+    UnknownFile,
+    /// The file is a GBZ graph.
+    Gbz,
     /// The file is an unknown SQLite database.
     UnknownDatabase,
     /// The file is a known SQLite database with the given version string.
     Version(String),
 }
 
-/// Determines the type of the given file, which may be a SQLite database.
-pub fn identify_database<P: AsRef<Path>>(filename: P) -> DatabaseFileType {
+/// Determines the type of the given file, which may be a GBZ graph or a SQLite database.
+pub fn identify_file<P: AsRef<Path>>(filename: P) -> FileType {
     let metadata = fs::metadata(&filename);
     if metadata.is_err() {
-        return DatabaseFileType::Missing;
+        return FileType::Missing;
     }
     let metadata = metadata.unwrap();
     if !metadata.is_file() {
-        return DatabaseFileType::NotDatabase;
+        return FileType::NotFile;
     }
 
+    if GBZ::is_gbz(&filename) {
+        return FileType::Gbz;
+    }
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection = Connection::open_with_flags(filename, flags);
     if connection.is_err() {
-        return DatabaseFileType::NotDatabase;
+        return FileType::UnknownFile;
     }
     let connection = connection.unwrap();
 
     let statement = connection.prepare("SELECT value FROM Tags WHERE key = 'version'");
     if statement.is_err() {
-        return DatabaseFileType::UnknownDatabase;
+        return FileType::UnknownDatabase;
     }
     let mut statement = statement.unwrap();
 
     let version: rusqlite::Result<String> = statement.query_row([], |row| row.get(0));
     if version.is_err() {
-        return DatabaseFileType::UnknownDatabase;
+        return FileType::UnknownDatabase;
     }
-    DatabaseFileType::Version(version.unwrap())
+    FileType::Version(version.unwrap())
 }
 
 // Executes the statement, which is expected to return a single string value.
