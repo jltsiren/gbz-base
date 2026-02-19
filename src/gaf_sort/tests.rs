@@ -1,5 +1,7 @@
-use std::io::BufRead;
 use super::*;
+
+use std::fs::OpenOptions;
+use std::io::BufRead;
 
 //-----------------------------------------------------------------------------
 // Helpers
@@ -27,6 +29,17 @@ fn read_data_lines(path: &Path) -> Vec<Vec<u8>> {
         }
     }
     lines
+}
+
+/// Creates a test case with the given number of lines with sorted integer ids and identical paths.
+/// These can be used for testing the stable sorting behavior, as the keys will be identical for all records.
+fn stable_sort_test_case(num_lines: usize) -> Vec<Vec<u8>> {
+    let mut result = Vec::new();
+    for i in 0..num_lines {
+        let line = format!("{:08}\t100\t0\t100\t+\t>1>2>3\t300\t0\t300\t100\t100\t60\n", i);
+        result.push(line.into_bytes());
+    }
+    result
 }
 
 /// Reads header lines from a GAF file.
@@ -292,6 +305,43 @@ fn sort_consistent_across_configs() {
 
     assert_lines_equal(&sorted_lines[0], &sorted_lines[1], "config 0", "config 1");
     assert_lines_equal(&sorted_lines[0], &sorted_lines[2], "config 0", "config 2");
+}
+
+#[test]
+fn sort_stable() {
+    let params = SortParameters {
+        records_per_file: 100,
+        files_per_merge: 2,
+        stable: true,
+        ..SortParameters::default()
+    };
+
+    let test_case = stable_sort_test_case(800);
+    let input = serialize::temp_file_name("gaf-sort-stable");
+    {
+        let mut options = OpenOptions::new();
+        let mut file = options.write(true).create_new(true).open(&input).unwrap();
+        for line in &test_case {
+            file.write_all(line).unwrap();
+        }
+    }
+
+    let output = serialize::temp_file_name("gaf-sort-stable");
+    let result = sort_gaf(&input, &output, &params);
+    assert!(result.is_ok(), "sort_gaf failed: {}", result.err().unwrap());
+
+    let lines = read_data_lines(&output);
+    let _ = fs::remove_file(&input);
+    let _ = fs::remove_file(&output);
+
+    assert_sorted(&lines, KeyType::NodeInterval);
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(
+            line, &test_case[i],
+            "line {} differs between input and output: {:?} != {:?}",
+            i, String::from_utf8_lossy(line), String::from_utf8_lossy(&test_case[i])
+        );
+    }
 }
 
 //-----------------------------------------------------------------------------

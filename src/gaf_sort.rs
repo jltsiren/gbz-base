@@ -382,6 +382,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
 
 //-----------------------------------------------------------------------------
 
+// FIXME: this is not as fast as the C++ code, which can utilize twice as many threads
 /// Performs the initial sort of the input GAF file and returns either temporary files or a single batch of lines.
 fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<InitialSortResult, String> {
     let mut reader = reader;
@@ -634,6 +635,10 @@ fn sort_to_temp(lines: Vec<Vec<u8>>, key_type: KeyType, stable: bool) -> Result<
     Ok(Arc::new(temp))
 }
 
+fn flip_source_index(index: usize, total: usize) -> usize {
+    total - 1 - index
+}
+
 /// Merges multiple temporary files into a new temporary file.
 fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<TempFile>, String> {
     let mut output = TempFile::create()
@@ -674,11 +679,11 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
         read_buffer(i, &mut readers, &mut buffers, &mut remaining)?;
     }
 
-    // Priority queue for merge (max heap, but we flipped keys)
+    // Priority queue for merge (max heap, but we flipped keys, and now we also flip the source index for stability)
     let mut heap = BinaryHeap::new();
     for (i, buffer) in buffers.iter_mut().enumerate() {
         if let Some(record) = buffer.pop_front() {
-            heap.push((record, i));
+            heap.push((record, flip_source_index(i, inputs.len())));
         }
     }
 
@@ -688,8 +693,10 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
     let mut out_buffer = Vec::new();
 
     // Merge loop
-    while let Some((mut record, source)) = heap.pop() {
-        record.flip_key(); // Restore original key
+    while let Some((mut record, mut source)) = heap.pop() {
+        // Restore original key and source index.
+        record.flip_key();
+        source = flip_source_index(source, inputs.len());
         out_buffer.push(record);
 
         // Write buffer if full
@@ -708,7 +715,7 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
 
         // Add next record from source
         if let Some(next) = buffers[source].pop_front() {
-            heap.push((next, source));
+            heap.push((next, flip_source_index(source, inputs.len())));
         }
     }
 
@@ -780,18 +787,19 @@ fn merge_to_output(
         read_buffer(i, &mut readers, &mut buffers, &mut remaining)?;
     }
 
-    // Priority queue for merge
+    // Priority queue for merge (max heap, but we flipped keys, and now we also flip the source index for stability)
     let mut heap = BinaryHeap::new();
     for (i, buffer) in buffers.iter_mut().enumerate() {
         if let Some(record) = buffer.pop_front() {
-            heap.push((record, i));
+            heap.push((record, flip_source_index(i, inputs.len())));
         }
     }
 
     // Merge loop
     let mut out_buffer = Vec::new();
-    while let Some((mut record, source)) = heap.pop() {
+    while let Some((mut record, mut source)) = heap.pop() {
         record.flip_key();
+        source = flip_source_index(source, inputs.len());
         out_buffer.push(record);
 
         // Write buffer if full
@@ -809,7 +817,7 @@ fn merge_to_output(
 
         // Add next record from source
         if let Some(next) = buffers[source].pop_front() {
-            heap.push((next, source));
+            heap.push((next, flip_source_index(source, inputs.len())));
         }
     }
 
