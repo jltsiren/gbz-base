@@ -75,6 +75,12 @@ impl Config {
             ),
             "INT",
         );
+        opts.optopt(
+            "t",
+            "threads",
+            "number of worker threads (default: 1)",
+            "INT",
+        );
         opts.optflag("s", "stable", "use stable sorting (slower but preserves order of equal keys)");
         opts.optflag("p", "progress", "print progress information to stderr");
 
@@ -159,6 +165,19 @@ impl Config {
             }
         } else {
             SortParameters::DEFAULT_BUFFER_SIZE
+        };
+
+        // Parse threads
+        params.threads = if let Some(s) = matches.opt_str("t") {
+            match s.parse::<usize>() {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("Error: Failed to parse --threads: {}", e);
+                    process::exit(1);
+                }
+            }
+        } else {
+            1
         };
 
         params.stable = matches.opt_present("s");

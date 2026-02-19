@@ -3,7 +3,6 @@
 //! This module provides functionality to sort GAF (Graph Alignment Format) files
 //! using an external memory merge sort algorithm, similar to GNU sort.
 
-// FIXME: multithreading, proper tests
 // FIXME: polish
 
 use std::cmp::Ordering;
@@ -11,11 +10,19 @@ use std::collections::{BinaryHeap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 use gbz::{support, Orientation};
 
+use simple_sds::serialize;
+
 use crate::formats;
 use crate::utils;
+
+#[cfg(test)]
+mod tests;
 
 //-----------------------------------------------------------------------------
 
@@ -189,58 +196,48 @@ impl Ord for GAFRecord {
 
 //-----------------------------------------------------------------------------
 
-/// A temporary file for storing sorted GAF records.
+/// A zstd-compressed temporary file for storing sorted GAF records.
+///
+/// This object should be wrapped in [`Arc`] in multithreaded contexts.
 struct TempFile {
-    path: Option<PathBuf>,
+    path: PathBuf,
     records: usize,
 }
 
 impl TempFile {
     /// Creates a new temporary file.
     fn create() -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!("gaf-sort-{}.zst", uuid()));
-        Ok(Self { path: Some(path), records: 0 })
+        let path = serialize::temp_file_name("gaf-sort");
+        Ok(Self { path, records: 0 })
     }
 
     /// Opens the file for writing.
     fn writer(&self) -> io::Result<BufWriter<zstd::Encoder<'static, File>>> {
-        let file = File::create(self.path.as_ref().unwrap())?;
+        let file = File::create(&self.path)?;
         let encoder = zstd::Encoder::new(file, 3)?; // Compression level 3
         Ok(BufWriter::new(encoder))
     }
 
     /// Opens the file for reading.
     fn reader(&self) -> io::Result<zstd::Decoder<'static, BufReader<std::fs::File>>> {
-        let file = std::fs::File::open(self.path.as_ref().unwrap())?;
+        let file = std::fs::File::open(&self.path)?;
         let decoder = zstd::Decoder::new(file)?;
         Ok(decoder)
-    }
-
-    /// Returns a new object for the same file and clears this object.
-    fn take(&mut self) -> Self {
-        let path = self.path.take();
-        let records = self.records;
-        self.records = 0;
-        Self { path, records }
     }
 }
 
 impl Drop for TempFile {
     fn drop(&mut self) {
-        if let Some(path) = &self.path {
-            let _ = fs::remove_file(path);
-        }
+        let _ = fs::remove_file(&self.path);
     }
 }
 
-/// Generates a simple UUID-like string for temporary files.
-fn uuid() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{:x}", now)
+/// The result of the initial sort.
+enum InitialSortResult {
+    /// Temporary files created during the initial sort.
+    TempFiles(Vec<Arc<TempFile>>),
+    /// A single batch of GAF lines.
+    SingleBatch(Vec<Vec<u8>>),
 }
 
 //-----------------------------------------------------------------------------
@@ -256,6 +253,8 @@ pub struct SortParameters {
     pub files_per_merge: usize,
     /// Buffer size for reading and writing records.
     pub buffer_size: usize,
+    /// Number of worker threads for the initial sort and intermediate merges.
+    pub threads: usize,
     /// Use stable sorting.
     pub stable: bool,
     /// Print progress information to stderr.
@@ -269,6 +268,23 @@ impl SortParameters {
     pub const DEFAULT_FILES_PER_MERGE: usize = 32;
     /// Default for `buffer_size`.
     pub const DEFAULT_BUFFER_SIZE: usize = 1000;
+
+    /// Validates the parameters and returns an error message if they are invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.records_per_file == 0 {
+            return Err(String::from("SortParameters: records_per_file must be greater than 0"));
+        }
+        if self.files_per_merge < 2 {
+            return Err(String::from("SortParameters: files_per_merge must be at least 2"));
+        }
+        if self.buffer_size == 0 {
+            return Err(String::from("SortParameters: buffer_size must be greater than 0"));
+        }
+        if self.threads == 0 {
+            return Err(String::from("SortParameters: threads must be greater than 0"));
+        }
+        Ok(())
+    }
 }
 
 impl Default for SortParameters {
@@ -278,6 +294,7 @@ impl Default for SortParameters {
             records_per_file: Self::DEFAULT_RECORDS_PER_FILE,
             files_per_merge: Self::DEFAULT_FILES_PER_MERGE,
             buffer_size: Self::DEFAULT_BUFFER_SIZE,
+            threads: 1,
             stable: false,
             progress: false,
         }
@@ -286,10 +303,12 @@ impl Default for SortParameters {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: doctest that can be run
 /// Sorts a GAF file using multiway external memory merge sort.
 ///
-/// The function reads the input GAF file, sorts it in batches, and writes
-/// the sorted output. Temporary files are created and cleaned up automatically.
+/// The function reads the input GAF file, sorts it in batches, and writes the sorted output.
+/// Temporary files are created and cleaned up automatically.
+/// Multiple worker threads can be used for the initial sort and intermediate merges.
 ///
 /// # Arguments
 ///
@@ -314,123 +333,37 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
     output_file: Q,
     params: &SortParameters,
 ) -> Result<(), String> {
-    let start_time = std::time::Instant::now();
-    let mut total_records = 0;
+    params.validate()?;
+
+    let start_time = Instant::now();
+    if params.progress {
+        eprintln!("Sorting GAF records with {} worker thread(s)", params.threads);
+    }
 
     // Open input file and read header lines
     let mut reader = utils::open_file(input_file.as_ref())?;
     let header_lines = formats::read_gaf_header_lines(&mut reader)
         .map_err(|e| format!("Failed to read GAF header: {}", e))?;
 
-    // Check if we can sort directly to output (single batch)
-    let mut peek_lines = Vec::new();
-    let mut line = Vec::new();
-    for _ in 0..params.records_per_file {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) => break,
-            Ok(_) => {
-                if !line.is_empty() && line[0] != b'@' {
-                    peek_lines.push(line.clone());
-                }
+    // Initial sort that may create temporary files or return a single batch of lines.
+    let sort_result = initial_sort(reader, params)?;
+    let mut temp_files = match sort_result {
+        InitialSortResult::TempFiles(files) => files,
+        InitialSortResult::SingleBatch(lines) => {
+            let total_records = lines.len();
+            sort_to_output(lines, &header_lines, output_file.as_ref(), params)?;
+            if params.progress {
+                let elapsed = start_time.elapsed().as_secs_f64();
+                eprintln!("Sorted {} records in {:.2} seconds", total_records, elapsed);
             }
-            Err(e) => return Err(format!("Failed to read input: {}", e)),
+            return Ok(());
         }
-    }
-
-    // Check if there's more data
-    line.clear();
-    let has_more = match reader.read_until(b'\n', &mut line) {
-        Ok(0) => false,
-        Ok(_) => !line.is_empty(),
-        Err(e) => return Err(format!("Failed to read input: {}", e)),
     };
 
-    if !has_more {
-        // Single batch - sort directly to output
-        if params.progress {
-            eprintln!("Sorting directly to the final output");
-        }
-        total_records = peek_lines.len();
-        sort_to_output(peek_lines, &header_lines, output_file.as_ref(), params)?;
-        if params.progress {
-            let elapsed = start_time.elapsed().as_secs_f64();
-            eprintln!("Sorted {} records in {:.2} seconds", total_records, elapsed);
-        }
-        return Ok(());
-    }
-
-    // Multi-batch sort - need temporary files
-    let mut temp_files = Vec::new();
-
-    // Process first batch
-    total_records += peek_lines.len();
-    let temp = sort_to_temp(&peek_lines, params)?;
-    temp_files.push(temp);
-
-    // Add the peeked line
-    peek_lines.clear();
-    peek_lines.push(line.clone());
-
-    // Read and sort remaining batches
-    loop {
-        line.clear();
-        for _ in 1..params.records_per_file {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if !line.is_empty() && line[0] != b'@' {
-                        peek_lines.push(line.clone());
-                    }
-                }
-                Err(e) => return Err(format!("Failed to read input: {}", e)),
-            }
-        }
-
-        if peek_lines.is_empty() {
-            break;
-        }
-
-        total_records += peek_lines.len();
-        let temp = sort_to_temp(&peek_lines, params)?;
-        temp_files.push(temp);
-        peek_lines.clear();
-    }
-
-    if params.progress {
-        eprintln!(
-            "Initial sort finished with {} records in {} files",
-            total_records,
-            temp_files.len()
-        );
-    }
-
-    // Merge rounds - continue until we have files_per_merge or fewer files
+    // Merge iteratively until the number of files is small enough to merge at once.
     let mut round = 0;
     while temp_files.len() > params.files_per_merge {
-        if params.progress {
-            eprintln!("Round {}: merging {} files", round, temp_files.len());
-        }
-
-        let mut next_files = Vec::new();
-        let mut i = 0;
-        while i < temp_files.len() {
-            let end = (i + params.files_per_merge).min(temp_files.len());
-            if end - i == 1 {
-                next_files.push(temp_files[i].take());
-            } else {
-                let merged = merge_files(&temp_files[i..end], params)?;
-                next_files.push(merged);
-            }
-
-            i = end;
-        }
-
-        temp_files = next_files;
-        if params.progress {
-            eprintln!("Round {} finished with {} files", round, temp_files.len());
-        }
+        temp_files = merge_round(temp_files, round, params)?;
         round += 1;
     }
 
@@ -438,20 +371,183 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
     if params.progress {
         eprintln!("Starting the final merge");
     }
-
-    if !temp_files.is_empty() {
-        merge_to_output(&temp_files, &header_lines, output_file.as_ref(), params)?;
-    } else {
-        // No files - create empty output
-        create_empty_output(&header_lines, output_file.as_ref())?;
-    }
+    let total_records = merge_to_output(&temp_files, &header_lines, output_file.as_ref(), params)?;
 
     if params.progress {
         let elapsed = start_time.elapsed().as_secs_f64();
         eprintln!("Sorted {} records in {:.2} seconds", total_records, elapsed);
     }
-
     Ok(())
+}
+
+//-----------------------------------------------------------------------------
+
+/// Performs the initial sort of the input GAF file and returns either temporary files or a single batch of lines.
+fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<InitialSortResult, String> {
+    let mut reader = reader;
+    if params.progress {
+        eprintln!("Initial sort: {} records per file", params.records_per_file);
+    }
+
+    let mut workers: Vec<Option<JoinHandle<Result<Arc<TempFile>, String>>>> = Vec::with_capacity(params.threads);
+    for _ in 0..params.threads {
+        workers.push(None);
+    }
+    let mut outputs = Vec::new();
+    let mut join = |worker: Option<JoinHandle<Result<Arc<TempFile>, String>>>, thread: usize| -> bool {
+        if let Some(worker) = worker {
+            match worker.join() {
+                Ok(Ok(sorted)) => outputs.push(sorted),
+                Ok(Err(e)) => {
+                    eprintln!("Worker thread {} failed: {}", thread, e);
+                    return false;
+                },
+                Err(_) => {
+                    eprintln!("Worker thread {} panicked", thread);
+                    return false;
+                },
+            };
+        }
+        true
+    };
+
+    let mut batch = 0;
+    let mut total_records = 0;
+    let mut ok = true;
+    loop {
+        let mut lines = Vec::new();
+        for _ in 0..params.records_per_file {
+            let mut line = Vec::new();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if !line.is_empty() && line[0] != b'@' {
+                        lines.push(line.clone());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to read input: {}", e);
+                    ok = false;
+                    break;
+                },
+            }
+        }
+        if !ok {
+            break;
+        }
+        total_records += lines.len();
+        if lines.is_empty() {
+            break;
+        }
+
+        if batch == 0 {
+            let buffer = reader.fill_buf().map_err(|e| format!("Failed to read input: {}", e))?;
+            if buffer.is_empty() {
+                // No more data after the first batch.
+                return Ok(InitialSortResult::SingleBatch(lines));
+            }
+        }
+        let thread = batch % params.threads;
+        if workers[thread].is_some() {
+            // Wait for the worker to finish before starting a new one.
+            if !join(workers[thread].take(), thread) {
+                ok = false;
+                break;
+            }
+        }
+        let key_type = params.key_type;
+        let stable = params.stable;
+        workers[thread] = Some(std::thread::spawn(move || sort_to_temp(lines, key_type, stable)));
+        batch += 1;
+    }
+
+    for (thread, worker) in workers.into_iter().enumerate() {
+        if !join(worker, thread) {
+            ok = false;
+        }
+    }
+
+    if !ok {
+        return Err(String::from("Initial sort failed"));
+    }
+    if params.progress {
+        eprintln!(
+            "Initial sort finished with {} records in {} files",
+            total_records,
+            outputs.len()
+        );
+    }
+    Ok(InitialSortResult::TempFiles(outputs))
+}
+
+//-----------------------------------------------------------------------------
+
+/// Performs one round of merges and returns a new set of temporary files.
+fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters) -> Result<Vec<Arc<TempFile>>, String> {
+    if params.progress {
+        eprintln!("Round {}: {} files per batch", round, params.files_per_merge);
+    }
+
+    let mut workers: Vec<Option<JoinHandle<Result<Arc<TempFile>, String>>>> = Vec::with_capacity(params.threads);
+    for _ in 0..params.threads {
+        workers.push(None);
+    }
+    let mut outputs = Vec::new();
+    let mut join = |worker: Option<JoinHandle<Result<Arc<TempFile>, String>>>, thread: usize| -> bool {
+        if let Some(worker) = worker {
+            match worker.join() {
+                Ok(Ok(merged)) => outputs.push(merged),
+                Ok(Err(e)) => {
+                    eprintln!("Worker thread {} failed: {}", thread, e);
+                    return false;
+                },
+                Err(_) => {
+                    eprintln!("Worker thread {} panicked", thread);
+                    return false;
+                },
+            };
+        }
+        true
+    };
+
+    let mut i = 0;
+    let mut batch = 0;
+    let mut ok = true;
+    while i + 1 < inputs.len() {
+        let end = (i + params.files_per_merge).min(inputs.len());
+        let thread = batch % params.threads;
+        if workers[thread].is_some() {
+            // Wait for the worker to finish before starting a new one.
+            if !join(workers[thread].take(), thread) {
+                ok = false;
+                break;
+            }
+        }
+        let batch_files = inputs[i..end].to_vec();
+        let buffer_size = params.buffer_size;
+        workers[thread] = Some(std::thread::spawn(move || merge_files(batch_files, buffer_size)));
+        i = end;
+        batch += 1;
+    }
+
+    for (thread, worker) in workers.into_iter().enumerate() {
+        if !join(worker, thread) {
+            ok = false;
+        }
+    }
+    if i + 1 == inputs.len() {
+        // If we have one file left that wasn't included in a batch, we pass it to the next round.
+        outputs.push(inputs[i].clone());
+    }
+
+    if !ok {
+        let msg = format!("Merge round {} failed", round);
+        return Err(msg);
+    }
+    if params.progress {
+        eprintln!("Round {} finished with {} files", round, outputs.len());
+    }
+    Ok(outputs)
 }
 
 //-----------------------------------------------------------------------------
@@ -506,13 +602,13 @@ fn sort_to_output(
 }
 
 /// Sorts lines to a temporary file.
-fn sort_to_temp(lines: &[Vec<u8>], params: &SortParameters) -> Result<TempFile, String> {
+fn sort_to_temp(lines: Vec<Vec<u8>>, key_type: KeyType, stable: bool) -> Result<Arc<TempFile>, String> {
     let mut records: Vec<GAFRecord> = lines
-        .iter()
-        .map(|line| GAFRecord::new(line.clone(), params.key_type))
+        .into_iter()
+        .map(|line| GAFRecord::new(line, key_type))
         .collect();
 
-    if params.stable {
+    if stable {
         records.sort();
     } else {
         records.sort_unstable();
@@ -535,11 +631,11 @@ fn sort_to_temp(lines: &[Vec<u8>], params: &SortParameters) -> Result<TempFile, 
         .finish()
         .map_err(|e| format!("Failed to finish compression: {}", e))?;
 
-    Ok(temp)
+    Ok(Arc::new(temp))
 }
 
 /// Merges multiple temporary files into a new temporary file.
-fn merge_files(inputs: &[TempFile], params: &SortParameters) -> Result<TempFile, String> {
+fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<TempFile>, String> {
     let mut output = TempFile::create()
         .map_err(|e| format!("Failed to create temporary file: {}", e))?;
 
@@ -559,7 +655,7 @@ fn merge_files(inputs: &[TempFile], params: &SortParameters) -> Result<TempFile,
                        buffers: &mut Vec<VecDeque<GAFRecord>>,
                        remaining: &mut Vec<usize>|
      -> Result<(), String> {
-        let count = remaining[reader_idx].min(params.buffer_size);
+        let count = remaining[reader_idx].min(buffer_size);
         if count > 0 {
             buffers[reader_idx].clear();
             for _ in 0..count {
@@ -597,7 +693,7 @@ fn merge_files(inputs: &[TempFile], params: &SortParameters) -> Result<TempFile,
         out_buffer.push(record);
 
         // Write buffer if full
-        if out_buffer.len() >= params.buffer_size {
+        if out_buffer.len() >= buffer_size {
             for rec in out_buffer.drain(..) {
                 rec.serialize(&mut writer)
                     .map_err(|e| format!("Failed to write to output: {}", e))?;
@@ -628,16 +724,18 @@ fn merge_files(inputs: &[TempFile], params: &SortParameters) -> Result<TempFile,
         .finish()
         .map_err(|e| format!("Failed to finish compression: {}", e))?;
 
-    Ok(output)
+    Ok(Arc::new(output))
 }
 
 /// Merges temporary files to the final output file.
+///
+/// Returns the total number of records merged.
 fn merge_to_output(
-    inputs: &[TempFile],
+    inputs: &[Arc<TempFile>],
     header_lines: &[String],
     output_file: &Path,
     params: &SortParameters,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let mut writer = create_output_writer(output_file)?;
 
     // Write header
@@ -652,6 +750,7 @@ fn merge_to_output(
         .map(|temp| temp.reader())
         .collect::<Result<_, _>>()
         .map_err(|e| format!("Failed to open temporary file for reading: {}", e))?;
+    let total_records: usize = inputs.iter().map(|t| t.records).sum();
 
     let mut buffers: Vec<VecDeque<GAFRecord>> = vec![VecDeque::new(); readers.len()];
     let mut remaining: Vec<usize> = inputs.iter().map(|t| t.records).collect();
@@ -723,25 +822,7 @@ fn merge_to_output(
     writer.flush()
         .map_err(|e| format!("Failed to flush output: {}", e))?;
 
-    Ok(())
-}
-
-/// Creates an empty output file with just headers.
-fn create_empty_output(header_lines: &[String], output_file: &Path) -> Result<(), String> {
-    let mut writer = create_output_writer(output_file)?;
-
-    for line in header_lines {
-        writeln!(writer, "{}", line)
-            .map_err(|e| format!("Failed to write header: {}", e))?;
-    }
-
-    writer.flush()
-        .map_err(|e| format!("Failed to flush output: {}", e))?;
-
-    Ok(())
+    Ok(total_records)
 }
 
 //-----------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests;

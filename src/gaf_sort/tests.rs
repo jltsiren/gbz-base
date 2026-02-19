@@ -5,14 +5,6 @@ use super::*;
 // Helpers
 //-----------------------------------------------------------------------------
 
-/// Creates a unique temporary path for a test output file.
-fn temp_output() -> PathBuf {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("gaf-sort-test-{}-{}.gaf", std::process::id(), n))
-}
-
 /// Reads all non-header data lines from a GAF file.
 /// Lines are returned as-is (including the trailing newline), matching what
 /// GAFRecord stores internally, so that key_of() computes correct hash keys.
@@ -46,7 +38,7 @@ fn read_headers(path: &Path) -> Vec<String> {
 /// Runs sort_gaf on a test input file and returns the path to the output file.
 fn run_sort(input: &'static str, params: &SortParameters) -> PathBuf {
     let input_path = utils::get_test_data(input);
-    let output_path = temp_output();
+    let output_path = serialize::temp_file_name("gaf-sort-test");
     sort_gaf(&input_path, &output_path, params).expect("sort_gaf failed");
     output_path
 }
@@ -67,6 +59,18 @@ fn assert_sorted(lines: &[Vec<u8>], key_type: KeyType) {
             i, prev, k
         );
         prev = k;
+    }
+}
+
+/// Asserts that the lines match.
+fn assert_lines_equal(lines1: &[Vec<u8>], lines2: &[Vec<u8>], first: &str, second: &str) {
+    assert_eq!(lines1.len(), lines2.len(), "line count differs between {} and {}", first, second);
+    for (i, (line1, line2)) in lines1.iter().zip(lines2.iter()).enumerate() {
+        assert_eq!(
+            line1, line2,
+            "line {} differs between {} and {}: {:?} != {:?}",
+            i, first, second, String::from_utf8_lossy(line1), String::from_utf8_lossy(line2)
+        );
     }
 }
 
@@ -175,6 +179,23 @@ fn sort_multi_batch_multi_round() {
     assert_sorted(&lines, params.key_type);
 }
 
+// Repeat the above with two threads.
+#[test]
+fn sort_multithreaded() {
+    let params = SortParameters {
+        records_per_file: 1000,
+        files_per_merge: 2,
+        threads: 2,
+        ..SortParameters::default()
+    };
+    let output = run_sort("shuffled.gaf", &params);
+    let lines = read_data_lines(&output);
+    let _ = fs::remove_file(&output);
+
+    assert_eq!(lines.len(), RECORD_COUNT);
+    assert_sorted(&lines, params.key_type);
+}
+
 // Gzipped input: shuffled.gaf.gz should produce the same set of records as
 // the plain shuffled.gaf.
 #[test]
@@ -193,7 +214,7 @@ fn sort_gzipped_input() {
 
     lines_plain.sort_unstable();
     lines_gz.sort_unstable();
-    assert_eq!(lines_plain, lines_gz);
+    assert_lines_equal(&lines_plain, &lines_gz, "plain", "gzipped");
 }
 
 // Hash key: output should be sorted by hash of the record value.
@@ -246,7 +267,7 @@ fn sort_preserves_all_records() {
 
     input_lines.sort_unstable();
     output_lines.sort_unstable();
-    assert_eq!(input_lines, output_lines);
+    assert_lines_equal(&input_lines, &output_lines, "input", "output");
 }
 
 // Different parameter configurations should produce identical sets of records.
@@ -269,6 +290,8 @@ fn sort_consistent_across_configs() {
         let _ = fs::remove_file(path);
     }
 
-    assert_eq!(sorted_lines[0], sorted_lines[1], "configs 0 and 1 produced different records");
-    assert_eq!(sorted_lines[0], sorted_lines[2], "configs 0 and 2 produced different records");
+    assert_lines_equal(&sorted_lines[0], &sorted_lines[1], "config 0", "config 1");
+    assert_lines_equal(&sorted_lines[0], &sorted_lines[2], "config 0", "config 2");
 }
+
+//-----------------------------------------------------------------------------

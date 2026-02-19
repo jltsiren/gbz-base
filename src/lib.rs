@@ -8,14 +8,14 @@
 //! As long as the application needs only a fraction of the entire graph (e.g. 1 Mbp context in a human graph), using the database is faster than loading the graph.
 //! This assumes that the database is stored on a local SSD.
 //!
-//! The prototype builds on the [`gbwt`] crate.
+//! The prototype builds on the [`gbz`] crate.
 //!
 //! See [`GBZBase`], [`GraphInterface`], and [`Subgraph`] for the database interface.
 //! See [`GBZPath`] and [`GBZRecord`] for the related structures.
 //!
 //! ### Basic concepts
 //!
-//! Nodes are accessed by handles, which are [`gbwt::GBWT`] node identifiers.
+//! Nodes are accessed by handles, which are [`gbz::GBWT`] node identifiers.
 //! A handle encodes both the identifier of the node in the underlying graph and its orientation.
 //! Each node record corresponds to a row in table `Nodes`, with the handle as its primary key.
 //!
