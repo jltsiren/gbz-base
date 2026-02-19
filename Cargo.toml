@@ -45,6 +45,12 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "gafsort"
+test = false
+bench = false
+doc = false
+
 [lib]
 # Build a .wasm file of the library in addition to the .rlib to link Rust code
 crate-type = ["cdylib", "rlib"]

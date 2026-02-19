@@ -52,6 +52,7 @@
 pub mod alignment;
 pub mod db;
 pub mod formats;
+pub mod gaf_sort;
 pub mod path_index;
 pub mod read_set;
 pub mod subgraph;
