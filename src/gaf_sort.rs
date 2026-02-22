@@ -24,33 +24,33 @@ mod tests;
 
 //-----------------------------------------------------------------------------
 
-/// Types of keys that can be derived from GAF records.
+// Types of keys that can be derived from GAF records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyType {
-    /// Sort by (minimum handle, maximum handle) in the path.
-    /// Handles encode both node ID and orientation.
+    // Sort by (minimum handle, maximum handle) in the path.
+    // Handles encode both node ID and orientation.
     NodeInterval,
-    /// Sort by hash of the value for random shuffling.
+    // Sort by hash of the value for random shuffling.
     Hash,
 }
 
-/// A GAF record with a sorting key.
+// A GAF record with a sorting key.
 #[derive(Clone, Debug)]
 struct GAFRecord {
-    /// Integer key for sorting.
+    // Integer key for sorting.
     key: u64,
-    /// Original GAF line.
+    // Original GAF line.
     value: Vec<u8>,
 }
 
 impl GAFRecord {
-    /// Missing key value. Records without a key are sorted to the end.
+    // Missing key value. Records without a key are sorted to the end.
     const MISSING_KEY: u64 = u64::MAX;
 
-    /// 0-based field number for the path in a GAF line.
+    // 0-based field number for the path in a GAF line.
     const PATH_FIELD: usize = 5;
 
-    /// Creates a new record from a line and sets the key.
+    // Creates a new record from a line and sets the key.
     fn new(value: Vec<u8>, key_type: KeyType) -> Self {
         let mut record = Self {
             key: Self::MISSING_KEY,
@@ -60,7 +60,7 @@ impl GAFRecord {
         record
     }
 
-    /// Sets the key based on the key type.
+    //Sets the key based on the key type.
     fn set_key(&mut self, key_type: KeyType) {
         self.key = match key_type {
             KeyType::NodeInterval => self.extract_node_interval_key(),
@@ -68,7 +68,7 @@ impl GAFRecord {
         };
     }
 
-    /// Extracts (min_handle, max_handle) from the path field.
+    // Extracts (min_handle, max_handle) from the path field.
     fn extract_node_interval_key(&self) -> u64 {
         let path = match self.get_field(Self::PATH_FIELD) {
             Some(p) => p,
@@ -120,7 +120,7 @@ impl GAFRecord {
         }
     }
 
-    /// Extracts a hash of the value for random shuffling.
+    // Extracts a hash of the value for random shuffling.
     fn extract_hash_key(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -130,12 +130,12 @@ impl GAFRecord {
         hasher.finish()
     }
 
-    /// Gets the nth field (0-indexed) from the GAF line.
+    // Gets the nth field (0-indexed) from the GAF line.
     fn get_field(&self, field_index: usize) -> Option<&[u8]> {
         self.value.split(|&b| b == b'\t').nth(field_index)
     }
 
-    /// Serializes the record to a writer.
+    // Serializes the record to a writer.
     fn serialize<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&self.key.to_le_bytes())?;
         let len = self.value.len() as u64;
@@ -144,13 +144,13 @@ impl GAFRecord {
         Ok(())
     }
 
-    /// Writes a GAF line to the output writer.
+    // Writes a GAF line to the output writer.
     fn write_gaf_line<W: Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&self.value)?; // The line already includes the newline character.
         Ok(())
     }
 
-    /// Deserializes a record from a reader.
+    // Deserializes a record from a reader.
     fn deserialize<R: Read>(reader: &mut R) -> io::Result<Self> {
         let mut key_bytes = [0u8; 8];
         reader.read_exact(&mut key_bytes)?;
@@ -166,7 +166,7 @@ impl GAFRecord {
         Ok(Self { key, value })
     }
 
-    /// Flips the key to reverse the order (for priority queue).
+    // Flips the key to reverse the order (for priority queue).
     fn flip_key(&mut self) {
         self.key = u64::MAX - self.key;
     }
@@ -194,29 +194,29 @@ impl Ord for GAFRecord {
 
 //-----------------------------------------------------------------------------
 
-/// A zstd-compressed temporary file for storing sorted GAF records.
-///
-/// This object should be wrapped in [`Arc`] in multithreaded contexts.
+// A zstd-compressed temporary file for storing sorted GAF records.
+//
+// This object should be wrapped in [`Arc`] in multithreaded contexts.
 struct TempFile {
     path: PathBuf,
     records: usize,
 }
 
 impl TempFile {
-    /// Creates a new temporary file.
+    // Creates a new temporary file.
     fn create() -> io::Result<Self> {
         let path = serialize::temp_file_name("gaf-sort");
         Ok(Self { path, records: 0 })
     }
 
-    /// Opens the file for writing.
+    // Opens the file for writing.
     fn writer(&self) -> io::Result<BufWriter<zstd::Encoder<'static, File>>> {
         let file = File::create(&self.path)?;
         let encoder = zstd::Encoder::new(file, 3)?; // Compression level 3
         Ok(BufWriter::new(encoder))
     }
 
-    /// Opens the file for reading.
+    // Opens the file for reading.
     fn reader(&self) -> io::Result<zstd::Decoder<'static, BufReader<std::fs::File>>> {
         let file = std::fs::File::open(&self.path)?;
         let decoder = zstd::Decoder::new(file)?;
@@ -230,11 +230,11 @@ impl Drop for TempFile {
     }
 }
 
-/// The result of the initial sort.
+// The result of the initial sort.
 enum InitialSortResult {
-    /// Temporary files created during the initial sort.
+    // Temporary files created during the initial sort.
     TempFiles(Vec<Arc<TempFile>>),
-    /// A single batch of GAF lines.
+    // A single batch of GAF lines.
     SingleBatch(Vec<Vec<u8>>),
 }
 
@@ -300,6 +300,9 @@ impl Default for SortParameters {
 }
 
 //-----------------------------------------------------------------------------
+
+// TODO: This is still not as fast as the C++ implementation.
+// For example, 1705 seconds vs. 1525 seconds for ~40x short reads.
 
 /// Sorts a GAF file using multiway external memory merge sort.
 ///
@@ -392,8 +395,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
 
 //-----------------------------------------------------------------------------
 
-// FIXME: this is not as fast as the C++ code, which can utilize twice as many threads
-/// Performs the initial sort of the input GAF file and returns either temporary files or a single batch of lines.
+// Performs the initial sort of the input GAF file and returns either temporary files or a single batch of lines.
 fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<InitialSortResult, String> {
     let mut reader = reader;
     if params.progress {
@@ -493,7 +495,7 @@ fn initial_sort(reader: Box<dyn BufRead>, params: &SortParameters) -> Result<Ini
 
 //-----------------------------------------------------------------------------
 
-/// Performs one round of merges and returns a new set of temporary files.
+// Performs one round of merges and returns a new set of temporary files.
 fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters) -> Result<Vec<Arc<TempFile>>, String> {
     if params.progress {
         eprintln!("Round {}: {} files per batch", round, params.files_per_merge);
@@ -563,7 +565,7 @@ fn merge_round(inputs: Vec<Arc<TempFile>>, round: usize, params: &SortParameters
 
 //-----------------------------------------------------------------------------
 
-/// Creates a writer for the output file, or stdout if the path is "-".
+// Creates a writer for the output file, or stdout if the path is "-".
 fn create_output_writer(output_file: &Path) -> Result<Box<dyn Write>, String> {
     if output_file == Path::new("-") {
         Ok(Box::new(BufWriter::new(io::stdout())))
@@ -574,7 +576,7 @@ fn create_output_writer(output_file: &Path) -> Result<Box<dyn Write>, String> {
     }
 }
 
-/// Sorts lines directly to output file (for single batch).
+// Sorts lines directly to output file (for single batch).
 fn sort_to_output(
     lines: Vec<Vec<u8>>,
     header_lines: &[String],
@@ -612,7 +614,7 @@ fn sort_to_output(
     Ok(())
 }
 
-/// Sorts lines to a temporary file.
+// Sorts lines to a temporary file.
 fn sort_to_temp(lines: Vec<Vec<u8>>, key_type: KeyType, stable: bool) -> Result<Arc<TempFile>, String> {
     let mut records: Vec<GAFRecord> = lines
         .into_iter()
@@ -649,7 +651,7 @@ fn flip_source_index(index: usize, total: usize) -> usize {
     total - 1 - index
 }
 
-/// Merges multiple temporary files into a new temporary file.
+// Merges multiple temporary files into a new temporary file.
 fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<TempFile>, String> {
     let mut output = TempFile::create()
         .map_err(|e| format!("Failed to create temporary file: {}", e))?;
@@ -744,9 +746,9 @@ fn merge_files(inputs: Vec<Arc<TempFile>>, buffer_size: usize) -> Result<Arc<Tem
     Ok(Arc::new(output))
 }
 
-/// Merges temporary files to the final output file.
-///
-/// Returns the total number of records merged.
+// Merges temporary files to the final output file.
+//
+// Returns the total number of records merged.
 fn merge_to_output(
     inputs: &[Arc<TempFile>],
     header_lines: &[String],
