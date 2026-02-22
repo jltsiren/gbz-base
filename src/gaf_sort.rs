@@ -3,8 +3,6 @@
 //! This module provides functionality to sort GAF (Graph Alignment Format) files
 //! using an external memory merge sort algorithm, similar to GNU sort.
 
-// FIXME: polish
-
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::fs::{self, File};
@@ -303,12 +301,17 @@ impl Default for SortParameters {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: doctest that can be run
 /// Sorts a GAF file using multiway external memory merge sort.
 ///
-/// The function reads the input GAF file, sorts it in batches, and writes the sorted output.
+/// Returns the number of records sorted on success, or an error message on failure.
+///
+/// Sorting proceeds in three phases:
+///
+/// 1. Initial sort: Sort batches of records into compressed temporary files using multiple worker threads.
+/// 2. Intermediate merges: Merge batches of temporary files into new temporary files using multiple worker threads.
+/// 3. Final merge: Merge the remaining temporary files into the output file.
+///
 /// Temporary files are created and cleaned up automatically.
-/// Multiple worker threads can be used for the initial sort and intermediate merges.
 ///
 /// # Arguments
 ///
@@ -322,17 +325,24 @@ impl Default for SortParameters {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// use gbz_base::gaf_sort::{sort_gaf, SortParameters};
+/// use gbz_base::utils;
+/// use simple_sds::serialize;
+/// use std::fs;
 ///
+/// let input_file = utils::get_test_data("shuffled.gaf.gz");
+/// let output_file = serialize::temp_file_name("sorted.gaf");
 /// let params = SortParameters::default();
-/// sort_gaf("input.gaf.gz", "output.gaf", &params).unwrap();
+/// let result = sort_gaf(&input_file, &output_file, &params);
+/// assert_eq!(result, Ok(12439));
+/// let _ = fs::remove_file(output_file);
 /// ```
 pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
     input_file: P,
     output_file: Q,
     params: &SortParameters,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     params.validate()?;
 
     let start_time = Instant::now();
@@ -356,7 +366,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
                 let elapsed = start_time.elapsed().as_secs_f64();
                 eprintln!("Sorted {} records in {:.2} seconds", total_records, elapsed);
             }
-            return Ok(());
+            return Ok(total_records);
         }
     };
 
@@ -377,7 +387,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
         let elapsed = start_time.elapsed().as_secs_f64();
         eprintln!("Sorted {} records in {:.2} seconds", total_records, elapsed);
     }
-    Ok(())
+    Ok(total_records)
 }
 
 //-----------------------------------------------------------------------------

@@ -4,12 +4,12 @@ use std::fs::OpenOptions;
 use std::io::BufRead;
 
 //-----------------------------------------------------------------------------
-// Helpers
-//-----------------------------------------------------------------------------
 
-/// Reads all non-header data lines from a GAF file.
-/// Lines are returned as-is (including the trailing newline), matching what
-/// GAFRecord stores internally, so that key_of() computes correct hash keys.
+// Helpers.
+
+// Reads all non-header data lines from a GAF file.
+// Lines are returned as-is (including the trailing newline), matching what
+// GAFRecord stores internally, so that key_of() computes correct hash keys.
 fn read_data_lines(path: &Path) -> Vec<Vec<u8>> {
     let mut reader = utils::open_file(path).unwrap();
     let mut lines = Vec::new();
@@ -31,8 +31,8 @@ fn read_data_lines(path: &Path) -> Vec<Vec<u8>> {
     lines
 }
 
-/// Creates a test case with the given number of lines with sorted integer ids and identical paths.
-/// These can be used for testing the stable sorting behavior, as the keys will be identical for all records.
+// Creates a test case with the given number of lines with sorted integer ids and identical paths.
+// These can be used for testing the stable sorting behavior, as the keys will be identical for all records.
 fn stable_sort_test_case(num_lines: usize) -> Vec<Vec<u8>> {
     let mut result = Vec::new();
     for i in 0..num_lines {
@@ -42,26 +42,29 @@ fn stable_sort_test_case(num_lines: usize) -> Vec<Vec<u8>> {
     result
 }
 
-/// Reads header lines from a GAF file.
+// Reads header lines from a GAF file.
 fn read_headers(path: &Path) -> Vec<String> {
     let mut reader = utils::open_file(path).unwrap();
     formats::read_gaf_header_lines(&mut reader).unwrap()
 }
 
-/// Runs sort_gaf on a test input file and returns the path to the output file.
+// Runs sort_gaf on a test input file and returns the path to the output file.
 fn run_sort(input: &'static str, params: &SortParameters) -> PathBuf {
     let input_path = utils::get_test_data(input);
     let output_path = serialize::temp_file_name("gaf-sort-test");
-    sort_gaf(&input_path, &output_path, params).expect("sort_gaf failed");
+    let result = sort_gaf(&input_path, &output_path, params);
+    assert!(result.is_ok(), "sort_gaf failed: {}", result.err().unwrap());
+    let result = result.unwrap();
+    assert_eq!(result, RECORD_COUNT, "sort_gaf sorted {} records, expected {}", result, RECORD_COUNT);
     output_path
 }
 
-/// Returns the sort key for a GAF line (same logic as GAFRecord).
+// Returns the sort key for a GAF line (same logic as GAFRecord).
 fn key_of(line: &[u8], key_type: KeyType) -> u64 {
     GAFRecord::new(line.to_vec(), key_type).key
 }
 
-/// Asserts that lines are in non-decreasing key order.
+// Asserts that lines are in non-decreasing key order.
 fn assert_sorted(lines: &[Vec<u8>], key_type: KeyType) {
     let mut prev = 0u64;
     for (i, line) in lines.iter().enumerate() {
@@ -75,7 +78,7 @@ fn assert_sorted(lines: &[Vec<u8>], key_type: KeyType) {
     }
 }
 
-/// Asserts that the lines match.
+// Asserts that the lines match.
 fn assert_lines_equal(lines1: &[Vec<u8>], lines2: &[Vec<u8>], first: &str, second: &str) {
     assert_eq!(lines1.len(), lines2.len(), "line count differs between {} and {}", first, second);
     for (i, (line1, line2)) in lines1.iter().zip(lines2.iter()).enumerate() {
@@ -87,12 +90,12 @@ fn assert_lines_equal(lines1: &[Vec<u8>], lines2: &[Vec<u8>], first: &str, secon
     }
 }
 
-/// Number of data records in shuffled.gaf (and shuffled.gaf.gz).
+// Number of data records in shuffled.gaf (and shuffled.gaf.gz).
 const RECORD_COUNT: usize = 12439;
 
 //-----------------------------------------------------------------------------
-// Unit tests
-//-----------------------------------------------------------------------------
+
+// Unit tests.
 
 #[test]
 fn test_node_interval_key() {
@@ -136,8 +139,8 @@ fn test_serialization() {
 }
 
 //-----------------------------------------------------------------------------
-// sort_gaf correctness tests
-//-----------------------------------------------------------------------------
+
+// sort_gaf correctness tests.
 
 // Single batch: all records fit in one batch and are sorted directly to the
 // output file, exercising the sort_to_output path.
@@ -329,6 +332,8 @@ fn sort_stable() {
     let output = serialize::temp_file_name("gaf-sort-stable");
     let result = sort_gaf(&input, &output, &params);
     assert!(result.is_ok(), "sort_gaf failed: {}", result.err().unwrap());
+    let result = result.unwrap();
+    assert_eq!(result, test_case.len(), "sort_gaf sorted {} records, expected {}", result, test_case.len());
 
     let lines = read_data_lines(&output);
     let _ = fs::remove_file(&input);
