@@ -14,7 +14,7 @@ pggname = { version = "0.2" }
 # Use fallible_uint for getting usize values from query results.
 rusqlite = { version = "0.38", features = ["bundled", "fallible_uint"] }
 getopts = { version = "0.2" }
-flate2 = { version = "1.1" }
+flate2 = { version = "1.1", features = ["zlib-rs"] }
 zstd = { version = "0.13" }
 rand = { version = "0.9", optional = true }
 
@@ -41,6 +41,12 @@ doc = false
 
 [[bin]]
 name = "query"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "gafsort"
 test = false
 bench = false
 doc = false

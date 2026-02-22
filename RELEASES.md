@@ -1,5 +1,9 @@
 # GBZ-base releases
 
+## Current version
+
+* GAF sorting with `gaf_sort()` and the `gafsort` tool.
+
 ## GAF-base 0.3.0 (2026-02-18)
 
 * Database versions: GBZ-base v0.4.0, GAF-base version 3
