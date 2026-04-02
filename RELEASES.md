@@ -32,8 +32,9 @@ This is the initial release of GBZ-base and GAF-base.
 
 ## Release process
 
-* Run `cargo clippy`.
+* Run `cargo clippy --features=binaries`.
 * Run tests with `cargo test`.
+* Build documentation with `cargo doc`.
 * Update database versions to non-dev versions in `db.rs`.
 * Update version in `Cargo.toml`.
 * Update `RELEASES.md`.
