@@ -1,6 +1,6 @@
 //! Utility functions and structures.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::ops::{Range, RangeInclusive};
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use std::io::{self, BufRead, BufReader, Read, Error, ErrorKind};
 
 use flate2::read::MultiGzDecoder;
 
-use gbz::{support, Orientation};
+use gbz::{support, Orientation, GBWT, Pos, ENDMARKER};
 use pggname::GraphName;
 use simple_sds::int_vector::IntVector;
 use simple_sds::ops::{Vector, Access};
@@ -498,6 +498,65 @@ pub fn cluster_node_ids(node_ids: Vec<usize>, threshold: usize) -> Vec<RangeIncl
 
 //-----------------------------------------------------------------------------
 
+/// A structure that determines the GBWT starting positions for paths in a graph.
+///
+/// The starting positions are iterated in order.
+/// If a GBWT index is provided, the starting positions are determined from the paths in the index.
+/// Otherwise the starting positions for a unidirectional index are computed on the fly.
+pub enum PathStartSource<'a> {
+    /// A GBWT index of the paths and the next sequence id that has not been iterated.
+    Index(&'a GBWT, usize),
+    /// A map storing the number of paths starting from each node so far.
+    Map(HashMap<usize, usize>),
+}
+
+impl<'a> PathStartSource<'a> {
+    /// Returns a new source that computes the starting positions on the fly.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the starting position of the next path.
+    ///
+    /// If the source is a GBWT index, the provided node identifier is ignored.
+    /// Returns [`None`] if the path is empty or all paths in the index have been iterated.
+    ///
+    /// If the source is a map, returns the starting position that would be assigned to the next path starting from the given node.
+    /// Returns [`None`] if the path is empty (if the node identifier is [`ENDMARKER`]).
+    pub fn next(&mut self, node_id: usize) -> Option<Pos> {
+        match self {
+            Self::Index(index, seq_id) => {
+                let result = index.start(*seq_id);
+                *seq_id += if index.is_bidirectional() { 2 } else { 1 };
+                result
+            }
+            Self::Map(map) => {
+                if node_id == ENDMARKER {
+                    return None;
+                }
+                let count = map.entry(node_id).or_insert(0);
+                let result = Pos::new(node_id, *count);
+                *count += 1;
+                Some(result)
+            }
+        }
+    }
+}
+
+impl<'a> Default for PathStartSource<'a> {
+    fn default() -> Self {
+        Self::Map(HashMap::new())
+    }
+}
+
+impl<'a> From<&'a GBWT> for PathStartSource<'a> {
+    fn from(index: &'a GBWT) -> Self {
+        Self::Index(index, 0)
+    }
+}
+
+//-----------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +704,43 @@ mod tests {
         let node_ids = vec![1, 50, 52, 53, 73, 74, 200];
         let expected = vec![1..=1, 50..=53, 73..=74, 200..=200];
         test_cluster(node_ids, expected, 10, "two clusters and outliers");
+    }
+
+    #[test]
+    fn path_start_source() {
+        let gbwt_files = vec![
+            get_test_data("micb-kir3dl1_HG003.gbwt"),
+            get_test_data("bidirectional.gbwt"),
+            get_test_data("empty.gbwt"),
+            support::get_test_data("example.gbwt"),
+            support::get_test_data("translation.gbwt"),
+            support::get_test_data("with-empty.gbwt"),
+        ];
+
+        for gbwt_file in gbwt_files.iter() {
+            let index = serialize::load_from(gbwt_file);
+            assert!(index.is_ok(), "Failed to load GBWT index from {}: {}", gbwt_file.display(), index.unwrap_err());
+            let index: GBWT = index.unwrap();
+
+            let paths = if index.is_bidirectional() {
+                index.sequences() / 2
+            } else {
+                index.sequences()
+            };
+            let mut index_source = PathStartSource::from(&index);
+            let mut map_source = PathStartSource::new();
+            for path_id in 0..paths {
+                let seq_id = if index.is_bidirectional() { support::encode_path(path_id, Orientation::Forward) } else { path_id };
+                let truth = index.start(seq_id);
+                let node_id = truth.map(|pos| pos.node).unwrap_or(ENDMARKER);
+                let index_pos = index_source.next(0);
+                assert_eq!(index_pos, truth, "Wrong path start from index for path {} in {}", path_id, gbwt_file.display());
+                if !index.is_bidirectional() {
+                    let map_pos = map_source.next(node_id);
+                    assert_eq!(map_pos, truth, "Wrong path start from map for path {} in {}", path_id, gbwt_file.display());
+                }
+            }
+        }
     }
 }
 

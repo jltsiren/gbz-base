@@ -1,8 +1,8 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
 use crate::{Alignment, AlignmentBlock, Chains};
-use crate::formats::JSONValue;
-use crate::{formats, utils};
+use crate::formats::{self, JSONValue};
+use crate::utils::{self, PathStartSource};
 
 use std::io::BufRead;
 use std::path::Path;
@@ -471,6 +471,8 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
+// FIXME: Implement and document GBWT construction.
+// FIXME: Tests and examples that build a GBWT instead of loading it.
 /// A database connection to a GAF-base database.
 ///
 /// This structure stores a database connection and some header information.
@@ -759,7 +761,7 @@ impl Default for GAFBaseParams {
 
 //-----------------------------------------------------------------------------
 
-// TODO: Once we have GBWT construction in the gbz crate, we can build the GBWT in the background
+// FIXME: Once we have GBWT construction in the gbz crate, we can build the GBWT in the background
 // and insert it into the database after alignments. We can determine GBWT starting positions for
 // the alignments in advance. We know the node from the path, and we know the GBWT sequence id
 // from alignment id. GBWT path starts come from the endmarker, and they are therefore before all
@@ -767,10 +769,10 @@ impl Default for GAFBaseParams {
 // the GBWT starting position is (v, i).
 
 // TODO: If we are willing to use a reference, we could reuse `edges` in the `Nodes` table from it.
-// We can similarly speed up GBWT construction by having the GBWT of the graph available.
 
 /// Creating the database.
 impl GAFBase {
+    // FIXME: make GBWT optional
     /// Creates a new database from the [`GBWT`] index in file `gbwt_file` and stores the database in file `db_file`.
     ///
     /// The GBWT index can be forward-only or bidirectional.
@@ -805,6 +807,7 @@ impl GAFBase {
         Self::create(gaf_file, index, db_file, graph, params)
     }
 
+    // FIXME: make GBWT optional
     /// Creates a new database in file `filename` from the given [`GBWT`] index.
     ///
     /// The GBWT index can be forward-only or bidirectional.
@@ -862,8 +865,9 @@ impl GAFBase {
         Self::insert_tags(&index, nodes, &aln_name, &mut connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
+        // FIXME: this should be the first insert function
         // `insert_alignments` consumes the connection, as it is moved to another thread.
-        Self::insert_alignments(index, gaf_file, connection, params)?;
+        let _built_index = Self::insert_alignments(Some(index.clone()), gaf_file, connection, params)?;
         eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
 
         Ok(())
@@ -973,7 +977,13 @@ impl GAFBase {
         Ok(inserted / 2)
     }
 
-    fn insert_alignments(index: Arc<GBWT>, gaf_file: Box<dyn BufRead>, connection: Connection, params: &GAFBaseParams) -> Result<(), String> {
+    // FIXME: This should build and return a GBWT index if not provided with one.
+    fn insert_alignments(
+        index: Option<Arc<GBWT>>,
+        gaf_file: Box<dyn BufRead>,
+        connection: Connection,
+        params: &GAFBaseParams
+    ) -> Result<Option<GBWT>, String> {
         eprintln!("Inserting alignments");
         let mut gaf_file = gaf_file;
         let mut connection = connection;
@@ -1015,15 +1025,24 @@ impl GAFBase {
         let (to_report, from_insert) = mpsc::sync_channel(1);
 
         // Encoder thread.
-        let gbwt_index = index.clone();
+        let expected_alignments = if let Some(index) = index.as_ref() {
+            Some(Self::gbwt_paths(index.as_ref()))
+        } else {
+            None
+        };
         let encoder_thread = thread::spawn(move || {
             let mut alignment_id = 0;
+            let mut source = if let Some(index) = index.as_ref() {
+                PathStartSource::from(index.as_ref())
+            } else {
+                PathStartSource::new()
+            };
             loop {
                 // This can only fail if the sender is disconnected.
                 let block: Result<Vec<Alignment>, String> = from_parser.recv().unwrap();
                 match block {
                     Ok(block) => {
-                        let encoded = AlignmentBlock::new(&block, &gbwt_index, alignment_id);
+                        let encoded = AlignmentBlock::new(&block, &mut source, alignment_id);
                         match encoded {
                             Ok(data) => {
                                 let _ = to_insert.send(Ok(data));
@@ -1180,9 +1199,10 @@ impl GAFBase {
         let statistics = from_insert.recv().unwrap()?;
 
         eprintln!("Inserted information on {} alignments", statistics.alignments);
-        let expected_alignments = Self::gbwt_paths(&index);
-        if statistics.alignments != expected_alignments {
-            eprintln!("Warning: Expected {} alignments", expected_alignments);
+        if let Some(expected_alignments) = expected_alignments {
+            if statistics.alignments != expected_alignments {
+                eprintln!("Warning: Expected {} alignments", expected_alignments);
+            }
         }
         eprintln!(
             "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}, optional {}",
@@ -1195,7 +1215,7 @@ impl GAFBase {
             utils::human_readable_size(statistics.optional_bytes),
         );
 
-        Ok(())
+        Ok(None)
     }
 }
 

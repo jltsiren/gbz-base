@@ -34,7 +34,7 @@
 
 use crate::{Subgraph, Mapping, Difference};
 use crate::formats::{self, TypedField};
-use crate::utils;
+use crate::utils::{self, PathStartSource};
 
 use std::io::{Read, Write};
 use std::ops::Range;
@@ -44,7 +44,7 @@ use std::{cmp, str};
 use zstd::stream::Encoder as ZstdEncoder;
 use zstd::stream::Decoder as ZstdDecoder;
 
-use gbz::{GBWT, Orientation, Pos};
+use gbz::{GBWT, Orientation, Pos, ENDMARKER};
 use gbz::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 #[cfg(test)]
@@ -1327,14 +1327,19 @@ impl AsRef<[u8]> for Flags {
 ///
 /// ```
 /// use gbz_base::{Alignment, AlignmentBlock};
+/// use gbz_base::utils::PathStartSource;
 /// use gbz_base::{formats, utils};
 /// use gbz::GBWT;
 /// use gbz::support;
 /// use simple_sds::serialize;
 ///
-/// // We need a GBWT index of the paths for compressing alignments.
+/// // We assume that the target paths are stored separately in a GBWT index.
 /// let gbwt_filename = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
 /// let index: GBWT = serialize::load_from(&gbwt_filename).unwrap();
+///
+/// // We use the GBWT index for determining the starting position for each path.
+/// // But we could also compute it on the fly with `PathStartSource::new()`.
+/// let mut source = PathStartSource::from(&index);
 ///
 /// // Open a GAF file and skip the header.
 /// let gaf_filename = utils::get_test_data("micb-kir3dl1_HG003.gaf");
@@ -1357,7 +1362,7 @@ impl AsRef<[u8]> for Flags {
 ///
 /// // Compress the block.
 /// let mut first_id = 0;
-/// let block = AlignmentBlock::new(&alignments, &index, first_id).unwrap();
+/// let block = AlignmentBlock::new(&alignments, &mut source, first_id).unwrap();
 /// assert_eq!(block.len(), alignments.len());
 /// first_id += alignments.len(); // Next block would start there.
 ///
@@ -1420,15 +1425,22 @@ impl AlignmentBlock {
         read_length
     }
 
-    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_handle: Option<usize>) -> Result<Vec<u8>, String> {
+    fn compress_gbwt_starts(
+        alignments: &[Alignment],
+        source: &mut PathStartSource,
+        first_id: usize, min_handle: Option<usize>
+    ) -> Result<Vec<u8>, String> {
         let base_node = min_handle.unwrap_or(0);
         let mut encoder = ByteCode::new();
-        for i in 0..alignments.len() {
+        for (i, aln) in alignments.iter().enumerate() {
+            let node_id = if let Some(path) = aln.target_path() {
+                path.first().copied().unwrap_or(ENDMARKER)
+            } else {
+                return Err(format!("Line {}: Cannot compute GBWT start for an alignment without an explicit target path", first_id + i));
+            };
+
             // GBWT start as (node - min_handle, offset).
-            let gbwt_sequence_id = if index.is_bidirectional() {
-                support::encode_path(first_id + i, Orientation::Forward)
-            } else { first_id + i };
-            if let Some(start) = index.start(gbwt_sequence_id) {
+            if let Some(start) = source.next(node_id) {
                 encoder.write(start.node - base_node);
                 encoder.write(start.offset);
             } else if !encoder.is_empty() {
@@ -1501,18 +1513,21 @@ impl AlignmentBlock {
     /// # Arguments
     ///
     /// * `alignments`: The alignments to include in the block.
-    /// * `index`: The GBWT index to use for encoding the GBWT starts.
+    /// * `source`: A source for GBWT starting positions of the target paths.
     /// * `first_id`: Path identifier of the first alignment in the block.
     ///
     /// # Errors
     ///
-    /// Returns an error if the block contains a mix of aligned and unaligned reads.
-    /// Returns an error if compression fails.
-    pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Result<Self, String> {
+    /// Returns an error, if:
+    ///
+    /// * The block contains a mix of aligned and unaligned reads.
+    /// * The source computes GBWT starts on the fly, but an alignment does not store the target path explicitly.
+    /// * Compression fails.
+    pub fn new(alignments: &[Alignment], source: &mut PathStartSource, first_id: usize) -> Result<Self, String> {
         let min_handle = alignments.iter().map(|aln| aln.min_handle()).min().flatten();
         let max_handle = alignments.iter().map(|aln| aln.max_handle()).max().flatten();
         let read_length = Self::expected_read_length(alignments);
-        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_handle)?;
+        let gbwt_starts = Self::compress_gbwt_starts(alignments, source, first_id, min_handle)?;
         let names = Self::compress_names_pairs(alignments)?;
         let quality_strings = Self::compress_quality_strings(alignments)?;
         let optional = Self::compress_optional_fields(alignments)?;
