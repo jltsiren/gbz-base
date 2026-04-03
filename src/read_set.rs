@@ -72,11 +72,11 @@ impl Display for AlignmentOutput {
 ///
 /// // Create a database of reads aligned to the graph.
 /// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
-/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let gbwt_file = None; // Build a new GBWT index.
 /// let db_file = serialize::temp_file_name("gaf-base");
 /// let graph_ref = GraphReference::None; // Do not store sequences in the database.
 /// let params = GAFBaseParams::default();
-/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, graph_ref, &params);
+/// let db = GAFBase::create_from_files(&gaf_file, gbwt_file, &db_file, graph_ref, &params);
 /// assert!(db.is_ok());
 ///
 /// // Extract all reads fully within the subgraph.

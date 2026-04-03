@@ -38,7 +38,7 @@ fn main() -> Result<(), String> {
                 eprintln!("Loading GBZ graph {}", graph_file.display());
                 let graph: GBZ = serialize::load_from(graph_file).map_err(|x| x.to_string())?;
                 GAFBase::create_from_files(
-                    &config.gaf_file, &config.gbwt_file, &config.db_file,
+                    &config.gaf_file, Some(&config.gbwt_file), &config.db_file,
                     GraphReference::Gbz(&graph), &config.params
                 )?;
             },
@@ -51,7 +51,7 @@ fn main() -> Result<(), String> {
                 let database = GBZBase::open(graph_file)?;
                 let mut graph = GraphInterface::new(&database)?;
                 GAFBase::create_from_files(
-                    &config.gaf_file, &config.gbwt_file, &config.db_file,
+                    &config.gaf_file, Some(&config.gbwt_file), &config.db_file,
                     GraphReference::Db(&mut graph), &config.params
                 )?;
             },
@@ -60,7 +60,7 @@ fn main() -> Result<(), String> {
             }
         };
     } else {
-        GAFBase::create_from_files(&config.gaf_file, &config.gbwt_file, &config.db_file, GraphReference::None, &config.params)?;
+        GAFBase::create_from_files(&config.gaf_file, Some(&config.gbwt_file), &config.db_file, GraphReference::None, &config.params)?;
     }
 
     // Statistics.
