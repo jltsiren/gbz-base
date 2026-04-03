@@ -47,15 +47,21 @@ pub(crate) fn create_graph_interface(database: &GBZBase) -> GraphInterface<'_> {
 
 // GAF-base utilities.
 
+// If `gbwt_part` is empty, build a new GBWT index.
 pub(crate) fn create_gaf_base(gaf_part: &'static str, gbwt_part: &'static str) -> PathBuf {
     create_gaf_base_with_params(gaf_part, gbwt_part, GraphReference::None, &GAFBaseParams::default())
 }
 
+// If `gbwt_part` is empty, build a new GBWT index.
 pub(crate) fn create_gaf_base_with_params(gaf_part: &'static str, gbwt_part: &'static str, graph: GraphReference<'_, '_>, params: &GAFBaseParams) -> PathBuf {
     let gaf_file = utils::get_test_data(gaf_part);
-    let gbwt_file = utils::get_test_data(gbwt_part);
+    let gbwt_file = if gbwt_part.is_empty() {
+        None
+    } else {
+        Some(utils::get_test_data(gbwt_part))
+    };
     let db_file = serialize::temp_file_name("gaf-base");
-    let result = GAFBase::create_from_files(&gaf_file, Some(&gbwt_file), &db_file, graph, params);
+    let result = GAFBase::create_from_files(&gaf_file, gbwt_file.as_deref(), &db_file, graph, params);
     assert!(result.is_ok(), "Failed to create GAF-base database: {}", result.unwrap_err());
     db_file
 }

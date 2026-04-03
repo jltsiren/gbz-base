@@ -471,7 +471,6 @@ impl GBZBase {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: Tests that build a GBWT instead of loading it.
 /// A database connection to a GAF-base database.
 ///
 /// This structure stores a database connection and some header information.
