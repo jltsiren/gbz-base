@@ -591,11 +591,11 @@ impl Alignment {
     fn encode_numbers_into(&self, encoder: &mut ByteCode, known_length: bool) {
         let full_alignment = self.is_full();
         let exact_alignment = self.is_exact();
-        let known_alignment = self.has_difference_string();
+        let stored_difference_string = self.has_difference_string() & !exact_alignment;
 
         // Query sequence coordinates. We write the aligned length first to simplify the logic.
         let (left_flank, length, right_flank) = Self::normalize_coordinates(self.seq_interval.clone(), self.seq_len);
-        if !(known_length || known_alignment) {
+        if !(known_length || stored_difference_string) {
             encoder.write(length);
         }
         if !full_alignment {
@@ -606,13 +606,13 @@ impl Alignment {
         // Target path coordinates. We again write the aligned length first.
         // We do not store the right flank, because it can be derived from the path itself.
         let (left_flank, length, _) = Self::normalize_coordinates(self.path_interval.clone(), self.path_len);
-        if !(exact_alignment || known_alignment) {
+        if !(exact_alignment || stored_difference_string) {
             encoder.write(length);
         }
         encoder.write(left_flank);
 
         // Alignment statistics.
-        if !(exact_alignment || known_alignment) {
+        if !(exact_alignment || stored_difference_string) {
             encoder.write(self.matches);
             encoder.write(self.edits);
         }
@@ -1676,7 +1676,8 @@ impl AlignmentBlock {
         for (i, aln) in result.iter_mut().enumerate() {
             let full_alignment = self.flags.get(i, Flags::FLAG_FULL_ALIGNMENT);
             let exact_alignment = self.flags.get(i, Flags::FLAG_EXACT_ALIGNMENT);
-            let known_alignment = aln.has_difference_string();
+            // We did not store the difference string for an exact alignment.
+            let stored_difference_string = aln.has_difference_string();
 
             // Derive the numbers from the difference string first.
             // If the difference string is empty, we get zeros and update them later.
@@ -1687,7 +1688,7 @@ impl AlignmentBlock {
             // Query sequence coordinates.
             if let Some(len) = self.read_length {
                 query_len = len;
-            } else if !known_alignment {
+            } else if !stored_difference_string {
                 query_len = decoder.next().ok_or(format!("Missing query sequence aligned length for alignment {}", i))?;
             }
             let (query_left, query_right) = if full_alignment {
@@ -1707,8 +1708,8 @@ impl AlignmentBlock {
             // Target path coordinates.
             if exact_alignment {
                 target_len = query_len;
-            } else if !known_alignment {
-                target_len = decoder.next().ok_or(format!("Missing target path alignedlength for alignment {}", i))?;
+            } else if !stored_difference_string {
+                target_len = decoder.next().ok_or(format!("Missing target path aligned length for alignment {}", i))?;
             }
             let target_left = decoder.next().ok_or(format!("Missing target path left flank for alignment {}", i))?;
             let target_right = 0; // We can determine the length of the right flank later.
@@ -1719,7 +1720,7 @@ impl AlignmentBlock {
             if exact_alignment {
                 aln.matches = query_len;
                 aln.edits = 0;
-            } else if !known_alignment {
+            } else if !stored_difference_string {
                 aln.matches = decoder.next().ok_or(format!("Missing number of matches for alignment {}", i))?;
                 aln.edits = decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?;
             }

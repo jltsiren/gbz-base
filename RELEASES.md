@@ -3,6 +3,8 @@
 ## Current version
 
 * GAF sorting with `gaf_sort()` and the `gafsort` tool.
+* Bug fixes:
+  * Exact alignments in a block with varying query lengths are now encoded correctly. GAF-bases must be rebuilt.
 
 ## GAF-base 0.3.0 (2026-02-18)
 

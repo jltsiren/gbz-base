@@ -3,7 +3,7 @@ use super::*;
 use crate::{Subgraph, SubgraphQuery, GraphReference};
 use crate::utils::{self, PathStartSource};
 
-use gbz::GBZ;
+use gbz::{GBWTBuilder, GBZ};
 use simple_sds::serialize;
 
 use rand::Rng;
@@ -428,6 +428,50 @@ fn alignment_real_gzipped() {
 #[test]
 fn alignment_real_compute_path_starts() {
     integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt", 456, true);
+}
+
+#[test]
+fn alignment_block_special_cases() {
+    let sequence_len = Arc::new(|handle| Some(handle));
+    let alignments = vec![
+        create_alignment(
+            "perfect-100",
+            100, 0,
+            vec![42, 63], 2,
+            vec![Difference::Match(100)],
+            Some(sequence_len.clone()),
+        ),
+        create_alignment(
+            "imperfect-100",
+            100, 0,
+            vec![44, 68], 7,
+            vec![Difference::Match(66), Difference::Mismatch(b'A'), Difference::Match(33)],
+            Some(sequence_len.clone()),
+        ),
+        // There used to be a bug with exact alignments in blocks where the alignment length varied.
+        create_alignment(
+            "perfect-101",
+            101, 0,
+            vec![52, 63], 10,
+            vec![Difference::Match(101)],
+            Some(sequence_len.clone()),
+        ),
+        create_alignment(
+            "with-gap-100",
+            100, 0,
+            vec![46, 70], 5,
+            vec![Difference::Match(50), Difference::Deletion(5), Difference::Match(50)],
+            Some(sequence_len.clone()),
+        ),
+    ];
+
+    let mut builder = GBWTBuilder::new(false, false, 1000);
+    for aln in alignments.iter() {
+        let _ = builder.insert(aln.target_path().unwrap(), None);
+    }
+    let index = builder.build().unwrap();
+    let mut source = PathStartSource::from(&index);
+    check_encode_decode(&alignments, &index, &mut source, 0);
 }
 
 //-----------------------------------------------------------------------------
