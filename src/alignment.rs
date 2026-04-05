@@ -34,7 +34,7 @@
 
 use crate::{Subgraph, Mapping, Difference};
 use crate::formats::{self, TypedField};
-use crate::utils;
+use crate::utils::{self, PathStartSource};
 
 use std::io::{Read, Write};
 use std::ops::Range;
@@ -44,7 +44,7 @@ use std::{cmp, str};
 use zstd::stream::Encoder as ZstdEncoder;
 use zstd::stream::Decoder as ZstdDecoder;
 
-use gbz::{GBWT, Orientation, Pos};
+use gbz::{GBWT, Orientation, Pos, ENDMARKER};
 use gbz::support::{self, ByteCode, ByteCodeIter, RLE, Run, RLEIter};
 
 #[cfg(test)]
@@ -591,11 +591,11 @@ impl Alignment {
     fn encode_numbers_into(&self, encoder: &mut ByteCode, known_length: bool) {
         let full_alignment = self.is_full();
         let exact_alignment = self.is_exact();
-        let known_alignment = self.has_difference_string();
+        let stored_difference_string = self.has_difference_string() & !exact_alignment;
 
         // Query sequence coordinates. We write the aligned length first to simplify the logic.
         let (left_flank, length, right_flank) = Self::normalize_coordinates(self.seq_interval.clone(), self.seq_len);
-        if !(known_length || known_alignment) {
+        if !(known_length || stored_difference_string) {
             encoder.write(length);
         }
         if !full_alignment {
@@ -606,13 +606,13 @@ impl Alignment {
         // Target path coordinates. We again write the aligned length first.
         // We do not store the right flank, because it can be derived from the path itself.
         let (left_flank, length, _) = Self::normalize_coordinates(self.path_interval.clone(), self.path_len);
-        if !(exact_alignment || known_alignment) {
+        if !(exact_alignment || stored_difference_string) {
             encoder.write(length);
         }
         encoder.write(left_flank);
 
         // Alignment statistics.
-        if !(exact_alignment || known_alignment) {
+        if !(exact_alignment || stored_difference_string) {
             encoder.write(self.matches);
             encoder.write(self.edits);
         }
@@ -672,7 +672,7 @@ impl Alignment {
                 2 => {
                     let offset = decoder.offset();
                     for _ in 0..run.len {
-                        let _ = decoder.byte().ok_or(String::from("Missing insertion base"))?;
+                        let _ = decoder.byte().ok_or_else(|| String::from("Missing insertion base"))?;
                     }
                     let encoded = &encoded[offset..offset + run.len];
                     let seq = utils::decode_sequence(encoded);
@@ -891,8 +891,8 @@ impl Alignment {
 
         // TODO: enum?
         // Determine how we are extending the alignment.
-        let target_path = self.target_path().ok_or(
-            "Cannot extend a fragment without an explicit target path"
+        let target_path = self.target_path().ok_or_else(||
+            String::from("Cannot extend a fragment without an explicit target path")
         )?;
         let last_node = target_path.last().copied();
         let path_left = self.path_len.saturating_sub(self.path_interval.end);
@@ -1327,14 +1327,19 @@ impl AsRef<[u8]> for Flags {
 ///
 /// ```
 /// use gbz_base::{Alignment, AlignmentBlock};
+/// use gbz_base::utils::PathStartSource;
 /// use gbz_base::{formats, utils};
 /// use gbz::GBWT;
 /// use gbz::support;
 /// use simple_sds::serialize;
 ///
-/// // We need a GBWT index of the paths for compressing alignments.
+/// // We assume that the target paths are stored separately in a GBWT index.
 /// let gbwt_filename = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
 /// let index: GBWT = serialize::load_from(&gbwt_filename).unwrap();
+///
+/// // We use the GBWT index for determining the starting position for each path.
+/// // But we could also compute it on the fly with `PathStartSource::new()`.
+/// let mut source = PathStartSource::from(&index);
 ///
 /// // Open a GAF file and skip the header.
 /// let gaf_filename = utils::get_test_data("micb-kir3dl1_HG003.gaf");
@@ -1357,7 +1362,7 @@ impl AsRef<[u8]> for Flags {
 ///
 /// // Compress the block.
 /// let mut first_id = 0;
-/// let block = AlignmentBlock::new(&alignments, &index, first_id).unwrap();
+/// let block = AlignmentBlock::new(&alignments, &mut source, first_id).unwrap();
 /// assert_eq!(block.len(), alignments.len());
 /// first_id += alignments.len(); // Next block would start there.
 ///
@@ -1420,15 +1425,22 @@ impl AlignmentBlock {
         read_length
     }
 
-    fn compress_gbwt_starts(alignments: &[Alignment], index: &GBWT, first_id: usize, min_handle: Option<usize>) -> Result<Vec<u8>, String> {
+    fn compress_gbwt_starts(
+        alignments: &[Alignment],
+        source: &mut PathStartSource,
+        first_id: usize, min_handle: Option<usize>
+    ) -> Result<Vec<u8>, String> {
         let base_node = min_handle.unwrap_or(0);
         let mut encoder = ByteCode::new();
-        for i in 0..alignments.len() {
+        for (i, aln) in alignments.iter().enumerate() {
+            let node_id = if let Some(path) = aln.target_path() {
+                path.first().copied().unwrap_or(ENDMARKER)
+            } else {
+                return Err(format!("Line {}: Cannot compute GBWT start for an alignment without an explicit target path", first_id + i));
+            };
+
             // GBWT start as (node - min_handle, offset).
-            let gbwt_sequence_id = if index.is_bidirectional() {
-                support::encode_path(first_id + i, Orientation::Forward)
-            } else { first_id + i };
-            if let Some(start) = index.start(gbwt_sequence_id) {
+            if let Some(start) = source.next(node_id) {
                 encoder.write(start.node - base_node);
                 encoder.write(start.offset);
             } else if !encoder.is_empty() {
@@ -1501,18 +1513,21 @@ impl AlignmentBlock {
     /// # Arguments
     ///
     /// * `alignments`: The alignments to include in the block.
-    /// * `index`: The GBWT index to use for encoding the GBWT starts.
+    /// * `source`: A source for GBWT starting positions of the target paths.
     /// * `first_id`: Path identifier of the first alignment in the block.
     ///
     /// # Errors
     ///
-    /// Returns an error if the block contains a mix of aligned and unaligned reads.
-    /// Returns an error if compression fails.
-    pub fn new(alignments: &[Alignment], index: &GBWT, first_id: usize) -> Result<Self, String> {
+    /// Returns an error, if:
+    ///
+    /// * The block contains a mix of aligned and unaligned reads.
+    /// * The source computes GBWT starts on the fly, but an alignment does not store the target path explicitly.
+    /// * Compression fails.
+    pub fn new(alignments: &[Alignment], source: &mut PathStartSource, first_id: usize) -> Result<Self, String> {
         let min_handle = alignments.iter().map(|aln| aln.min_handle()).min().flatten();
         let max_handle = alignments.iter().map(|aln| aln.max_handle()).max().flatten();
         let read_length = Self::expected_read_length(alignments);
-        let gbwt_starts = Self::compress_gbwt_starts(alignments, index, first_id, min_handle)?;
+        let gbwt_starts = Self::compress_gbwt_starts(alignments, source, first_id, min_handle)?;
         let names = Self::compress_names_pairs(alignments)?;
         let quality_strings = Self::compress_quality_strings(alignments)?;
         let optional = Self::compress_optional_fields(alignments)?;
@@ -1585,10 +1600,10 @@ impl AlignmentBlock {
         let base_node = self.min_handle.unwrap();
         let mut decoder: ByteCodeIter<'_> = ByteCodeIter::new(&self.gbwt_starts[..]);
         for (i, aln) in result.iter_mut().enumerate() {
-            let start = decoder.next().ok_or(
+            let start = decoder.next().ok_or_else(||
                 format!("Missing GBWT start for alignment {}", i)
             )?;
-            let offset = decoder.next().ok_or(
+            let offset = decoder.next().ok_or_else(||
                 format!("Missing GBWT offset for alignment {}", i)
             )?;
             aln.path = TargetPath::StartPosition(Pos::new(start + base_node, offset));
@@ -1608,9 +1623,9 @@ impl AlignmentBlock {
         let buffer = Self::zstd_decompress(&self.names[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let name = iter.next().ok_or(format!("Missing name for alignment {}", i))?;
+            let name = iter.next().ok_or_else(|| format!("Missing name for alignment {}", i))?;
             aln.name = String::from_utf8_lossy(name).to_string();
-            let pair_name = iter.next().ok_or(format!("Missing pair name for alignment {}", i))?;
+            let pair_name = iter.next().ok_or_else(|| format!("Missing pair name for alignment {}", i))?;
             if !pair_name.is_empty() {
                 aln.pair = Some(PairedRead {
                     name: String::from_utf8_lossy(pair_name).to_string(),
@@ -1633,7 +1648,7 @@ impl AlignmentBlock {
         let buffer = Self::zstd_decompress(&self.quality_strings[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let quality = iter.next().ok_or(format!("Missing quality string for alignment {}", i))?;
+            let quality = iter.next().ok_or_else(|| format!("Missing quality string for alignment {}", i))?;
             aln.base_quality = quality.to_vec();
         }
         // There should be an empty slice at the end, as the buffer is 0-terminated.
@@ -1661,7 +1676,8 @@ impl AlignmentBlock {
         for (i, aln) in result.iter_mut().enumerate() {
             let full_alignment = self.flags.get(i, Flags::FLAG_FULL_ALIGNMENT);
             let exact_alignment = self.flags.get(i, Flags::FLAG_EXACT_ALIGNMENT);
-            let known_alignment = aln.has_difference_string();
+            // We did not store the difference string for an exact alignment.
+            let stored_difference_string = aln.has_difference_string();
 
             // Derive the numbers from the difference string first.
             // If the difference string is empty, we get zeros and update them later.
@@ -1672,14 +1688,14 @@ impl AlignmentBlock {
             // Query sequence coordinates.
             if let Some(len) = self.read_length {
                 query_len = len;
-            } else if !known_alignment {
-                query_len = decoder.next().ok_or(format!("Missing query sequence aligned length for alignment {}", i))?;
+            } else if !stored_difference_string {
+                query_len = decoder.next().ok_or_else(|| format!("Missing query sequence aligned length for alignment {}", i))?;
             }
             let (query_left, query_right) = if full_alignment {
                 (0, 0)
             } else {
-                let query_left = decoder.next().ok_or(format!("Missing query sequence left flank for alignment {}", i))?;
-                let query_right = decoder.next().ok_or(format!("Missing query sequence right flank for alignment {}", i))?;
+                let query_left = decoder.next().ok_or_else(|| format!("Missing query sequence left flank for alignment {}", i))?;
+                let query_right = decoder.next().ok_or_else(|| format!("Missing query sequence right flank for alignment {}", i))?;
                 (query_left, query_right)
             };
             if self.read_length.is_some() {
@@ -1692,10 +1708,10 @@ impl AlignmentBlock {
             // Target path coordinates.
             if exact_alignment {
                 target_len = query_len;
-            } else if !known_alignment {
-                target_len = decoder.next().ok_or(format!("Missing target path alignedlength for alignment {}", i))?;
+            } else if !stored_difference_string {
+                target_len = decoder.next().ok_or_else(|| format!("Missing target path aligned length for alignment {}", i))?;
             }
-            let target_left = decoder.next().ok_or(format!("Missing target path left flank for alignment {}", i))?;
+            let target_left = decoder.next().ok_or_else(|| format!("Missing target path left flank for alignment {}", i))?;
             let target_right = 0; // We can determine the length of the right flank later.
             aln.path_interval = target_left..(target_left + target_len);
             aln.path_len = target_len + target_left + target_right;
@@ -1704,15 +1720,15 @@ impl AlignmentBlock {
             if exact_alignment {
                 aln.matches = query_len;
                 aln.edits = 0;
-            } else if !known_alignment {
-                aln.matches = decoder.next().ok_or(format!("Missing number of matches for alignment {}", i))?;
-                aln.edits = decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?;
+            } else if !stored_difference_string {
+                aln.matches = decoder.next().ok_or_else(|| format!("Missing number of matches for alignment {}", i))?;
+                aln.edits = decoder.next().ok_or_else(|| format!("Missing number of edits for alignment {}", i))?;
             }
             if self.flags.get(i, Flags::FLAG_HAS_MAPQ) {
-                aln.mapq = Some(decoder.next().ok_or(format!("Missing mapping quality for alignment {}", i))?);
+                aln.mapq = Some(decoder.next().ok_or_else(|| format!("Missing mapping quality for alignment {}", i))?);
             }
             if self.flags.get(i, Flags::FLAG_HAS_SCORE) {
-                aln.score = Some(Alignment::decode_signed(&mut decoder).ok_or(
+                aln.score = Some(Alignment::decode_signed(&mut decoder).ok_or_else(||
                     format!("Missing alignment score for alignment {}", i)
                 )?);
             }
@@ -1730,7 +1746,7 @@ impl AlignmentBlock {
         let buffer = Self::zstd_decompress(&self.optional[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let optional = iter.next().ok_or(format!("Missing optional fields for alignment {}", i))?;
+            let optional = iter.next().ok_or_else(|| format!("Missing optional fields for alignment {}", i))?;
             let fields = optional.split(|&c| c == b'\t');
             for field in fields {
                 let parsed = TypedField::parse(field)?;

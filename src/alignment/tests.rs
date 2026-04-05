@@ -1,9 +1,9 @@
 use super::*;
 
 use crate::{Subgraph, SubgraphQuery, GraphReference};
-use crate::utils;
+use crate::utils::{self, PathStartSource};
 
-use gbz::GBZ;
+use gbz::{GBWTBuilder, GBZ};
 use simple_sds::serialize;
 
 use rand::Rng;
@@ -352,9 +352,9 @@ fn block_end(alignments: &[Alignment], start: usize, block_size: usize) -> usize
     end
 }
 
-fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
+fn check_encode_decode(block: &[Alignment], index: &GBWT, source: &mut PathStartSource, first_id: usize) {
     let range = first_id..(first_id + block.len());
-    let encoded = AlignmentBlock::new(block, index, first_id);
+    let encoded = AlignmentBlock::new(block, source, first_id);
     if let Err(message) = encoded {
         panic!("Failed to encode the alignment block {}..{}: {}", range.start, range.end, message);
     }
@@ -381,7 +381,7 @@ fn check_encode_decode(block: &[Alignment], index: &GBWT, first_id: usize) {
 // Tests for `Alignment`: encode/decode integration.
 // This is the haplotype sampling test case from vg.
 
-fn integration_test(gaf_file: &'static str, gbwt_file: &'static str, block_size: usize) {
+fn integration_test(gaf_file: &'static str, gbwt_file: &'static str, block_size: usize, compute_path_starts: bool) {
     // Parse the alignments.
     let gaf_file = utils::get_test_data(gaf_file);
     let alignments = parse_alignments(&gaf_file, false);
@@ -391,29 +391,87 @@ fn integration_test(gaf_file: &'static str, gbwt_file: &'static str, block_size:
     let gbwt_file = utils::get_test_data(gbwt_file);
     let index: GBWT = serialize::load_from(&gbwt_file).unwrap();
 
+    // We either use the provided GBWT index for computing GBWT starts,
+    // or we compute them on the fly, assuming a unidirectional index.
+    let mut source = if compute_path_starts {
+        assert!(!index.is_bidirectional(), "Cannot compute GBWT starts on the fly for a bidirectional index");
+        PathStartSource::new()
+    } else {
+        PathStartSource::from(&index)
+    };
+
     // Encode and decode the alignments.
     let mut start = 0;
     while start < alignments.len() {
         let end = block_end(&alignments, start, block_size);
         let block = &alignments[start..end];
-        check_encode_decode(block, &index, start);
+        check_encode_decode(block, &index, &mut source, start);
         start = end;
     }
 }
 
 #[test]
 fn alignment_real() {
-    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt", 1234);
+    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt", 1234, false);
 }
 
 #[test]
 fn alignment_bidirectional() {
-    integration_test("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt", 1001);
+    integration_test("micb-kir3dl1_HG003.gaf", "bidirectional.gbwt", 1001, false);
 }
 
 #[test]
 fn alignment_real_gzipped() {
-    integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt", 789);
+    integration_test("micb-kir3dl1_HG003.gaf.gz", "micb-kir3dl1_HG003.gbwt", 789, false);
+}
+
+#[test]
+fn alignment_real_compute_path_starts() {
+    integration_test("micb-kir3dl1_HG003.gaf", "micb-kir3dl1_HG003.gbwt", 456, true);
+}
+
+#[test]
+fn alignment_block_special_cases() {
+    let sequence_len = Arc::new(|handle| Some(handle));
+    let alignments = vec![
+        create_alignment(
+            "perfect-100",
+            100, 0,
+            vec![42, 63], 2,
+            vec![Difference::Match(100)],
+            Some(sequence_len.clone()),
+        ),
+        create_alignment(
+            "imperfect-100",
+            100, 0,
+            vec![44, 68], 7,
+            vec![Difference::Match(66), Difference::Mismatch(b'A'), Difference::Match(33)],
+            Some(sequence_len.clone()),
+        ),
+        // There used to be a bug with exact alignments in blocks where the alignment length varied.
+        create_alignment(
+            "perfect-101",
+            101, 0,
+            vec![52, 63], 10,
+            vec![Difference::Match(101)],
+            Some(sequence_len.clone()),
+        ),
+        create_alignment(
+            "with-gap-100",
+            100, 0,
+            vec![46, 70], 5,
+            vec![Difference::Match(50), Difference::Deletion(5), Difference::Match(50)],
+            Some(sequence_len.clone()),
+        ),
+    ];
+
+    let mut builder = GBWTBuilder::new(false, false, 1000);
+    for aln in alignments.iter() {
+        let _ = builder.insert(aln.target_path().unwrap(), None);
+    }
+    let index = builder.build().unwrap();
+    let mut source = PathStartSource::from(&index);
+    check_encode_decode(&alignments, &index, &mut source, 0);
 }
 
 //-----------------------------------------------------------------------------

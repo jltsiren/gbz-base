@@ -56,32 +56,32 @@ gbz2db --chains graph.chains graph.gbz
 ### Sorting the reads
 
 Before building a GAF-base, you must first sort the alignments and build a GBWT index of the target paths.
-This can be done using [vg](https://github.com/vgteam/vg):
+This can be done using the bundled `gafsort` tool (or with `vg gamsort`):
 
 ```sh
-vg gamsort --progress --threads 6 \
-    --gbwt-output sorted.gbwt \
-    --gaf-input reads.gaf.gz | bgzip --threads 4 > sorted.gaf.gz
+gafsort --progress --threads 6 reads.gaf.gz | bgzip --threads 4 > sorted.gaf.gz
 ```
 
-`sorted.gaf.gz` now contains the sorted reads and `sorted.gbwt` the target paths in the same order.
-Six worker threads are generally enough when reading a gzip-compressed GAF file.
-Four compression threads should be sufficient when building a GBWT index.
+`sorted.gaf.gz` now contains the sorted reads.
+Six worker threads and four compression threads should be sufficient due to sequential bottlenecks.
 
 The default chunk size (1 million lines) is appropriate for short reads.
 When sorting long reads, it can be changed with `--chunk-size N` (e.g. `--chunk-size 10000` for 20 kpb reads).
 
 ### Building the GAF-base
 
-GAF-base construction takes both the sorted reads and the GBWT index:
+GAF-base construction takes the sorted reads:
 
 ```sh
-gaf2db --gbwt sorted.gbwt sorted.gaf.gz
+gaf2db sorted.gaf.gz
 ```
 
 The reads can be uncompressed or compressed with gzip.
 Default output file is `<input>.db`.
 Options `--output` and `--overwrite` are the same as in GBZ-base construction.
+
+A prebuilt GBWT index (e.g. from `vg gamsort`) can be provided with `--gbwt FILE`.
+This will lower the memory requirements for GAF-base construction, but it will not make the construction faster.
 
 The default block size (1000 alignments) is appropriate for short reads.
 When building a database of long read alignments, it can be changed with `--block-size N` (e.g. `--block-size 10` for 20 kbp reads).
@@ -89,7 +89,7 @@ When building a database of long read alignments, it can be changed with `--bloc
 The default GAF-base is reference-based, like the GAF format itself.
 The alignments can only be decoded by using the corresponding GBZ graph or GBZ-base.
 
-A reference-free GAF-base can be built by providing a reference graph during construction with option `--ref-free graph`.
+A reference-free GAF-base can be built by providing a reference graph during construction with option `--ref-free FILE`.
 The graph file should be a GBZ graph.
 A GBZ-base can also be used, but the construction will be much slower.
 Reference-free GAF-bases can be used without a reference graph.

@@ -36,7 +36,7 @@ fn main() -> Result<(), String> {
     eprintln!("There are {} paths representing {} samples, {} haplotypes, and {} contigs",
         database.paths(), database.samples(), database.haplotypes(), database.contigs()
     );
-    let size = database.file_size().unwrap_or(String::from("unknown"));
+    let size = database.file_size().unwrap_or_else(|| String::from("unknown"));
     eprintln!("Final database size: {}", size);
 
     let end_time = Instant::now();

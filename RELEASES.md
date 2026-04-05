@@ -2,7 +2,12 @@
 
 ## Current version
 
-* GAF sorting with `gaf_sort()` and the `gafsort` tool.
+* Database versions: GBZ-base v0.4.0, GAF-base version 3
+* GBZ-base and GAF-base construction without vg:
+  * GAF sorting with `gaf_sort()` and the `gafsort` tool.
+  * GBWT construction in a background thread when building GAF-base.
+* Bug fixes:
+  * Exact alignments in a block with varying query lengths are now encoded correctly. GAF-bases must be rebuilt.
 
 ## GAF-base 0.3.0 (2026-02-18)
 
@@ -32,8 +37,9 @@ This is the initial release of GBZ-base and GAF-base.
 
 ## Release process
 
-* Run `cargo clippy`.
+* Run `cargo clippy --features=binaries`.
 * Run tests with `cargo test`.
+* Build documentation with `cargo doc`.
 * Update database versions to non-dev versions in `db.rs`.
 * Update version in `Cargo.toml`.
 * Update `RELEASES.md`.

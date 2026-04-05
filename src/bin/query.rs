@@ -215,9 +215,9 @@ impl Config {
 
     fn parse_interval(s: &str) -> Result<Range<usize>, String> {
         let mut parts = s.split("..");
-        let start = parts.next().ok_or(format!("Invalid interval: {}", s))?;
+        let start = parts.next().ok_or_else(|| format!("Invalid interval: {}", s))?;
         let start = start.parse::<usize>().map_err(|x| format!("Failed to parse interval start: {}", x))?;
-        let end = parts.next().ok_or(format!("Invalid interval: {}", s))?;
+        let end = parts.next().ok_or_else(|| format!("Invalid interval: {}", s))?;
         let end = end.parse::<usize>().map_err(|x| format!("Failed to parse interval end: {}", x))?;
         if parts.next().is_some() {
             return Err(format!("Invalid interval: {}", s));
@@ -243,9 +243,9 @@ impl Config {
 
     fn parse_between(s: &str) -> Result<(usize, usize), String> {
         let mut parts = s.split(':');
-        let start = parts.next().ok_or(format!("Invalid pair of (oriented) nodes: {}", s))?;
+        let start = parts.next().ok_or_else(|| format!("Invalid pair of (oriented) nodes: {}", s))?;
         let start = Self::parse_handle(start)?;
-        let end = parts.next().ok_or(format!("Invalid pair of (oriented) nodes: {}", s))?;
+        let end = parts.next().ok_or_else(|| format!("Invalid pair of (oriented) nodes: {}", s))?;
         let end = Self::parse_handle(end)?;
         if parts.next().is_some() {
             return Err(format!("Invalid pair of (oriented) nodes: {}", s));
@@ -269,8 +269,8 @@ impl Config {
         }
 
         let path_name = if needs_path_name {
-            let sample = matches.opt_str("sample").unwrap_or(String::from(GENERIC_SAMPLE));
-            let contig = matches.opt_str("contig").ok_or(String::from("Contig name must be provided with --contig"))?;
+            let sample = matches.opt_str("sample").unwrap_or_else(|| String::from(GENERIC_SAMPLE));
+            let contig = matches.opt_str("contig").ok_or_else(|| String::from("Contig name must be provided with --contig"))?;
             Some(FullPathName::reference(&sample, &contig))
         } else {
             None

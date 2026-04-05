@@ -73,7 +73,7 @@ fn write_gaf(database: &GAFBase, alignments: &GraphName, graph: Option<&GBZ>, co
                 .map_err(|e| e.to_string());
         }
         while status.is_ok() {
-            let read_set: ReadSet = from_decoder.recv().unwrap_or(ReadSet::default());
+            let read_set: ReadSet = from_decoder.recv().unwrap_or_else(|_| ReadSet::default());
             if read_set.is_empty() {
                 break;
             }

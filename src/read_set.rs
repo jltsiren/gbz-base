@@ -72,11 +72,11 @@ impl Display for AlignmentOutput {
 ///
 /// // Create a database of reads aligned to the graph.
 /// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
-/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
+/// let gbwt_file = None; // Build a new GBWT index.
 /// let db_file = serialize::temp_file_name("gaf-base");
 /// let graph_ref = GraphReference::None; // Do not store sequences in the database.
 /// let params = GAFBaseParams::default();
-/// let db = GAFBase::create_from_files(&gaf_file, &gbwt_file, &db_file, graph_ref, &params);
+/// let db = GAFBase::create_from_files(&gaf_file, gbwt_file, &db_file, graph_ref, &params);
 /// assert!(db.is_ok());
 ///
 /// // Extract all reads fully within the subgraph.
@@ -352,8 +352,7 @@ impl ReadSet {
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
     pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: Option<&GBZ>) -> Result<Self, String> {
-        let mut read_set = ReadSet::default();
-        read_set.clusters = 1;
+        let mut read_set = ReadSet { clusters: 1, ..Default::default() };
 
         // Build a record from the GAF-base, with the sequence possibly from the GBZ graph.
         let mut get_node = database.connection.prepare(
@@ -378,7 +377,7 @@ impl ReadSet {
             let (edges, bwt, mut sequence) = gaf_result.unwrap();
             if sequence.is_empty() {
                 if let Some(graph) = graph {
-                    let seq = graph.sequence(support::node_id(handle)).ok_or(
+                    let seq = graph.sequence(support::node_id(handle)).ok_or_else(||
                         format!("Could not find the sequence for handle {} in GBZ", handle)
                     )?;
                     sequence = seq.to_vec();

@@ -38,7 +38,7 @@ fn main() -> Result<(), String> {
                 eprintln!("Loading GBZ graph {}", graph_file.display());
                 let graph: GBZ = serialize::load_from(graph_file).map_err(|x| x.to_string())?;
                 GAFBase::create_from_files(
-                    &config.gaf_file, &config.gbwt_file, &config.db_file,
+                    &config.gaf_file, config.gbwt_file.as_deref(), &config.db_file,
                     GraphReference::Gbz(&graph), &config.params
                 )?;
             },
@@ -51,7 +51,7 @@ fn main() -> Result<(), String> {
                 let database = GBZBase::open(graph_file)?;
                 let mut graph = GraphInterface::new(&database)?;
                 GAFBase::create_from_files(
-                    &config.gaf_file, &config.gbwt_file, &config.db_file,
+                    &config.gaf_file, config.gbwt_file.as_deref(), &config.db_file,
                     GraphReference::Db(&mut graph), &config.params
                 )?;
             },
@@ -60,7 +60,7 @@ fn main() -> Result<(), String> {
             }
         };
     } else {
-        GAFBase::create_from_files(&config.gaf_file, &config.gbwt_file, &config.db_file, GraphReference::None, &config.params)?;
+        GAFBase::create_from_files(&config.gaf_file, config.gbwt_file.as_deref(), &config.db_file, GraphReference::None, &config.params)?;
     }
 
     // Statistics.
@@ -69,7 +69,7 @@ fn main() -> Result<(), String> {
         "The database contains {} nodes and {} alignments in {} blocks",
         database.nodes(), database.alignments(), database.blocks()
     );
-    let size = database.file_size().unwrap_or(String::from("unknown"));
+    let size = database.file_size().unwrap_or_else(|| String::from("unknown"));
     eprintln!("Final database size: {}", size);
 
     let end_time = Instant::now();
@@ -83,7 +83,7 @@ fn main() -> Result<(), String> {
 
 struct Config {
     pub gaf_file: PathBuf,
-    pub gbwt_file: PathBuf,
+    pub gbwt_file: Option<PathBuf>,
     pub graph_file: Option<PathBuf>,
     pub db_file: PathBuf,
     pub overwrite: bool,
@@ -100,7 +100,7 @@ impl Config {
 
         let mut opts = Options::new();
         opts.optflag("h", "help", "print this help");
-        opts.optopt("g", "gbwt", "GBWT file name (required)", "FILE");
+        opts.optopt("g", "gbwt", "GBWT file name", "FILE");
         opts.optopt("r", "ref-free", "build a reference-free GAF-base using this graph", "FILE");
         let block_desc = format!("number of alignments per block (default: {})", params.block_size);
         opts.optopt("b", "block-size", &block_desc, "INT");
@@ -121,12 +121,7 @@ impl Config {
             eprint!("{}", opts.usage(&header));
             process::exit(0);
         }
-        let gbwt_file = if let Some(s) = matches.opt_str("g") {
-            PathBuf::from(s)
-        } else {
-            eprint!("{}", opts.usage(&header));
-            process::exit(1);
-        };
+        let gbwt_file = matches.opt_str("g").map(PathBuf::from);
         let graph_file = if let Some(s) = matches.opt_str("r") {
             params.reference_free = true;
             Some(PathBuf::from(s))

@@ -218,14 +218,14 @@ impl Subgraph {
         path_index: &PathIndex,
         query_pos: &FullPathName
     ) -> Result<(PathPosition, FullPathName), String> {
-        let path = GBZPath::with_name(graph, query_pos).ok_or(
+        let path = GBZPath::with_name(graph, query_pos).ok_or_else(||
             format!("Cannot find a path covering {}", query_pos)
         )?;
         // Transform the offset relative to the haplotype to the offset relative to the path.
         let query_offset = query_pos.fragment - path.name.fragment;
 
         // Path id to an indexed position.
-        let index_offset = path_index.path_to_offset(path.handle).ok_or(
+        let index_offset = path_index.path_to_offset(path.handle).ok_or_else(||
             format!("Path {} has not been indexed for random access", path.name())
         )?;
         let (path_offset, pos) = path_index.indexed_position(index_offset, query_offset).unwrap();
@@ -301,7 +301,7 @@ impl Subgraph {
         query_pos: &FullPathName
     ) -> Result<(PathPosition, FullPathName), String> {
         let path = graph.find_path(query_pos)?;
-        let path = path.ok_or(format!("Cannot find a path covering {}", query_pos))?;
+        let path = path.ok_or_else(|| format!("Cannot find a path covering {}", query_pos))?;
         if !path.is_indexed {
             return Err(format!("Path {} has not been indexed for random access", query_pos));
         }
@@ -310,7 +310,7 @@ impl Subgraph {
 
         // Find an indexed position before the query position.
         let result = graph.indexed_position(path.handle, query_offset)?;
-        let (path_offset, pos) = result.ok_or(
+        let (path_offset, pos) = result.ok_or_else(||
             format!("Path {} has not been indexed for random access", path.name())
         )?;
 
@@ -351,7 +351,7 @@ impl Subgraph {
             pos = next.unwrap();
         }
 
-        let node_offset = node_offset.ok_or(
+        let node_offset = node_offset.ok_or_else(||
             format!("Path {} does not contain offset {}", path_name, query_offset)
         )?;
         let gbwt_pos = gbwt_pos.unwrap();
@@ -805,7 +805,7 @@ impl Subgraph {
         }
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
-                let path_index = path_index.ok_or(
+                let path_index = path_index.ok_or_else(||
                     String::from("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
@@ -816,7 +816,7 @@ impl Subgraph {
                 self.extract_paths(Some(reference_path), query.output())?;
             },
             QueryType::PathInterval(query_pos, len) => {
-                let path_index = path_index.ok_or(
+                let path_index = path_index.ok_or_else(||
                     String::from("Path index is required for path-based queries")
                 )?;
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;

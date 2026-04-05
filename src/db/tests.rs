@@ -534,6 +534,24 @@ fn gaf_base_gz_bidirectional() {
 }
 
 #[test]
+fn gaf_base_build_gbwt() {
+    // Lower the buffer size to make the test non-trivial to avoid allocating large buffers.
+    let mut params = GAFBaseParams::default();
+    params.gbwt_buffer_size = 10000;
+
+    let db_file = internal::create_gaf_base_with_params(
+        "micb-kir3dl1_HG003.gaf", "",
+        GraphReference::None, &params
+    );
+    let db = internal::open_gaf_base(&db_file);
+    check_gaf_base(&db, UNIDIRECTIONAL_NODES, ALIGNMENTS, BLOCKS, false);
+    check_gaf_base_tags(&db, 1);
+
+    drop(db);
+    let _ = std::fs::remove_file(&db_file);
+}
+
+#[test]
 fn gaf_base_no_quality() {
     let mut params = GAFBaseParams::default();
     params.store_quality_strings = false;
