@@ -112,7 +112,7 @@ impl Config {
             PathBuf::from("-") // Use stdout if no output file is specified
         };
 
-        let mut params = SortParameters::default();
+        let mut params = SortParameters::new();
 
         // Parse key type
         params.key_type = if let Some(s) = matches.opt_str("k") {

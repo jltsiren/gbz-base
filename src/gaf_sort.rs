@@ -267,6 +267,11 @@ impl SortParameters {
     /// Default for `buffer_size`.
     pub const DEFAULT_BUFFER_SIZE: usize = 1000;
 
+    /// Returns a new `SortParameters` with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Validates the parameters and returns an error message if they are invalid.
     pub fn validate(&self) -> Result<(), String> {
         if self.records_per_file == 0 {

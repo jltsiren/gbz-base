@@ -121,11 +121,7 @@ impl Config {
             eprint!("{}", opts.usage(&header));
             process::exit(0);
         }
-        let gbwt_file = if let Some(s) = matches.opt_str("g") {
-            Some(PathBuf::from(s))
-        } else {
-            None
-        };
+        let gbwt_file = matches.opt_str("g").map(PathBuf::from);
         let graph_file = if let Some(s) = matches.opt_str("r") {
             params.reference_free = true;
             Some(PathBuf::from(s))

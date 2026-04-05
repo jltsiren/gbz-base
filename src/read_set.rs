@@ -352,8 +352,7 @@ impl ReadSet {
     /// Passes through any database errors.
     /// Returns an error if an alignment cannot be decompressed.
     pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: Option<&GBZ>) -> Result<Self, String> {
-        let mut read_set = ReadSet::default();
-        read_set.clusters = 1;
+        let mut read_set = ReadSet { clusters: 1, ..Default::default() };
 
         // Build a record from the GAF-base, with the sequence possibly from the GBZ graph.
         let mut get_node = database.connection.prepare(

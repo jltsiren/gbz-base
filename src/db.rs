@@ -1040,11 +1040,7 @@ impl GAFBase {
         let (to_report, from_insert) = mpsc::sync_channel(1);
 
         // Encoder thread.
-        let expected_alignments = if let Some(index) = index.as_ref() {
-            Some(Self::gbwt_paths(index.as_ref()))
-        } else {
-            None
-        };
+        let expected_alignments = index.as_ref().map(|index| Self::gbwt_paths(index.as_ref()));
         let build_gbwt = index.is_none();
         let encoder_thread = thread::spawn(move || {
             let mut alignment_id = 0;
@@ -1182,12 +1178,11 @@ impl GAFBase {
             );
             match aln {
                 Ok(aln) => {
-                    if let Some(builder) = &mut builder {
-                        if let Err(msg) = builder.insert(aln.target_path().unwrap(), None) {
-                            let _ = to_encoder.send(Err(msg));
-                            failed = true;
-                            break;
-                        }
+                    if let Some(builder) = &mut builder
+                        && let Err(msg) = builder.insert(aln.target_path().unwrap(), None) {
+                        let _ = to_encoder.send(Err(msg));
+                        failed = true;
+                        break;
                     }
                     let mut aln = aln;
                     if !params.store_quality_strings {
@@ -1244,10 +1239,8 @@ impl GAFBase {
         let statistics = from_insert.recv().unwrap()?;
 
         eprintln!("Inserted information on {} alignments", statistics.alignments);
-        if let Some(expected_alignments) = expected_alignments {
-            if statistics.alignments != expected_alignments {
-                eprintln!("Warning: Expected {} alignments", expected_alignments);
-            }
+        if let Some(expected_alignments) = expected_alignments && statistics.alignments != expected_alignments {
+            eprintln!("Warning: Expected {} alignments", expected_alignments);
         }
         eprintln!(
             "Field sizes: gbwt_starts {}, names {}, quality_strings {}, difference_strings {}, flags {}, numbers {}, optional {}",
