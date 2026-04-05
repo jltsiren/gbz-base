@@ -246,7 +246,7 @@ impl Difference {
                 b'+' => Self::insertion(value),
                 b'-' => Self::deletion(value),
                 _ => return Err(format!("Invalid difference string operation: {}", difference_string[start] as char)),
-            }.ok_or(format!("Invalid difference string field: {}", String::from_utf8_lossy(&difference_string[start..end])))?;
+            }.ok_or_else(|| format!("Invalid difference string field: {}", String::from_utf8_lossy(&difference_string[start..end])))?;
             result.push(op);
             start = end;
         }

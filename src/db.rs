@@ -223,7 +223,7 @@ impl GBZBase {
 
     // Sanity checks for the GBZ graph. We do not want to handle graphs without sufficient metadata.
     fn sanity_checks(graph: &GBZ) -> Result<(), String> {
-        let metadata = graph.metadata().ok_or(
+        let metadata = graph.metadata().ok_or_else(||
             String::from("The graph does not contain metadata")
         )?;
 
@@ -870,7 +870,7 @@ impl GAFBase {
         // `insert_alignments` consumes the connection, as it is moved to another thread.
         let connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let built_index = Self::insert_alignments(index.clone(), gaf_file, connection, params)?;
-        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or_else(|| String::from("unknown")));
         let actual_index = match (&index, &built_index) {
             (Some(index), None) => index.as_ref(),
             (None, Some(index)) => index,
@@ -879,10 +879,10 @@ impl GAFBase {
 
         let mut connection = Connection::open(&db_file).map_err(|x| x.to_string())?;
         let nodes = Self::insert_nodes(actual_index, graph, &mut connection)?;
-        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or_else(|| String::from("unknown")));
 
         Self::insert_tags(actual_index, nodes, &aln_name, &mut connection, params)?;
-        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or(String::from("unknown")));
+        eprintln!("Database size: {}", utils::file_size(&db_file).unwrap_or_else(|| String::from("unknown")));
 
         Ok(())
     }

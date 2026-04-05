@@ -672,7 +672,7 @@ impl Alignment {
                 2 => {
                     let offset = decoder.offset();
                     for _ in 0..run.len {
-                        let _ = decoder.byte().ok_or(String::from("Missing insertion base"))?;
+                        let _ = decoder.byte().ok_or_else(|| String::from("Missing insertion base"))?;
                     }
                     let encoded = &encoded[offset..offset + run.len];
                     let seq = utils::decode_sequence(encoded);
@@ -891,8 +891,8 @@ impl Alignment {
 
         // TODO: enum?
         // Determine how we are extending the alignment.
-        let target_path = self.target_path().ok_or(
-            "Cannot extend a fragment without an explicit target path"
+        let target_path = self.target_path().ok_or_else(||
+            String::from("Cannot extend a fragment without an explicit target path")
         )?;
         let last_node = target_path.last().copied();
         let path_left = self.path_len.saturating_sub(self.path_interval.end);
@@ -1600,10 +1600,10 @@ impl AlignmentBlock {
         let base_node = self.min_handle.unwrap();
         let mut decoder: ByteCodeIter<'_> = ByteCodeIter::new(&self.gbwt_starts[..]);
         for (i, aln) in result.iter_mut().enumerate() {
-            let start = decoder.next().ok_or(
+            let start = decoder.next().ok_or_else(||
                 format!("Missing GBWT start for alignment {}", i)
             )?;
-            let offset = decoder.next().ok_or(
+            let offset = decoder.next().ok_or_else(||
                 format!("Missing GBWT offset for alignment {}", i)
             )?;
             aln.path = TargetPath::StartPosition(Pos::new(start + base_node, offset));
@@ -1623,9 +1623,9 @@ impl AlignmentBlock {
         let buffer = Self::zstd_decompress(&self.names[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let name = iter.next().ok_or(format!("Missing name for alignment {}", i))?;
+            let name = iter.next().ok_or_else(|| format!("Missing name for alignment {}", i))?;
             aln.name = String::from_utf8_lossy(name).to_string();
-            let pair_name = iter.next().ok_or(format!("Missing pair name for alignment {}", i))?;
+            let pair_name = iter.next().ok_or_else(|| format!("Missing pair name for alignment {}", i))?;
             if !pair_name.is_empty() {
                 aln.pair = Some(PairedRead {
                     name: String::from_utf8_lossy(pair_name).to_string(),
@@ -1648,7 +1648,7 @@ impl AlignmentBlock {
         let buffer = Self::zstd_decompress(&self.quality_strings[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let quality = iter.next().ok_or(format!("Missing quality string for alignment {}", i))?;
+            let quality = iter.next().ok_or_else(|| format!("Missing quality string for alignment {}", i))?;
             aln.base_quality = quality.to_vec();
         }
         // There should be an empty slice at the end, as the buffer is 0-terminated.
@@ -1689,13 +1689,13 @@ impl AlignmentBlock {
             if let Some(len) = self.read_length {
                 query_len = len;
             } else if !stored_difference_string {
-                query_len = decoder.next().ok_or(format!("Missing query sequence aligned length for alignment {}", i))?;
+                query_len = decoder.next().ok_or_else(|| format!("Missing query sequence aligned length for alignment {}", i))?;
             }
             let (query_left, query_right) = if full_alignment {
                 (0, 0)
             } else {
-                let query_left = decoder.next().ok_or(format!("Missing query sequence left flank for alignment {}", i))?;
-                let query_right = decoder.next().ok_or(format!("Missing query sequence right flank for alignment {}", i))?;
+                let query_left = decoder.next().ok_or_else(|| format!("Missing query sequence left flank for alignment {}", i))?;
+                let query_right = decoder.next().ok_or_else(|| format!("Missing query sequence right flank for alignment {}", i))?;
                 (query_left, query_right)
             };
             if self.read_length.is_some() {
@@ -1709,9 +1709,9 @@ impl AlignmentBlock {
             if exact_alignment {
                 target_len = query_len;
             } else if !stored_difference_string {
-                target_len = decoder.next().ok_or(format!("Missing target path aligned length for alignment {}", i))?;
+                target_len = decoder.next().ok_or_else(|| format!("Missing target path aligned length for alignment {}", i))?;
             }
-            let target_left = decoder.next().ok_or(format!("Missing target path left flank for alignment {}", i))?;
+            let target_left = decoder.next().ok_or_else(|| format!("Missing target path left flank for alignment {}", i))?;
             let target_right = 0; // We can determine the length of the right flank later.
             aln.path_interval = target_left..(target_left + target_len);
             aln.path_len = target_len + target_left + target_right;
@@ -1721,14 +1721,14 @@ impl AlignmentBlock {
                 aln.matches = query_len;
                 aln.edits = 0;
             } else if !stored_difference_string {
-                aln.matches = decoder.next().ok_or(format!("Missing number of matches for alignment {}", i))?;
-                aln.edits = decoder.next().ok_or(format!("Missing number of edits for alignment {}", i))?;
+                aln.matches = decoder.next().ok_or_else(|| format!("Missing number of matches for alignment {}", i))?;
+                aln.edits = decoder.next().ok_or_else(|| format!("Missing number of edits for alignment {}", i))?;
             }
             if self.flags.get(i, Flags::FLAG_HAS_MAPQ) {
-                aln.mapq = Some(decoder.next().ok_or(format!("Missing mapping quality for alignment {}", i))?);
+                aln.mapq = Some(decoder.next().ok_or_else(|| format!("Missing mapping quality for alignment {}", i))?);
             }
             if self.flags.get(i, Flags::FLAG_HAS_SCORE) {
-                aln.score = Some(Alignment::decode_signed(&mut decoder).ok_or(
+                aln.score = Some(Alignment::decode_signed(&mut decoder).ok_or_else(||
                     format!("Missing alignment score for alignment {}", i)
                 )?);
             }
@@ -1746,7 +1746,7 @@ impl AlignmentBlock {
         let buffer = Self::zstd_decompress(&self.optional[..])?;
         let mut iter = buffer.split(|&c| c == 0);
         for (i, aln) in result.iter_mut().enumerate() {
-            let optional = iter.next().ok_or(format!("Missing optional fields for alignment {}", i))?;
+            let optional = iter.next().ok_or_else(|| format!("Missing optional fields for alignment {}", i))?;
             let fields = optional.split(|&c| c == b'\t');
             for field in fields {
                 let parsed = TypedField::parse(field)?;

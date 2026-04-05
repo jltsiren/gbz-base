@@ -378,7 +378,7 @@ impl ReadSet {
             let (edges, bwt, mut sequence) = gaf_result.unwrap();
             if sequence.is_empty() {
                 if let Some(graph) = graph {
-                    let seq = graph.sequence(support::node_id(handle)).ok_or(
+                    let seq = graph.sequence(support::node_id(handle)).ok_or_else(||
                         format!("Could not find the sequence for handle {} in GBZ", handle)
                     )?;
                     sequence = seq.to_vec();
