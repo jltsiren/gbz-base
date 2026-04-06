@@ -1,7 +1,7 @@
 //! Utility functions and structures.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File};
+use std::fs::File;
 use std::ops::{Range, RangeInclusive};
 use std::path::{Path, PathBuf};
 use std::io::{self, BufRead, BufReader, Read, Error, ErrorKind};
@@ -13,6 +13,7 @@ use pggname::GraphName;
 use simple_sds::int_vector::IntVector;
 use simple_sds::ops::{Vector, Access};
 use simple_sds::serialize::Serialize;
+use simple_sds::binaries;
 
 //-----------------------------------------------------------------------------
 
@@ -26,39 +27,34 @@ pub fn get_test_data(filename: &'static str) -> PathBuf {
 
 //-----------------------------------------------------------------------------
 
-// Utilities for working with files.
-
-const SIZE_UNITS: [(f64, &str); 6] = [
-    (1.0, "B"),
-    (1024.0, "KiB"),
-    (1024.0 * 1024.0, "MiB"),
-    (1024.0 * 1024.0 * 1024.0, "GiB"),
-    (1024.0 * 1024.0 * 1024.0 * 1024.0, "TiB"),
-    (1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0, "PiB"),
-];
-
-/// Returns a human-readable representation of the given number of bytes.
-pub fn human_readable_size(bytes: usize) -> String {
-    let mut unit = 0;
-    let value = bytes as f64;
-    while unit + 1 < SIZE_UNITS.len() && value >= SIZE_UNITS[unit + 1].0 {
-        unit += 1;
-    }
-    format!("{:.3} {}", value / SIZE_UNITS[unit].0, SIZE_UNITS[unit].1)
+/// Returns a human-readable string representation of a size in bytes.
+///
+/// Reports the size using three decimal places.
+pub fn human_readable_size(size: usize) -> String {
+    let (size, unit) = binaries::human_readable_size(size);
+    format!("{:.3} {}", size, unit)
 }
 
-/// Returns a human-readable size of the file.
+/// Returns a human-readable string representation of the file size in bytes.
+///
+/// Reports the size using three decimal places.
+/// Returns [`None`] if the file does not exist or the size cannot be determined.
+/// See [`simple_sds::binaries::file_size`] and [`simple_sds::binaries::human_readable_size`] for further information.
 pub fn file_size<P: AsRef<Path>>(filename: P) -> Option<String> {
-    let metadata = fs::metadata(filename).map_err(|x| x.to_string());
-    if metadata.is_err() {
-        return None;
-    }
-    Some(human_readable_size(metadata.unwrap().len() as usize))
+    let (size, unit) = binaries::file_size(filename)?;
+    Some(format!("{:.3} {}", size, unit))
 }
 
-/// Returns `true` if the file exists.
-pub fn file_exists<P: AsRef<Path>>(filename: P) -> bool {
-    fs::metadata(filename).is_ok()
+/// Prints the peak resident set size to stderr if it can be determined.
+///
+/// Reports the size using three decimal places.
+pub fn report_peak_memory_usage() {
+    let peak_memory = binaries::peak_memory_usage();
+    if peak_memory.is_err() {
+        return;
+    }
+    let (size, unit) = binaries::human_readable_size(peak_memory.unwrap());
+    eprintln!("Peak memory usage: {:.3} {}", size, unit);
 }
 
 /// Returns `true` if the reader appears to be gzip-compressed.

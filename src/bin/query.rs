@@ -6,7 +6,7 @@ use gbz_base::{formats, utils};
 use gbz::{FullPathName, Orientation, GBZ, GENERIC_SAMPLE};
 use gbz::support;
 
-use simple_sds::serialize;
+use simple_sds::{binaries, serialize};
 
 use std::fs::OpenOptions;
 use std::ops::Range;
@@ -49,6 +49,7 @@ fn main() -> Result<(), String> {
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
     eprintln!("Used {:.3} seconds", seconds);
+    utils::report_peak_memory_usage();
 
     Ok(())
 }
@@ -257,6 +258,10 @@ impl Config {
         s.parse::<usize>().map_err(|x| format!("Failed to parse --{}: {}", option, x))
     }
 
+    fn parse_large_quantity(s: &str, option: &str) -> Result<usize, String> {
+        binaries::parse_unsigned(s).map_err(|x| format!("Failed to parse --{}: {}", option, x))
+    }
+
     fn parse_query(matches: &getopts::Matches) -> Result<SubgraphQuery, String> {
         let mut count = 0;
         let mut needs_path_name = false;
@@ -276,12 +281,12 @@ impl Config {
             None
         };
         let context = if let Some(s) = matches.opt_str("context") {
-            Self::parse_integer(&s, "context")?
+            Self::parse_large_quantity(&s, "context")?
         } else {
             Self::DEFAULT_CONTEXT
         };
         let limit = if let Some(s) = matches.opt_str("limit") {
-            Some(Self::parse_integer(&s, "limit")?)
+            Some(Self::parse_large_quantity(&s, "limit")?)
         } else {
             None
         };

@@ -11,7 +11,6 @@ Both file formats are under development and can change without warning.
 
 ## Building
 
-
 To build the package, run:
 
 ```sh
@@ -66,7 +65,8 @@ gafsort --progress --threads 6 reads.gaf.gz | bgzip --threads 4 > sorted.gaf.gz
 Six worker threads and four compression threads should be sufficient due to sequential bottlenecks.
 
 The default chunk size (1 million lines) is appropriate for short reads.
-When sorting long reads, it can be changed with `--chunk-size N` (e.g. `--chunk-size 10000` for 20 kpb reads).
+When sorting long reads, it can be changed with `--chunk-size N` (e.g. `--chunk-size 10k` for 20 kpb reads).
+Chunk size can be specified using suffixes such as `k` or `M`.
 
 ### Building the GAF-base
 
@@ -124,6 +124,7 @@ All other paths will be listed as unknown haplotypes.
 ### Other options
 
 * `--context N`: Extract `N` bp context around the query position (default: 100).
+  Context length can be specified using suffixes such as `k` or `M`.
 * `--distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
 * `--reference-only`: Output the query path but no unknown haplotypes.
 * `--cigar`: Output CIGAR strings relative to the query path as `CG:Z` tags.
@@ -149,6 +150,7 @@ The query extracts all nodes and snarls in the chain between (and including) the
 
 If the boundary nodes are not in the same chain or they are given in the wrong order, the outcome is unpredictable.
 To avoid extracting most of the chromosome, a safety limit for the number of nodes may be given with `--limit N`.
+The limit can be specified using suffixes such as `k` or `M`.
 If the limit is exceeded, the query will fail.
 
 Other queries can also be made snarl-aware:

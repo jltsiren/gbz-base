@@ -5,6 +5,8 @@ use std::{env, fs, process};
 use gbz_base::GBZBase;
 use gbz_base::utils;
 
+use simple_sds::binaries;
+
 use getopts::Options;
 
 //-----------------------------------------------------------------------------
@@ -16,7 +18,7 @@ fn main() -> Result<(), String> {
     let config = Config::new();
 
     // Check if the database already exists.
-    if utils::file_exists(&config.db_file) {
+    if binaries::file_exists(&config.db_file) {
         if config.overwrite {
             eprintln!("Overwriting database {}", config.db_file.display());
             fs::remove_file(&config.db_file).map_err(|x| x.to_string())?;
@@ -42,6 +44,7 @@ fn main() -> Result<(), String> {
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
     eprintln!("Used {:.3} seconds", seconds);
+    utils::report_peak_memory_usage();
 
     Ok(())
 }

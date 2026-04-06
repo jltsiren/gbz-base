@@ -6,7 +6,7 @@ use crate::utils;
 use gbz::GBZ;
 use gbz::support;
 
-use simple_sds::serialize;
+use simple_sds::{binaries, serialize};
 
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn create_gbz_base_from_graph(graph: &GBZ, chains: &Chains) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
+    assert!(!binaries::file_exists(&db_file), "Database {} already exists", db_file.display());
     let result = GBZBase::create(&graph, chains, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
     db_file
@@ -24,7 +24,7 @@ pub(crate) fn create_gbz_base_from_graph(graph: &GBZ, chains: &Chains) -> PathBu
 
 pub(crate) fn create_gbz_base_from_files(gbz_file: &Path, chains_file: Option<&Path>) -> PathBuf {
     let db_file = serialize::temp_file_name("gbz-base");
-    assert!(!utils::file_exists(&db_file), "Database {} already exists", db_file.display());
+    assert!(!binaries::file_exists(&db_file), "Database {} already exists", db_file.display());
     let chains_file = chains_file.map(|x| x.as_ref());
     let result = GBZBase::create_from_files(&gbz_file, chains_file, &db_file);
     assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());

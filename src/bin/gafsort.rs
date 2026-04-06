@@ -3,6 +3,8 @@ use std::time::Instant;
 use std::{env, process};
 
 use gbz_base::gaf_sort::{sort_gaf, KeyType, SortParameters};
+use gbz_base::utils;
+use simple_sds::binaries;
 
 use getopts::Options;
 
@@ -20,6 +22,7 @@ fn main() -> Result<(), String> {
         let end_time = Instant::now();
         let seconds = end_time.duration_since(start_time).as_secs_f64();
         eprintln!("Total time: {:.3} seconds", seconds);
+        utils::report_peak_memory_usage();
     }
 
     Ok(())
@@ -130,7 +133,7 @@ impl Config {
 
         // Parse records per file
         params.records_per_file = if let Some(s) = matches.opt_str("r") {
-            match s.parse::<usize>() {
+            match binaries::parse_unsigned(&s) {
                 Ok(x) => x,
                 Err(e) => {
                     eprintln!("Error: Failed to parse --records-per-file: {}", e);
@@ -184,8 +187,8 @@ impl Config {
         params.progress = matches.opt_present("p");
 
         // Validate options.
-        if params.records_per_file < 1 {
-            eprintln!("Error: --records-per-file must be positive");
+        if params.records_per_file < 1000 {
+            eprintln!("Error: --records-per-file must be at least 1000");
             process::exit(1);
         }
         if params.files_per_merge < 2 {

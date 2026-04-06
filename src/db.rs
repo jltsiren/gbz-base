@@ -17,7 +17,7 @@ use gbz::support::{self, Tags};
 
 use pggname::GraphName;
 
-use simple_sds::serialize;
+use simple_sds::{binaries, serialize};
 
 #[cfg(test)]
 mod tests;
@@ -33,15 +33,15 @@ mod tests;
 /// # Examples
 ///
 /// ```
-/// use gbz_base::{utils, GBZBase};
+/// use gbz_base::GBZBase;
 /// use gbz::support;
-/// use simple_sds::serialize;
+/// use simple_sds::{binaries, serialize};
 /// use std::fs;
 ///
 /// // Create the database.
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("gbz-base");
-/// assert!(!utils::file_exists(&db_file));
+/// assert!(!binaries::file_exists(&db_file));
 /// // Here we build a database without chains.
 /// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
 /// assert!(result.is_ok());
@@ -254,7 +254,7 @@ impl GBZBase {
     /// Passes through any database errors.
     pub fn create<P: AsRef<Path>>(graph: &GBZ, chains: &Chains, filename: P) -> Result<(), String> {
         eprintln!("Creating database {}", filename.as_ref().display());
-        if utils::file_exists(&filename) {
+        if binaries::file_exists(&filename) {
             return Err(format!("Database {} already exists", filename.as_ref().display()));
         }
         Self::sanity_checks(graph)?;
@@ -847,7 +847,7 @@ impl GAFBase {
         params: &GAFBaseParams
     ) -> Result<(), String> {
         eprintln!("Creating database {}", db_file.as_ref().display());
-        if utils::file_exists(&db_file) {
+        if binaries::file_exists(&db_file) {
             return Err(format!("Database {} already exists", db_file.as_ref().display()));
         }
 

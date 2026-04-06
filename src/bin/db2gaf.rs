@@ -47,6 +47,7 @@ fn main() -> Result<(), String> {
     let end_time = Instant::now();
     let seconds = end_time.duration_since(start_time).as_secs_f64();
     eprintln!("Used {:.3} seconds", seconds);
+    utils::report_peak_memory_usage();
 
     Ok(())
 }

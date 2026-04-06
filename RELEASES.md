@@ -8,6 +8,9 @@
   * GBWT construction in a background thread when building GAF-base.
 * Bug fixes:
   * Exact alignments in a block with varying query lengths are now encoded correctly. GAF-bases must be rebuilt.
+* Binaries:
+  * Command line arguments can use suffixes (e.g. `k`, `MiB`) for sizes and counts that can plausibly be large.
+  * Binaries report peak memory usage.
 
 ## GAF-base 0.3.0 (2026-02-18)
 
