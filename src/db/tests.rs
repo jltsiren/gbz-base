@@ -211,7 +211,8 @@ fn create_from_file() {
     // Load the graph.
     let gbz_file = support::get_test_data("example.gbz");
     let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
-    let chains = Chains::new();
+    // GBZ-base creation from files finds the chains if a chain file is not provided.
+    let chains = algorithms::find_chains(&graph);
 
     // Create and open the database and create a graph interface.
     let db_file = internal::create_gbz_base_from_files(&gbz_file, None);

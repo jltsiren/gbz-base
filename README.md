@@ -36,12 +36,16 @@ An existing database can be overwritten with option `--overwrite`.
 The database will be functionally equivalent to the GBZ graph, except that it will not contain a node-to-segment translation.
 Generic paths (with sample name `_gbwt_ref`) and reference paths (samples specified in GBWT tag `reference_samples`) will be indexed for querying.
 
-### Including top-level chains
+### Precomputed top-level chains
 
-A GBZ-base can optionally store links between boundary nodes in top-level chains.
+A GBZ-base stores links between the boundary nodes of snarls in top-level chains.
 Such links enable better subgraph queries (see below).
-In order to build a database with top-level chains, you first need to extract the chains from a distance index or a snarls file.
-That requires [vg](https://github.com/vgteam/vg) version 1.69.0 or newer.
+By default, the `gbz2db` tries to find them using a simple algorithm that works with Minigraph–Cactus graphs.
+It requires that each graph component contains exactly two tips and that there is a path connecting the tips that visits all bridge nodes / articulation points.
+
+If the assumptions fail, the algorithm will not be able to find top-level chains for some components.
+In such cases, prebuilt chains can be used with option `--chains graph.chains`.
+[vg](https://github.com/vgteam/vg) version 1.69.0 or newer can extract a chains file from a distance index or a snarls file.
 
 Example with chains extracted from a distance index:
 
@@ -161,7 +165,7 @@ query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
 
 After extracting a subgraph, the query determines all top-level snarls that have their boundary nodes in the extracted subgraph.
 Then it ensures that those snarls are fully in the subgraph.
-This requires either a GBZ-base built with top-level chains (see above) or a GBZ graph with a chains file provided with `--chains FILE`.
+These snarls are based on the top-level chains provided or computed during GBZ-base construction.
 
 ### Extracting alignments
 

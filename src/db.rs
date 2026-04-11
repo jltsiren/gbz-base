@@ -12,6 +12,7 @@ use std::{fs, thread};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
 use gbz::{FullPathName, GBWT, GBWTBuilder, GBZ, Orientation, Pos};
+use gbz::algorithms;
 use gbz::bwt::{BWT, Record};
 use gbz::support::{self, Tags, Chains};
 
@@ -42,7 +43,7 @@ mod tests;
 /// let gbz_file = support::get_test_data("example.gbz");
 /// let db_file = serialize::temp_file_name("gbz-base");
 /// assert!(!binaries::file_exists(&db_file));
-/// // Here we build a database without chains.
+/// // We find top-level chains from the graph instead of providing them in a separate file.
 /// let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
 /// assert!(result.is_ok());
 ///
@@ -203,6 +204,8 @@ impl GBZBase {
     ///
     /// * `gbz_file`: Name of the file containing the GBZ graph.
     /// * `chains_file`: Name of the file containing top-level chains.
+    ///   If not provided, tries to find the chains using [`algorithms::find_chains`] that works with Minigraph–Cactus graphs.
+    ///   Use [`Self::create`] with empty chains to build a database without chains.
     /// * `db_file`: Name of the database file to be created.
     ///
     /// # Errors
@@ -216,7 +219,15 @@ impl GBZBase {
             eprintln!("Loading top-level chain file {}", filename.display());
             serialize::load_from(filename).map_err(|x| x.to_string())?
         } else {
-            Chains::new()
+            eprintln!("Finding top-level chains in the graph");
+            let chains = algorithms::find_chains(&graph);
+            let components = if let Some(components) = chains.components() {
+                components.to_string()
+            } else {
+                String::from("an unknown number of")
+            };
+            eprintln!("Found {} chains with {} links for {} component(s)", chains.len(), chains.links(), components);
+            chains
         };
         Self::create(&graph, &chains, db_file)
     }

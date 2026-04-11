@@ -4,6 +4,7 @@
 
 * Database versions: GBZ-base v0.4.0, GAF-base version 3
 * GBZ-base and GAF-base construction without vg:
+  * GBZ-base construction will find top-level chains automatically if not provided.
   * GAF sorting with `gaf_sort()` and the `gafsort` tool.
   * GBWT construction in a background thread when building GAF-base.
 * Bug fixes:
