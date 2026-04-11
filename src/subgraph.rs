@@ -7,7 +7,7 @@
 
 use crate::{GBZRecord, GBZPath};
 use crate::{GraphInterface, GraphReference};
-use crate::{PathIndex, Chains};
+use crate::PathIndex;
 use crate::{SubgraphQuery, HaplotypeOutput};
 use crate::subgraph::query::QueryType;
 use crate::formats::{self, WalkMetadata, JSONValue};
@@ -22,6 +22,7 @@ use std::cmp;
 
 use gbz::ENDMARKER;
 use gbz::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
+use gbz::support::Chains;
 use gbz::{algorithms, support};
 
 use pggname::{Graph, GraphName};
@@ -697,8 +698,8 @@ impl Subgraph {
     ///
     /// ```
     /// use gbz::{GBZ, Orientation};
-    /// use gbz::support;
-    /// use gbz_base::{Chains, Subgraph, GraphReference};
+    /// use gbz::support::{self, Chains};
+    /// use gbz_base::{Subgraph, GraphReference};
     /// use gbz_base::utils;
     /// use simple_sds::serialize;
     /// use std::collections::BTreeSet;
@@ -706,7 +707,7 @@ impl Subgraph {
     /// let graph_file = support::get_test_data("example.gbz");
     /// let graph: GBZ = serialize::load_from(&graph_file).unwrap();
     /// let chains_file = utils::get_test_data("example.chains");
-    /// let chains = Chains::load_from(&chains_file).unwrap();
+    /// let chains: Chains = serialize::load_from(&chains_file).unwrap();
     ///
     /// // Extract the boundary nodes of a snarl as the initial subgraph.
     /// let mut subgraph = Subgraph::new();

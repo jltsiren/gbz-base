@@ -1,6 +1,6 @@
 //! GBZ-base and GAF-base: SQLite databases storing a GBZ graph and sequence alignments to the graph.
 
-use crate::{Alignment, AlignmentBlock, Chains};
+use crate::{Alignment, AlignmentBlock};
 use crate::formats::{self, JSONValue};
 use crate::utils::{self, PathStartSource};
 
@@ -13,7 +13,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
 
 use gbz::{FullPathName, GBWT, GBWTBuilder, GBZ, Orientation, Pos};
 use gbz::bwt::{BWT, Record};
-use gbz::support::{self, Tags};
+use gbz::support::{self, Tags, Chains};
 
 use pggname::GraphName;
 
@@ -214,7 +214,7 @@ impl GBZBase {
         let graph: GBZ = serialize::load_from(gbz_file).map_err(|x| x.to_string())?;
         let chains = if let Some(filename) = chains_file {
             eprintln!("Loading top-level chain file {}", filename.display());
-            Chains::load_from(filename)?
+            serialize::load_from(filename).map_err(|x| x.to_string())?
         } else {
             Chains::new()
         };
