@@ -70,4 +70,3 @@ pub use path_index::PathIndex;
 pub use read_set::{ReadSet, AlignmentOutput};
 pub use subgraph::Subgraph;
 pub use subgraph::query::{SubgraphQuery, HaplotypeOutput};
-pub use utils::Chains;

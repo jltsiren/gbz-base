@@ -1,4 +1,4 @@
-use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex, Chains};
+use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
 use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
 use gbz_base::{formats, utils};
@@ -30,7 +30,7 @@ fn main() -> Result<(), String> {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
         let chains = match &config.chains {
-            Some(file) => Some(Chains::load_from(file.as_ref())?),
+            Some(file) => Some(serialize::load_from(file).map_err(|x| x.to_string())?),
             None => None,
         };
         subgraph.from_gbz(&graph, Some(&path_index), chains.as_ref(), &config.query)?;
@@ -153,6 +153,7 @@ impl Config {
         opts.optopt("o", "offset", "sequence offset", "INT");
         opts.optopt("i", "interval", "half-open sequence interval", "INT..INT");
         opts.optmulti("n", "node", "node identifier (may repeat)", "INT");
+        opts.optmulti("", "handle", "node corresponding to a handle (may repeat)", "INT");
         opts.optopt("b", "between", "subgraph between boundary nodes", "INT[+-]:INT[+-]");
         opts.optopt("", "limit", "safety limit for the number of nodes in -b", "INT");
         let context_desc = format!("context length in bp (not for -b; default: {})", Self::DEFAULT_CONTEXT);
@@ -168,7 +169,7 @@ impl Config {
         opts.optopt("", "alignments", "alignment selection (overlapping, clipped, or contained; default: clipped)", "STR");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
-        let header = format!("Usage: {} [options] graph.gbz[.db]\n\nQuery type must be speficied using one of -o, -i, -n, and -b.", program);
+        let header = format!("Usage: {} [options] graph.gbz[.db]\n\nQuery type must be speficied using one of -o, -i, -n (or --handle), and -b.", program);
         if matches.opt_present("help") {
             eprint!("{}", opts.usage(&header));
             process::exit(0);
@@ -267,10 +268,10 @@ impl Config {
         let mut needs_path_name = false;
         if matches.opt_present("offset") { count += 1; needs_path_name = true; }
         if matches.opt_present("interval") { count += 1; needs_path_name = true; }
-        if matches.opt_present("node") { count += 1; }
+        if matches.opt_present("node") || matches.opt_present("handle") { count += 1; }
         if matches.opt_present("between") { count += 1; }
         if count != 1 {
-            return Err("Exactly one of --offset, --interval, --node, and --between must be provided".to_string());
+            return Err("Exactly one of --offset, --interval, --node (or --handle), and --between must be provided".to_string());
         }
 
         let path_name = if needs_path_name {
@@ -311,10 +312,15 @@ impl Config {
             SubgraphQuery::between(start, end, limit)
         } else {
             let node_strings = matches.opt_strs("node");
-            let mut nodes = Vec::with_capacity(node_strings.len());
+            let handle_strings = matches.opt_strs("handle");
+            let mut nodes = Vec::with_capacity(node_strings.len() + handle_strings.len());
             for node in node_strings {
                 let id = Self::parse_integer(&node, "node")?;
                 nodes.push(id);
+            }
+            for handle in handle_strings {
+                let id = Self::parse_integer(&handle, "handle")?;
+                nodes.push(support::node_id(id));
             }
             SubgraphQuery::nodes(nodes)
         };

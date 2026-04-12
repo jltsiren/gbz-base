@@ -1,10 +1,10 @@
 use crate::{GBZBase, GraphInterface, formats};
 use crate::{GAFBase, GAFBaseParams, GraphReference};
-use crate::{Alignment, PathIndex, Chains};
+use crate::{Alignment, PathIndex};
 use crate::utils;
 
 use gbz::GBZ;
-use gbz::support;
+use gbz::support::{self, Chains};
 
 use simple_sds::{binaries, serialize};
 
@@ -152,7 +152,7 @@ pub(crate) fn load_gbz_and_create_path_index(filename: &'static str, interval: u
 
 pub(crate) fn load_chains(filename: &'static str) -> Chains {
     let chains_file = utils::get_test_data(filename);
-    let chains = Chains::load_from(&chains_file);
+    let chains = serialize::load_from(&chains_file);
     if let Err(err) = chains {
         panic!("Failed to load chains from {}: {}", chains_file.display(), err);
     }

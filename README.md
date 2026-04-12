@@ -17,7 +17,13 @@ To build the package, run:
 cargo build --release
 ```
 
-You will then have the `gbz2db`, `gaf2db`, and `query` tool binaries in `target/release/`.
+You will then have the following binaries in `target/release/`:
+
+* `gbz2db`: Builds a GBZ-base.
+* `gaf2db`: Builds a GAF-base.
+* `db2gaf`: Converts GAF-base back to GAF.
+* `query`: Queries in GBZ-base and GAF-base.
+* `gafsort`: Sorts a GAF file for GAF-base construction.
 
 ## GBZ-base construction
 
@@ -36,12 +42,16 @@ An existing database can be overwritten with option `--overwrite`.
 The database will be functionally equivalent to the GBZ graph, except that it will not contain a node-to-segment translation.
 Generic paths (with sample name `_gbwt_ref`) and reference paths (samples specified in GBWT tag `reference_samples`) will be indexed for querying.
 
-### Including top-level chains
+### Precomputed top-level chains
 
-A GBZ-base can optionally store links between boundary nodes in top-level chains.
+A GBZ-base stores links between the boundary nodes of snarls in top-level chains.
 Such links enable better subgraph queries (see below).
-In order to build a database with top-level chains, you first need to extract the chains from a distance index or a snarls file.
-That requires [vg](https://github.com/vgteam/vg) version 1.69.0 or newer.
+By default, the `gbz2db` tries to find them using a simple algorithm that works with Minigraph–Cactus graphs.
+It requires that each graph component contains exactly two tips with a directed path between them.
+
+If the assumptions fail, the algorithm will not be able to find top-level chains for some components.
+In such cases, prebuilt chains can be used with option `--chains graph.chains`.
+[vg](https://github.com/vgteam/vg) version 1.69.0 or newer can extract a chains file from a distance index or a snarls file.
 
 Example with chains extracted from a distance index:
 
@@ -123,6 +133,7 @@ All other paths will be listed as unknown haplotypes.
 
 ### Other options
 
+* `--handle N`: Node-based query using handles (GBWT node identifiers) encoded as `2 * node_id + is_reverse`.
 * `--context N`: Extract `N` bp context around the query position (default: 100).
   Context length can be specified using suffixes such as `k` or `M`.
 * `--distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
@@ -161,7 +172,7 @@ query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
 
 After extracting a subgraph, the query determines all top-level snarls that have their boundary nodes in the extracted subgraph.
 Then it ensures that those snarls are fully in the subgraph.
-This requires either a GBZ-base built with top-level chains (see above) or a GBZ graph with a chains file provided with `--chains FILE`.
+These snarls are based on the top-level chains provided or computed during GBZ-base construction.
 
 ### Extracting alignments
 
