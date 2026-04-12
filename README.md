@@ -17,7 +17,13 @@ To build the package, run:
 cargo build --release
 ```
 
-You will then have the `gbz2db`, `gaf2db`, and `query` tool binaries in `target/release/`.
+You will then have the following binaries in `target/release/`:
+
+* `gbz2db`: Builds a GBZ-base.
+* `gaf2db`: Builds a GAF-base.
+* `db2gaf`: Converts GAF-base back to GAF.
+* `query`: Queries in GBZ-base and GAF-base.
+* `gafsort`: Sorts a GAF file for GAF-base construction.
 
 ## GBZ-base construction
 
@@ -41,7 +47,7 @@ Generic paths (with sample name `_gbwt_ref`) and reference paths (samples specif
 A GBZ-base stores links between the boundary nodes of snarls in top-level chains.
 Such links enable better subgraph queries (see below).
 By default, the `gbz2db` tries to find them using a simple algorithm that works with Minigraph–Cactus graphs.
-It requires that each graph component contains exactly two tips and that there is a path connecting the tips that visits all bridge nodes / articulation points.
+It requires that each graph component contains exactly two tips with a directed path between them.
 
 If the assumptions fail, the algorithm will not be able to find top-level chains for some components.
 In such cases, prebuilt chains can be used with option `--chains graph.chains`.

@@ -30,7 +30,7 @@ fn main() -> Result<(), String> {
         let graph: GBZ = serialize::load_from(&config.filename).map_err(|x| x.to_string())?;
         let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false)?;
         let chains = match &config.chains {
-            Some(file) => Some(serialize::load_from(&file).map_err(|x| x.to_string())?),
+            Some(file) => Some(serialize::load_from(file).map_err(|x| x.to_string())?),
             None => None,
         };
         subgraph.from_gbz(&graph, Some(&path_index), chains.as_ref(), &config.query)?;

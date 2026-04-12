@@ -204,7 +204,7 @@ impl GBZBase {
     ///
     /// * `gbz_file`: Name of the file containing the GBZ graph.
     /// * `chains_file`: Name of the file containing top-level chains.
-    ///   If not provided, tries to find the chains using [`algorithms::find_chains`] that works with Minigraph–Cactus graphs.
+    ///   If not provided, this tries to find the chains using [`algorithms::find_chains`] that works with Minigraph–Cactus graphs.
     ///   Use [`Self::create`] with empty chains to build a database without chains.
     /// * `db_file`: Name of the database file to be created.
     ///
@@ -226,7 +226,7 @@ impl GBZBase {
             } else {
                 String::from("an unknown number of")
             };
-            eprintln!("Found {} chains with {} links for {} component(s)", chains.len(), chains.links(), components);
+            eprintln!("Found {} chains with {} links for {} components", chains.len(), chains.links(), components);
             chains
         };
         Self::create(&graph, &chains, db_file)
