@@ -127,6 +127,7 @@ All other paths will be listed as unknown haplotypes.
 
 ### Other options
 
+* `--handle N`: Node-based query using handles (GBWT node identifiers) encoded as `2 * node_id + is_reverse`.
 * `--context N`: Extract `N` bp context around the query position (default: 100).
   Context length can be specified using suffixes such as `k` or `M`.
 * `--distinct`: Collapse identical paths in the subgraph and report the number of copies using `WT:i` tags.
