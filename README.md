@@ -174,6 +174,19 @@ After extracting a subgraph, the query determines all top-level snarls that have
 Then it ensures that those snarls are fully in the subgraph.
 These snarls are based on the top-level chains provided or computed during GBZ-base construction.
 
+`--extend-snarls` handles two additional cases that `--snarls` does not:
+
+* **Partial overlap**: the query interval covers only one boundary node of a top-level snarl.
+  The subgraph is extended to fully include such snarls.
+* **Interval inside snarls**: the query interval starts and/or ends inside a top-level snarl, so one or both outer chain boundary nodes do not appear in the initial subgraph.
+  The path is walked backward from the interval start and forward from the interval end to find the nearest chain boundary on each side, and the subgraph is extended to include them. This covers both the case where the interval lies entirely within a single snarl and the case where its endpoints lie in different snarls.
+
+```sh
+query --contig chrM --interval 3000..4000 --extend-snarls graph.db > out.gfa
+```
+
+`--extend-snarls` implies `--snarls` and should be used with care, as some snarls can be very large.
+
 ### Extracting alignments
 
 If you have a GBZ-base for a graph and a GAF-base for reads aligned to the graph, you can extract the reads aligned to the subgraph:

@@ -159,7 +159,8 @@ impl Config {
         let context_desc = format!("context length in bp (not for -b; default: {})", Self::DEFAULT_CONTEXT);
         opts.optopt("", "context", &context_desc, "INT");
         opts.optflag("", "snarls", "include nodes in covered top-level snarls");
-        opts.optopt("", "chains", "top-level chains file (for --snarls with a GBZ graph)", "FILE");
+        opts.optflag("", "extend-snarls", "also extend subgraph to cover partially overlapping top-level snarls (implies --snarls)");
+        opts.optopt("", "chains", "top-level chains file (for --snarls/--extend-snarls with a GBZ graph)", "FILE");
         opts.optflag("", "distinct", "output distinct haplotypes with weights");
         opts.optflag("", "reference-only", "output the reference but no other haplotypes");
         opts.optflag("", "cigar", "output CIGAR strings for the haplotypes");
@@ -292,6 +293,7 @@ impl Config {
             None
         };
         let snarls = matches.opt_present("snarls");
+        let extend_snarls = matches.opt_present("extend-snarls");
         let mut output = HaplotypeOutput::All;
         if matches.opt_present("distinct") {
             output = HaplotypeOutput::Distinct;
@@ -325,7 +327,7 @@ impl Config {
             SubgraphQuery::nodes(nodes)
         };
 
-        Ok(query.with_context(context).with_snarls(snarls).with_output(output))
+        Ok(query.with_context(context).with_snarls(snarls).with_extend_snarls(extend_snarls).with_output(output))
     }
 }
 

@@ -55,6 +55,7 @@ pub(super) enum QueryType {
 /// let query = SubgraphQuery::path_offset(&path_name, 123);
 /// assert_eq!(query.context(), SubgraphQuery::DEFAULT_CONTEXT);
 /// assert_eq!(query.snarls(), SubgraphQuery::DEFAULT_SNARLS);
+/// assert_eq!(query.extend_snarls(), SubgraphQuery::DEFAULT_EXTEND_SNARLS);
 /// assert_eq!(query.output(), SubgraphQuery::DEFAULT_OUTPUT);
 ///
 /// let query = query.with_context(1000);
@@ -62,6 +63,9 @@ pub(super) enum QueryType {
 ///
 /// let query = query.with_snarls(true);
 /// assert!(query.snarls());
+///
+/// let query = query.with_extend_snarls(true);
+/// assert!(query.extend_snarls());
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
@@ -73,6 +77,9 @@ pub struct SubgraphQuery {
     // Also extract nodes in covered top-level snarls.
     snarls: bool,
 
+    // Also extend the subgraph to cover top-level snarls that partially overlap with it.
+    extend_snarls: bool,
+
     // How to output the haplotypes.
     output: HaplotypeOutput,
 }
@@ -83,6 +90,9 @@ impl SubgraphQuery {
 
     /// Default value for the snarl extraction flag.
     pub const DEFAULT_SNARLS: bool = false;
+
+    /// Default value for the partial snarl extension flag.
+    pub const DEFAULT_EXTEND_SNARLS: bool = false;
 
     /// Default value for the haplotype output option.
     pub const DEFAULT_OUTPUT: HaplotypeOutput = HaplotypeOutput::All;
@@ -99,6 +109,7 @@ impl SubgraphQuery {
             query_type: QueryType::PathOffset(path_name),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -115,6 +126,7 @@ impl SubgraphQuery {
             query_type: QueryType::PathInterval(path_name, interval.len()),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -125,6 +137,7 @@ impl SubgraphQuery {
             query_type: QueryType::Nodes(nodes.into_iter().collect()),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -139,6 +152,7 @@ impl SubgraphQuery {
             query_type: QueryType::Between((start, end), limit),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -155,6 +169,28 @@ impl SubgraphQuery {
     /// See [`Self::DEFAULT_SNARLS`] for the default value.
     pub fn with_snarls(self, snarls: bool) -> Self {
         SubgraphQuery { snarls, ..self }
+    }
+
+    /// Returns an updated query with the given snarl extension flag.
+    ///
+    /// When `true`, the subgraph is extended to handle two additional cases:
+    ///
+    /// * **Partial overlap**: a top-level snarl has exactly one boundary node in the subgraph
+    ///   after the initial extraction (interval + context + fully covered snarls).
+    ///   The subgraph is extended to fully include such snarls.
+    /// * **Interval inside snarls**: the query interval starts and/or ends inside a top-level snarl,
+    ///   so one or both outer chain boundary nodes do not appear after the initial extraction.
+    ///   The path is walked backward from the interval start and forward from the interval end to
+    ///   find the nearest chain boundary on each side, and the subgraph is extended to include them.
+    ///   This covers both the case where the interval lies entirely within a single snarl and the
+    ///   case where its endpoints lie in different snarls.
+    ///
+    /// This implies snarl extraction, so [`Self::snarls`] does not need to be set separately.
+    /// Note that some snarls can be very large; use this option with care.
+    ///
+    /// See [`Self::DEFAULT_EXTEND_SNARLS`] for the default value.
+    pub fn with_extend_snarls(self, extend_snarls: bool) -> Self {
+        SubgraphQuery { extend_snarls, ..self }
     }
 
     /// Returns an updated query with the given haplotype output option.
@@ -180,11 +216,27 @@ impl SubgraphQuery {
         self.context
     }
 
-    /// Returns `true` if the query also extracts nodes coverered top-level snarls.
+    /// Returns `true` if the query also extracts nodes in covered top-level snarls.
     ///
-    /// A snarl is covered, if both of its boundary nodes are contained in the query interval or in the context.
+    /// A snarl is covered if both of its boundary nodes are contained in the query interval or in the context.
     pub fn snarls(&self) -> bool {
         self.snarls
+    }
+
+    /// Returns `true` if the query extends the subgraph to cover snarls that overlap with the interval.
+    ///
+    /// Two cases are handled:
+    ///
+    /// * **Partial overlap**: a snarl has exactly one boundary node in the subgraph after the initial
+    ///   extraction (interval + context + fully covered snarls); the subgraph is extended to include it.
+    /// * **Interval inside snarls**: the interval starts and/or ends inside a snarl, so one or both
+    ///   outer chain boundary nodes are missing; the path is walked backward from the interval start
+    ///   and forward from the interval end to find them, covering both the single-snarl and
+    ///   cross-snarl cases.
+    ///
+    /// This implies [`Self::snarls`], so fully covered snarls are always extracted first.
+    pub fn extend_snarls(&self) -> bool {
+        self.extend_snarls
     }
 
     /// Returns the output format for the query.
@@ -195,7 +247,9 @@ impl SubgraphQuery {
 
 impl Display for SubgraphQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let context_str = if self.snarls() {
+        let context_str = if self.extend_snarls() {
+            format!("{} with extended snarls", self.context)
+        } else if self.snarls() {
             format!("{} with snarls", self.context)
         } else {
             format!("{}", self.context)
