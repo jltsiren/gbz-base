@@ -21,7 +21,7 @@ use std::ops::Range;
 use std::cmp;
 
 use gbz::ENDMARKER;
-use gbz::{GBZ, GraphPosition, Orientation, Pos, FullPathName};
+use gbz::{GBZ, GraphPosition, Orientation, NodeSide, Pos, FullPathName};
 use gbz::support::Chains;
 use gbz::{algorithms, support};
 
@@ -398,10 +398,10 @@ impl Subgraph {
 
         // Start the graph traversal from both sides of the initial node.
         let mut active: BinaryHeap<Reverse<(usize, (usize, NodeSide))>> = BinaryHeap::new();
-        let start = (pos.node, NodeSide::start(pos.orientation));
+        let start = (pos.node, support::entry_side(pos.orientation));
         active.push(Reverse((pos.offset, start)));
         let end_distance = record.sequence_len() - pos.offset - 1;
-        let end = (pos.node, NodeSide::end(pos.orientation));
+        let end = (pos.node, support::exit_side(pos.orientation));
         active.push(Reverse((end_distance, end)));
 
         self.insert_context(graph, active, context)
@@ -454,9 +454,9 @@ impl Subgraph {
             }
 
             // Handle the current node.
-            let start = (node_id, NodeSide::start(orientation));
+            let start = (node_id, support::entry_side(orientation));
             active.push(Reverse((offset, start)));
-            let end = (node_id, NodeSide::end(orientation));
+            let end = (node_id, support::exit_side(orientation));
             let distance_to_next = record.sequence_len() - offset;
             if len <= distance_to_next {
                 let end_distance = if len == distance_to_next { 0 } else { distance_to_next - len - 1 };
@@ -577,7 +577,7 @@ impl Subgraph {
             // We can reach the other side by traversing the node.
             let other_side = (node_side.0, node_side.1.flip());
             if !visited.contains(&other_side) {
-                let handle = support::encode_node(node_side.0, node_side.1.as_start());
+                let handle = support::encode_node(node_side.0, support::entry_orientation(node_side.1));
                 let record = self.record(handle).unwrap();
                 let next_distance = distance + record.sequence_len() - 1;
                 if next_distance <= context {
@@ -586,13 +586,13 @@ impl Subgraph {
             }
 
             // The predecessors of this node side are 1 bp away.
-            let handle = support::encode_node(node_side.0, node_side.1.as_end());
+            let handle = support::encode_node(node_side.0, support::exit_orientation(node_side.1));
             let record = self.record(handle).unwrap();
             let next_distance = distance + 1;
             if next_distance <= context {
                 for successor in record.successors() {
                     let node_id = support::node_id(successor);
-                    let side = NodeSide::start(support::node_orientation(successor));
+                    let side = support::entry_side(support::node_orientation(successor));
                     if !visited.contains(&(node_id, side)) {
                         active.push(Reverse((next_distance, (node_id, side))));
                     }
@@ -1876,52 +1876,6 @@ impl PathPosition {
         Pos {
             node: self.handle(),
             offset: self.gbwt_offset(),
-        }
-    }
-}
-
-// TODO: This might belong to gbwt-rs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NodeSide {
-    Left,
-    Right,
-}
-
-impl NodeSide {
-    fn flip(&self) -> NodeSide {
-        match self {
-            NodeSide::Left => NodeSide::Right,
-            NodeSide::Right => NodeSide::Left,
-        }
-    }
-
-    fn as_start(&self) -> Orientation {
-        match self {
-            NodeSide::Left => Orientation::Forward,
-            NodeSide::Right => Orientation::Reverse,
-        }
-    }
-
-    fn as_end(&self) -> Orientation {
-        match self {
-            NodeSide::Left => Orientation::Reverse,
-            NodeSide::Right => Orientation::Forward,
-        }
-    }
-
-    fn start(orientation: Orientation) -> NodeSide {
-        if orientation == Orientation::Forward {
-            NodeSide::Left
-        } else {
-            NodeSide::Right
-        }
-    }
-
-    fn end(orientation: Orientation) -> NodeSide {
-        if orientation == Orientation::Forward {
-            NodeSide::Right
-        } else {
-            NodeSide::Left
         }
     }
 }
