@@ -1,6 +1,6 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.4.0 (2026-04-17)
 
 * Database versions: GBZ-base v0.4.0, GAF-base version 3
 * GBZ-base and GAF-base construction without vg:
@@ -41,12 +41,16 @@ This is the initial release of GBZ-base and GAF-base.
 
 ## Release process
 
-* Run `cargo clippy --features=binaries`.
-* Run tests with `cargo test`.
-* Build documentation with `cargo doc`.
+* Clean up with `cargo clean`.
 * Update database versions to non-dev versions in `db.rs`.
 * Update version in `Cargo.toml`.
+* Switch to crates.io versions of dependencies, if necessary.
 * Update `RELEASES.md`.
+* Run `cargo clippy`.
+* Run tests with `cargo test`.
+* Build documentation with `cargo doc`.
+* Build the optimized version with `cargo build --release`.
+* Commit the final changes for the release.
 * Publish in crates.io with `cargo publish`.
 * Push to GitHub.
 * Draft a new release in GitHub.
