@@ -1547,6 +1547,24 @@ impl Subgraph {
         Ok(())
     }
 
+    // Returns true if the handle is a top-level chain boundary in a GBZ-base database.
+    //
+    // The chain link may be stored on either orientation of the boundary node.
+    fn db_handle_is_chain_boundary(
+        graph: &mut GraphReference<'_, '_>,
+        handle: usize,
+        record: Option<&GBZRecord>,
+    ) -> Result<bool, String> {
+        if let Some(record) = record {
+            if record.next().is_some() {
+                return Ok(true);
+            }
+        } else if graph.gbz_record(handle)?.next().is_some() {
+            return Ok(true);
+        }
+        Ok(graph.gbz_record(support::flip_node(handle))?.next().is_some())
+    }
+
     // Same as extract_enclosing_snarl_gbz but for GBZ-base databases (no explicit Chains object;
     // chain links are read from GBZRecord::next()).
     fn extract_enclosing_snarl_db(
@@ -1563,9 +1581,8 @@ impl Subgraph {
         };
         let path_handle = path.handle;
 
-        const MAX_SAMPLE_SEARCHES: usize = 64;
         let mut try_offset = interval_start.seq_offset();
-        for _ in 0..MAX_SAMPLE_SEARCHES {
+        loop {
             let (sample_seq, sample_pos) = match graph.indexed_position(path_handle, try_offset)? {
                 Some(p) => p,
                 None => break,
@@ -1584,7 +1601,7 @@ impl Subgraph {
             if sample_seq == 0 {
                 break;
             }
-            try_offset = sample_seq.saturating_sub(1);
+            try_offset = sample_seq - 1;
         }
         Ok(())
     }
@@ -1637,7 +1654,7 @@ impl Subgraph {
                 let is_boundary = if let Some(chains) = chains {
                     chains.has_handle(pos.node)
                 } else {
-                    record.next().is_some()
+                    Self::db_handle_is_chain_boundary(graph, pos.node, Some(&record))?
                 };
                 if is_boundary {
                     last_boundary = Some(pos.node);
@@ -1654,7 +1671,7 @@ impl Subgraph {
             let is_boundary = if let Some(chains) = chains {
                 chains.has_handle(interval_start.handle())
             } else {
-                graph.gbz_record(interval_start.handle())?.next().is_some()
+                Self::db_handle_is_chain_boundary(graph, interval_start.handle(), None)?
             };
             if is_boundary {
                 Some(interval_start.handle())
@@ -1689,14 +1706,13 @@ impl Subgraph {
             let is_boundary = if let Some(chains) = chains {
                 chains.has_handle(pos.node)
             } else {
-                graph.gbz_record(pos.node)?.next().is_some()
+                Self::db_handle_is_chain_boundary(graph, pos.node, None)?
             };
             if is_boundary {
                 Some(pos.node)
             } else {
-                const MAX_END_STEPS: usize = 100_000;
                 let mut found: Option<usize> = None;
-                for _ in 0..MAX_END_STEPS {
+                loop {
                     let record = graph.gbz_record(pos.node)?;
                     match record.to_gbwt_record().lf(pos.offset) {
                         Some(next) => {
@@ -1704,7 +1720,7 @@ impl Subgraph {
                             let is_boundary = if let Some(chains) = chains {
                                 chains.has_handle(pos.node)
                             } else {
-                                graph.gbz_record(pos.node)?.next().is_some()
+                                Self::db_handle_is_chain_boundary(graph, pos.node, None)?
                             };
                             if is_boundary {
                                 found = Some(pos.node);

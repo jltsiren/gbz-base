@@ -747,6 +747,7 @@ fn subgraph_from_db() {
 //      result as --snarls since the snarl 14→17 is fully covered.
 fn extend_snarls_queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
     let path_a = FullPathName::generic("A");
+    let path_b = FullPathName::generic("B");
     let queries = vec![
         // 1. Offset 1 (node 12, interior of snarl 11→14): interval inside snarl, enclosing
         //    snarl is extracted.
@@ -771,6 +772,9 @@ fn extend_snarls_queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, us
         //    both chain boundaries (11 and 14), extract_snarls fills the first snarl, and the
         //    resulting partial overlap on 14→17 cascades to extend into the second snarl.
         SubgraphQuery::path_offset(&path_a, 1).with_context(1).with_extend_snarls(true).with_output(HaplotypeOutput::All),
+        // 7. Offset 1 on path B (node 22 on the reference path) sits inside a snarl whose
+        //    canonical boundary handles use mixed orientations.
+        SubgraphQuery::path_offset(&path_b, 1).with_context(0).with_extend_snarls(true).with_output(HaplotypeOutput::All),
     ];
     let truth = vec![
         (vec![11, 12, 13, 14], 3),
@@ -779,6 +783,7 @@ fn extend_snarls_queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, us
         (vec![14, 15, 16, 17], 3),
         (vec![14, 15, 16, 17], 3),
         (vec![11, 12, 13, 14, 15, 16, 17], 3),
+        (vec![21, 22, 23], 4),
     ];
     (queries, truth)
 }
@@ -1094,6 +1099,8 @@ fn partially_covered_snarls() {
 
     let a_first = (support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward));
     let a_second = (support::encode_node(14, Orientation::Forward), support::encode_node(17, Orientation::Forward));
+    let b_first = (support::encode_node(22, Orientation::Reverse), support::encode_node(23, Orientation::Forward));
+    let b_second = (support::encode_node(23, Orientation::Forward), support::encode_node(24, Orientation::Reverse));
 
     // (nodes_in_subgraph, expected_partial_snarls)
     let queries: Vec<(Vec<usize>, Vec<(usize, usize)>)> = vec![
@@ -1105,6 +1112,10 @@ fn partially_covered_snarls() {
         (vec![11, 12, 13],  vec![a_first]),            // interior nodes + 11; 14 still missing
         (vec![11, 14, 17],  vec![]),                   // both snarls fully covered
         (vec![12, 13],      vec![]),                   // interior nodes only, no chain links
+        (vec![22],          vec![b_first]),            // reverse-oriented boundary only
+        (vec![23],          vec![b_second]),           // forward boundary in mixed-orientation chain
+        (vec![22, 23],      vec![b_second]),           // first snarl covered; second still partial
+        (vec![23, 24],      vec![]),                   // second snarl fully covered
     ];
 
     for (nodes, expected) in queries {
@@ -1126,6 +1137,29 @@ fn partially_covered_snarls() {
             "Wrong partial snarls for {}: found {:?}, expected {:?}", name, partial, expected
         );
     }
+}
+
+#[test]
+fn db_chain_boundary_check_uses_flipped_handle() {
+    let gbz_file = support::get_test_data("example.gbz");
+    let chains_file = utils::get_test_data("example.chains");
+    let db_file = serialize::temp_file_name("subgraph-db-boundary");
+    let result = GBZBase::create_from_files(&gbz_file, Some(&chains_file), &db_file);
+    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut graph = GraphInterface::new(&mut database).unwrap();
+
+    let handle = support::encode_node(24, Orientation::Reverse);
+    let record = graph.get_record(handle).unwrap().unwrap();
+    assert!(record.next().is_none(), "Test assumption failed: handle {} unexpectedly has a direct chain link", handle);
+    let mut graph_ref = GraphReference::Db(&mut graph);
+    let is_boundary = Subgraph::db_handle_is_chain_boundary(&mut graph_ref, handle, Some(&record)).unwrap();
+    assert!(is_boundary, "Flipped-handle boundary check failed for handle {}", handle);
+
+    drop(graph_ref);
+    drop(graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
 }
 
 #[test]
