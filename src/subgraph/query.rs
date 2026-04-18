@@ -185,6 +185,8 @@ impl SubgraphQuery {
     ///   This covers both the case where the interval lies entirely within a single snarl and the
     ///   case where its endpoints lie in different snarls.
     ///
+    /// These extensions are applied once to the snarls touched by the original query.
+    ///
     /// This implies snarl extraction, so [`Self::snarls`] does not need to be set separately.
     /// Note that some snarls can be very large; use this option with care.
     ///
@@ -223,16 +225,19 @@ impl SubgraphQuery {
         self.snarls
     }
 
-    /// Returns `true` if the query extends the subgraph to cover snarls that overlap with the interval.
+    /// Returns `true` if the query extends the subgraph to cover snarls touched by the original query.
     ///
     /// Two cases are handled:
     ///
-    /// * **Partial overlap**: a snarl has exactly one boundary node in the subgraph after the initial
-    ///   extraction (interval + context + fully covered snarls); the subgraph is extended to include it.
+    /// * **Partial overlap**: a snarl has exactly one boundary node in the initial subgraph after the
+    ///   original extraction (interval + context + fully covered snarls); the subgraph is extended to include it.
     /// * **Interval inside snarls**: the interval starts and/or ends inside a snarl, so one or both
     ///   outer chain boundary nodes are missing; the path is walked backward from the interval start
     ///   and forward from the interval end to find them, covering both the single-snarl and
     ///   cross-snarl cases.
+    ///
+    /// For node-based queries, this also covers top-level snarls touched by the original queried
+    /// nodes or their context, even if neither boundary node was initially present.
     ///
     /// This implies [`Self::snarls`], so fully covered snarls are always extracted first.
     pub fn extend_snarls(&self) -> bool {
