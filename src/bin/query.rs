@@ -159,7 +159,7 @@ impl Config {
         let context_desc = format!("context length in bp (not for -b; default: {})", Self::DEFAULT_CONTEXT);
         opts.optopt("", "context", &context_desc, "INT");
         opts.optflag("", "snarls", "include nodes in covered top-level snarls");
-        opts.optflag("", "extend-snarls", "also extend subgraph to finish top-level snarls touched by the query (implies --snarls)");
+        opts.optflag("", "extend-snarls", "also extend subgraph to recover overlapping or enclosing top-level snarls (implies --snarls)");
         opts.optopt("", "chains", "top-level chains file (for --snarls/--extend-snarls with a GBZ graph)", "FILE");
         opts.optflag("", "distinct", "output distinct haplotypes with weights");
         opts.optflag("", "reference-only", "output the reference but no other haplotypes");

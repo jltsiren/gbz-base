@@ -77,7 +77,7 @@ pub struct SubgraphQuery {
     // Also extract nodes in covered top-level snarls.
     snarls: bool,
 
-    // Also extend the subgraph to cover top-level snarls that partially overlap with it.
+    // Also extend the subgraph to cover overlapping or enclosing top-level snarls.
     extend_snarls: bool,
 
     // How to output the haplotypes.
@@ -173,19 +173,19 @@ impl SubgraphQuery {
 
     /// Returns an updated query with the given snarl extension flag.
     ///
-    /// When `true`, the subgraph is extended to handle two additional cases:
+    /// When `true`, the subgraph is extended to handle three additional cases:
     ///
-    /// * **Partial overlap**: a top-level snarl has exactly one boundary node in the subgraph
-    ///   after the initial extraction (interval + context + fully covered snarls).
-    ///   The subgraph is extended to fully include such snarls.
-    /// * **Interval inside snarls**: the query interval starts and/or ends inside a top-level snarl,
-    ///   so one or both outer chain boundary nodes do not appear after the initial extraction.
-    ///   The path is walked backward from the interval start and forward from the interval end to
-    ///   find the nearest chain boundary on each side, and the subgraph is extended to include them.
-    ///   This covers both the case where the interval lies entirely within a single snarl and the
-    ///   case where its endpoints lie in different snarls.
+    /// * **Boundary-only subgraph**: reaching a snarl boundary alone does not trigger extension.
+    ///   If the subgraph does not contain any successor of the corresponding snarl entry point,
+    ///   the subgraph ends just before that snarl.
+    /// * **Subgraph contained in a snarl**: if the extracted subgraph contains no visible chain
+    ///   links, GBZ-base performs a greedy undirected traversal until it finds the first handle
+    ///   whose opposite orientation has a chain link. If that opposite handle is a snarl entry
+    ///   point, the enclosing snarl is extracted. Otherwise the traversal stops on a unary path.
+    /// * **Node-based queries**: `--extend-snarls` is only supported for node-based queries with
+    ///   a single queried node, because extending multiple disconnected seed nodes is ambiguous.
     ///
-    /// These extensions are applied once to the snarls touched by the original query.
+    /// These extensions are applied once after extracting fully covered snarls.
     ///
     /// This implies snarl extraction, so [`Self::snarls`] does not need to be set separately.
     /// Note that some snarls can be very large; use this option with care.
@@ -225,19 +225,16 @@ impl SubgraphQuery {
         self.snarls
     }
 
-    /// Returns `true` if the query extends the subgraph to cover snarls touched by the original query.
+    /// Returns `true` if the query extends the subgraph to cover overlapping or enclosing snarls.
     ///
-    /// Two cases are handled:
+    /// The extension changes the default snarl behavior in three ways:
     ///
-    /// * **Partial overlap**: a snarl has exactly one boundary node in the initial subgraph after the
-    ///   original extraction (interval + context + fully covered snarls); the subgraph is extended to include it.
-    /// * **Interval inside snarls**: the interval starts and/or ends inside a snarl, so one or both
-    ///   outer chain boundary nodes are missing; the path is walked backward from the interval start
-    ///   and forward from the interval end to find them, covering both the single-snarl and
-    ///   cross-snarl cases.
-    ///
-    /// For node-based queries, this also covers top-level snarls touched by the original queried
-    /// nodes or their context, even if neither boundary node was initially present.
+    /// * **Boundary-only subgraph**: a boundary node alone is not enough. The subgraph must contain
+    ///   a snarl entry point and at least one successor of that entry point to overlap the snarl.
+    /// * **Subgraph contained in a snarl**: if no visible chain links are present, GBZ-base uses
+    ///   a greedy undirected traversal to find the first enclosing snarl entry point and stops on
+    ///   unary paths between snarls.
+    /// * **Node-based queries**: only single-node seed queries are supported.
     ///
     /// This implies [`Self::snarls`], so fully covered snarls are always extracted first.
     pub fn extend_snarls(&self) -> bool {

@@ -14,6 +14,7 @@ use crate::formats::{self, WalkMetadata, JSONValue};
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, BTreeMap, BTreeSet, HashSet};
+use std::collections::VecDeque;
 use std::fmt::Display;
 use std::io::{self, Write};
 use std::iter::FusedIterator;
@@ -709,9 +710,9 @@ impl Subgraph {
     /// let chains_file = utils::get_test_data("example.chains");
     /// let chains: Chains = serialize::load_from(&chains_file).unwrap();
     ///
-    /// // Extract the boundary nodes of a snarl as the initial subgraph.
+    /// // Extract an entry point and one interior node of a snarl as the initial subgraph.
     /// let mut subgraph = Subgraph::new();
-    /// let nodes: BTreeSet<usize> = [14, 17].into_iter().collect();
+    /// let nodes: BTreeSet<usize> = [14, 16].into_iter().collect();
     /// let result = subgraph.around_nodes(GraphReference::Gbz(&graph), &nodes, 0);
     /// assert!(result.is_ok());
     /// assert!(subgraph.node_iter().eq(nodes.iter().copied()));
@@ -812,7 +813,7 @@ impl Subgraph {
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
                 self.around_position(GraphReference::Gbz(graph), reference_path.0.graph_pos(), query.context())?;
                 if query.extend_snarls() {
-                    self.extend_path_snarls_gbz(graph, chains.unwrap(), &reference_path.0, 1)?;
+                    self.extend_path_snarls_gbz(graph, chains.unwrap())?;
                 } else if query.snarls() {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
@@ -825,7 +826,7 @@ impl Subgraph {
                 let reference_path = self.path_pos_from_gbz(graph, path_index, query_pos)?;
                 self.around_interval(GraphReference::Gbz(graph), reference_path.0, *len, query.context())?;
                 if query.extend_snarls() {
-                    self.extend_path_snarls_gbz(graph, chains.unwrap(), &reference_path.0, *len)?;
+                    self.extend_path_snarls_gbz(graph, chains.unwrap())?;
                 } else if query.snarls() {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
@@ -835,10 +836,12 @@ impl Subgraph {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
+                if query.extend_snarls() && nodes.len() > 1 {
+                    return Err(String::from("--extend-snarls is only supported for node-based queries with a single node"));
+                }
                 self.around_nodes(GraphReference::Gbz(graph), nodes, query.context())?;
                 if query.extend_snarls() {
-                    let seed_nodes: BTreeSet<usize> = self.node_iter().collect();
-                    self.extend_node_snarls_gbz(graph, chains.unwrap(), &seed_nodes)?;
+                    self.extend_node_snarls_gbz(graph, chains.unwrap())?;
                 } else if query.snarls() {
                     self.extract_snarls(GraphReference::Gbz(graph), chains)?;
                 }
@@ -916,7 +919,7 @@ impl Subgraph {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
                 self.around_position(GraphReference::Db(graph), reference_path.0.graph_pos(), query.context())?;
                 if query.extend_snarls() {
-                    self.extend_path_snarls_db(graph, query_pos, &reference_path.0, 1)?;
+                    self.extend_path_snarls_db(graph)?;
                 } else if query.snarls() {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
@@ -926,7 +929,7 @@ impl Subgraph {
                 let reference_path = self.path_pos_from_db(graph, query_pos)?;
                 self.around_interval(GraphReference::Db(graph), reference_path.0, *len, query.context())?;
                 if query.extend_snarls() {
-                    self.extend_path_snarls_db(graph, query_pos, &reference_path.0, *len)?;
+                    self.extend_path_snarls_db(graph)?;
                 } else if query.snarls() {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
@@ -936,10 +939,12 @@ impl Subgraph {
                 if query.output() == HaplotypeOutput::ReferenceOnly {
                     return Err(String::from("Cannot output a reference path in a node-based query"));
                 }
+                if query.extend_snarls() && nodes.len() > 1 {
+                    return Err(String::from("--extend-snarls is only supported for node-based queries with a single node"));
+                }
                 self.around_nodes(GraphReference::Db(graph), nodes, query.context())?;
                 if query.extend_snarls() {
-                    let seed_nodes: BTreeSet<usize> = self.node_iter().collect();
-                    self.extend_node_snarls_db(graph, &seed_nodes)?;
+                    self.extend_node_snarls_db(graph)?;
                 } else if query.snarls() {
                     self.extract_snarls(GraphReference::Db(graph), None)?;
                 }
@@ -1367,10 +1372,12 @@ impl Subgraph {
         self.paths.len()
     }
 
-    /// Returns the top-level snarls covered by the current subgraph.
+    /// Returns the top-level snarls overlapping the current subgraph.
     ///
-    /// Each snarl is reported as a pair of handles `(start, end)` of its boundary nodes.
-    /// Here `start` points inside the snarl and `end` points outside the snarl.
+    /// A top-level snarl overlaps the current subgraph if the subgraph contains a snarl entry
+    /// point and at least one successor of that entry point.
+    /// Each snarl is reported as a pair of handles `(start, end)` of its boundary nodes, where
+    /// `start` points inside the snarl and `end` points outside the snarl.
     /// The snarls are returned in the canonical orientation (see [`support::edge_is_canonical`]).
     ///
     /// By default, this uses the chain links stored in node records.
@@ -1379,30 +1386,24 @@ impl Subgraph {
     pub fn covered_snarls(&self, chains: Option<&Chains>) -> BTreeSet<(usize, usize)> {
         let mut snarls: BTreeSet<(usize, usize)> = BTreeSet::new();
         for (&handle, record) in self.records.iter() {
-            let next = if let Some(chains) = chains {
-                chains.next(handle)
-            } else {
-                record.next()
+            let Some(next) = self.snarl_entry_successor_in_subgraph(handle, record, chains) else {
+                continue;
             };
-            if next.is_none() {
+            if !record.successors().any(|successor| self.has_handle(successor)) {
                 continue;
             }
-            let next = next.unwrap();
-            if !self.has_handle(next) {
-                continue;
-            }
-            if support::encoded_edge_is_canonical(handle, next) {
-                snarls.insert((handle, next));
-            }
+            snarls.insert(Self::canonical_snarl(handle, next));
         }
         snarls
     }
 
     /// Returns the top-level snarls that partially overlap with the current subgraph.
     ///
-    /// A snarl partially overlaps if exactly one of its boundary nodes is in the subgraph.
+    /// A top-level snarl partially overlaps the current subgraph if the subgraph contains a snarl
+    /// entry point and at least one successor of that entry point, but does not yet contain the
+    /// successor boundary node of the snarl.
     /// Each snarl is reported as a pair of handles `(start, end)` of its boundary nodes,
-    /// where `start` is in the subgraph and `end` is not.
+    /// in the canonical orientation.
     /// The snarls are returned in the canonical orientation (see [`support::edge_is_canonical`]).
     ///
     /// By default, this uses the chain links stored in node records.
@@ -1410,20 +1411,14 @@ impl Subgraph {
     pub fn partially_covered_snarls(&self, chains: Option<&Chains>) -> BTreeSet<(usize, usize)> {
         let mut snarls: BTreeSet<(usize, usize)> = BTreeSet::new();
         for (&handle, record) in self.records.iter() {
-            let next = if let Some(chains) = chains {
-                chains.next(handle)
-            } else {
-                record.next()
-            };
-            if next.is_none() {
+            let Some(next) = self.snarl_entry_successor_in_subgraph(handle, record, chains) else {
                 continue;
-            }
-            let next = next.unwrap();
+            };
             if self.has_handle(next) {
                 continue; // Fully covered; handled by covered_snarls / extract_snarls.
             }
-            if support::encoded_edge_is_canonical(handle, next) {
-                snarls.insert((handle, next));
+            if record.successors().any(|successor| self.has_handle(successor)) {
+                snarls.insert(Self::canonical_snarl(handle, next));
             }
         }
         snarls
@@ -1431,7 +1426,8 @@ impl Subgraph {
 
     /// Extends the subgraph to fully cover top-level snarls that partially overlap with it.
     ///
-    /// A snarl partially overlaps if exactly one of its boundary nodes is already in the subgraph.
+    /// A snarl partially overlaps if the subgraph contains a snarl entry point and at least one
+    /// successor of that entry point, but does not yet contain the successor boundary node.
     /// For each such snarl, all interior nodes (and the missing boundary node) are inserted.
     /// Returns the number of newly inserted nodes.
     pub fn extract_partial_snarls(&mut self, graph: GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<usize, String> {
@@ -1456,415 +1452,220 @@ impl Subgraph {
         Ok(inserted)
     }
 
-    // Returns true if the given seed nodes contain at least one node in the snarl.
-    fn snarl_overlaps_nodes(
+    fn canonical_snarl(start: usize, end: usize) -> (usize, usize) {
+        if support::encoded_edge_is_canonical(start, end) {
+            (start, end)
+        } else {
+            (support::flip_node(end), support::flip_node(start))
+        }
+    }
+
+    fn record_next(record: &GBZRecord, chains: Option<&Chains>) -> Option<usize> {
+        if let Some(chains) = chains {
+            chains.next(record.handle())
+        } else {
+            record.next()
+        }
+    }
+
+    fn snarl_entry_successor_in_subgraph(
+        &self,
+        _handle: usize,
+        record: &GBZRecord,
+        chains: Option<&Chains>,
+    ) -> Option<usize> {
+        let next = Self::record_next(record, chains)?;
+
+        let mut successors = record.successors();
+        let successor = successors.next()?;
+        if successors.next().is_some() {
+            return Some(next);
+        }
+
+        let predecessor_record = self.record(support::flip_node(successor))?;
+        if predecessor_record.successors().nth(1).is_some() {
+            Some(next)
+        } else {
+            None
+        }
+    }
+
+    fn handle_is_snarl_entry_point(
         graph: &mut GraphReference<'_, '_>,
-        seed_nodes: &BTreeSet<usize>,
-        start: usize,
-        end: usize,
+        handle: usize,
+        record: Option<&GBZRecord>,
+        chains: Option<&Chains>,
     ) -> Result<bool, String> {
-        let start_id = support::node_id(start);
-        let end_id = support::node_id(end);
-        if seed_nodes.contains(&start_id) || seed_nodes.contains(&end_id) {
+        let record_storage;
+        let record = match record {
+            Some(record) => record,
+            None => {
+                record_storage = graph.gbz_record(handle)?;
+                &record_storage
+            }
+        };
+        if Self::record_next(record, chains).is_none() {
+            return Ok(false);
+        }
+
+        let mut successors = record.successors();
+        let Some(successor) = successors.next() else {
+            return Ok(false);
+        };
+        if successors.next().is_some() {
             return Ok(true);
         }
 
-        let mut active = vec![start, support::flip_node(end)];
-        let mut visited = HashSet::new();
-        visited.insert(start_id);
-        visited.insert(end_id);
+        let predecessor_record = graph.gbz_record(support::flip_node(successor))?;
+        Ok(predecessor_record.successors().nth(1).is_some())
+    }
 
-        while let Some(curr) = active.pop() {
-            let record = graph.gbz_record(curr)?;
-            for next in record.successors() {
-                let next_id = support::node_id(next);
-                if !visited.insert(next_id) {
-                    continue;
+    fn has_chain_links(graph: &mut GraphReference<'_, '_>, chains: Option<&Chains>) -> Result<bool, String> {
+        if let Some(chains) = chains {
+            return Ok(chains.links() > 0);
+        }
+        match graph {
+            GraphReference::Db(db) => Ok(!db.chain_links()?.is_empty()),
+            GraphReference::Gbz(_) => Ok(false),
+            GraphReference::None => Err(String::from("No graph reference provided")),
+        }
+    }
+
+    fn has_visible_chain_link(&self, chains: Option<&Chains>) -> bool {
+        self.records.values().any(|record| Self::record_next(record, chains).is_some())
+    }
+
+    fn weakly_connected_components(&self) -> usize {
+        let mut remaining: BTreeSet<usize> = self.node_iter().collect();
+        let mut components = 0;
+
+        while let Some(start) = remaining.first().copied() {
+            components += 1;
+            remaining.remove(&start);
+            let mut stack = vec![start];
+            while let Some(node_id) = stack.pop() {
+                for orientation in [Orientation::Forward, Orientation::Reverse] {
+                    if let Some(successors) = self.successors(node_id, orientation) {
+                        for (next_id, _) in successors {
+                            if remaining.remove(&next_id) {
+                                stack.push(next_id);
+                            }
+                        }
+                    }
                 }
-                if seed_nodes.contains(&next_id) {
-                    return Ok(true);
-                }
-                active.push(next);
-                active.push(support::flip_node(next));
             }
         }
 
-        Ok(false)
+        components
     }
 
-    // Extends the subgraph to fully cover top-level snarls that overlap the original seed nodes.
-    fn extract_seed_overlapping_snarls_gbz(
+    fn extract_enclosing_snarl_by_traversal(
         &mut self,
-        graph: &GBZ,
-        chains: &Chains,
-        seed_nodes: &BTreeSet<usize>,
+        graph: GraphReference<'_, '_>,
+        chains: Option<&Chains>,
     ) -> Result<usize, String> {
-        let mut inserted = 0;
-        for (start, end) in chains.iter().filter(|(start, end)| support::encoded_edge_is_canonical(*start, *end)) {
-            let overlaps = {
-                let mut graph_ref = GraphReference::Gbz(graph);
-                Self::snarl_overlaps_nodes(&mut graph_ref, seed_nodes, start, end)?
-            };
-            if overlaps {
-                inserted += self.between_nodes(GraphReference::Gbz(graph), start, end, None)?;
+        if self.nodes() == 0 || self.weakly_connected_components() != 1 {
+            return Ok(0);
+        }
+
+        let mut graph = graph;
+        if !Self::has_chain_links(&mut graph, chains)? || self.has_visible_chain_link(chains) {
+            return Ok(0);
+        }
+
+        let mut active: VecDeque<usize> = VecDeque::new();
+        let mut visited: HashSet<usize> = HashSet::new();
+        let mut collected: BTreeSet<usize> = BTreeSet::new();
+        for node_id in self.node_iter() {
+            for orientation in [Orientation::Forward, Orientation::Reverse] {
+                let handle = support::encode_node(node_id, orientation);
+                visited.insert(handle);
+                active.push_back(handle);
             }
         }
-        Ok(inserted)
+
+        while let Some(handle) = active.pop_front() {
+            let opposite = support::flip_node(handle);
+            let opposite_record = graph.gbz_record(opposite)?;
+            if let Some(next) = Self::record_next(&opposite_record, chains) {
+                if Self::handle_is_snarl_entry_point(&mut graph, opposite, Some(&opposite_record), chains)? {
+                    for node_id in collected {
+                        if !self.has_node(node_id) {
+                            self.add_node_internal(&mut graph, node_id)?;
+                        }
+                    }
+                    return match &mut graph {
+                        GraphReference::Gbz(gbz) => self.between_nodes(GraphReference::Gbz(gbz), opposite, next, None),
+                        GraphReference::Db(db) => self.between_nodes(GraphReference::Db(db), opposite, next, None),
+                        GraphReference::None => Err(String::from("No graph reference provided")),
+                    };
+                }
+                return Ok(0);
+            }
+
+            let record = graph.gbz_record(handle)?;
+            let node_id = support::node_id(handle);
+            if !self.has_node(node_id) {
+                collected.insert(node_id);
+            }
+            for successor in record.successors() {
+                if visited.insert(successor) {
+                    active.push_back(successor);
+                }
+                let flipped = support::flip_node(successor);
+                if visited.insert(flipped) {
+                    active.push_back(flipped);
+                }
+            }
+        }
+
+        Ok(0)
     }
 
-    // Extends path-based queries to the enclosing top-level snarls without recursive propagation.
+    // Extends path-based queries to the overlapping or enclosing top-level snarls.
     fn extend_path_snarls_gbz(
         &mut self,
         graph: &GBZ,
         chains: &Chains,
-        interval_start: &PathPosition,
-        interval_len: usize,
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Gbz(graph), Some(chains))?;
-        inserted += self.extract_partial_snarls(GraphReference::Gbz(graph), Some(chains))?;
-        inserted += Self::extract_enclosing_snarl_gbz(self, graph, interval_start, interval_len, Some(chains))?;
+        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Gbz(graph), Some(chains))?;
         Ok(inserted)
     }
 
-    // Extends node-based queries to top-level snarls touched by the original seed nodes.
+    // Extends node-based queries to overlapping or enclosing top-level snarls.
     fn extend_node_snarls_gbz(
         &mut self,
         graph: &GBZ,
         chains: &Chains,
-        seed_nodes: &BTreeSet<usize>,
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Gbz(graph), Some(chains))?;
-        inserted += self.extract_partial_snarls(GraphReference::Gbz(graph), Some(chains))?;
-        inserted += self.extract_seed_overlapping_snarls_gbz(graph, chains, seed_nodes)?;
+        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Gbz(graph), Some(chains))?;
         Ok(inserted)
     }
 
-    // Finds and extracts the top-level snarl that fully encloses the given interval (for GBZ graphs).
-    // Walks backward from the interval start using GBWT::backward() to find the start chain boundary,
-    // then walks forward past the interval to find the end chain boundary.
-    // This is O(distance to the enclosing snarl boundaries) with no artificial cap.
-    // interval_len should be 1 for point (PathOffset) queries.
-    fn extract_enclosing_snarl_gbz(
-        subgraph: &mut Subgraph,
-        graph: &GBZ,
-        interval_start: &PathPosition,
-        interval_len: usize,
-        chains: Option<&Chains>,
-    ) -> Result<usize, String> {
-        // If the interval start is itself a chain boundary, use it directly.
-        // Otherwise walk backward to find the nearest chain boundary before it.
-        let start_boundary: Option<usize> = if chains.map_or(false, |c| c.has_handle(interval_start.handle())) {
-            Some(interval_start.handle())
-        } else {
-            let gbwt: &gbz::GBWT = graph.as_ref();
-            let mut pos = interval_start.gbwt_pos();
-            let mut found: Option<usize> = None;
-            while let Some(prev) = gbwt.backward(pos) {
-                pos = prev;
-                if chains.map_or(false, |c| c.has_handle(pos.node)) {
-                    found = Some(pos.node);
-                    break;
-                }
-            }
-            found
-        };
-
-        // Walk forward past the interval to find the first chain boundary after it.
-        let end_boundary: Option<usize> = {
-            let mut graph_ref = GraphReference::Gbz(graph);
-            let mut pos = interval_start.gbwt_pos();
-            let mut remaining = interval_len;
-            let mut node_offset = interval_start.node_offset();
-
-            // Walk through the interval to reach its last node.
-            loop {
-                let record = graph_ref.gbz_record(pos.node)?;
-                let dist_to_end = record.sequence_len() - node_offset;
-                if remaining <= dist_to_end {
-                    break;
-                }
-                remaining -= dist_to_end;
-                node_offset = 0;
-                match record.to_gbwt_record().lf(pos.offset) {
-                    Some(next) => pos = next,
-                        None => return Ok(0),
-                }
-            }
-
-            // If the last node of the interval is itself a chain boundary, use it directly.
-            // Otherwise continue forward until hitting a chain boundary.
-            if chains.map_or(false, |c| c.has_handle(pos.node)) {
-                Some(pos.node)
-            } else {
-                let mut found: Option<usize> = None;
-                loop {
-                    let record = graph_ref.gbz_record(pos.node)?;
-                    match record.to_gbwt_record().lf(pos.offset) {
-                        Some(next) => {
-                            pos = next;
-                            if chains.map_or(false, |c| c.has_handle(pos.node)) {
-                                found = Some(pos.node);
-                                break;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-                found
-            }
-        };
-
-        if let (Some(start), Some(end)) = (start_boundary, end_boundary) {
-            if !subgraph.has_handle(start) || !subgraph.has_handle(end) {
-                return subgraph.between_nodes(GraphReference::Gbz(graph), start, end, None);
-            }
-        }
-        Ok(0)
-    }
-
-    // Returns true if the handle is a top-level chain boundary in a GBZ-base database.
-    //
-    // The chain link may be stored on either orientation of the boundary node.
-    fn db_handle_is_chain_boundary(
-        graph: &mut GraphReference<'_, '_>,
-        handle: usize,
-        record: Option<&GBZRecord>,
-    ) -> Result<bool, String> {
-        if let Some(record) = record {
-            if record.next().is_some() {
-                return Ok(true);
-            }
-        } else if graph.gbz_record(handle)?.next().is_some() {
-            return Ok(true);
-        }
-        Ok(graph.gbz_record(support::flip_node(handle))?.next().is_some())
-    }
-
-    // Same as extract_enclosing_snarl_gbz but for GBZ-base databases (no explicit Chains object;
-    // chain links are read from GBZRecord::next()).
-    fn extract_enclosing_snarl_db(
-        subgraph: &mut Subgraph,
-        graph: &mut GraphInterface<'_>,
-        query_pos: &FullPathName,
-        interval_start: &PathPosition,
-        interval_len: usize,
-    ) -> Result<usize, String> {
-        // Look up the path to get its handle for indexed_position queries.
-        let path = match graph.find_path(query_pos)? {
-            Some(p) => p,
-            None => return Ok(0),
-        };
-        let path_handle = path.handle;
-
-        let mut try_offset = interval_start.seq_offset();
-        loop {
-            let (sample_seq, sample_pos) = match graph.indexed_position(path_handle, try_offset)? {
-                Some(p) => p,
-                None => break,
-            };
-            if let Some((start, end)) = Self::find_enclosing_snarl_boundaries(
-                &mut GraphReference::Db(graph),
-                sample_seq, sample_pos,
-                interval_start, interval_len,
-                None, // DB case: use GBZRecord::next() stored in the database
-            )? {
-                if !subgraph.has_handle(start) || !subgraph.has_handle(end) {
-                    return subgraph.between_nodes(GraphReference::Db(graph), start, end, None);
-                }
-                break;
-            }
-            if sample_seq == 0 {
-                break;
-            }
-            try_offset = sample_seq - 1;
-        }
-        Ok(0)
-    }
-
-    // Extends the subgraph to fully cover top-level snarls that overlap the original seed nodes.
-    fn extract_seed_overlapping_snarls_db(
-        &mut self,
-        graph: &mut GraphInterface<'_>,
-        seed_nodes: &BTreeSet<usize>,
-    ) -> Result<usize, String> {
-        let mut inserted = 0;
-        let snarls: Vec<(usize, usize)> = graph.chain_links()?.into_iter()
-            .filter(|(start, end)| support::encoded_edge_is_canonical(*start, *end))
-            .collect();
-        for (start, end) in snarls {
-            let overlaps = {
-                let mut graph_ref = GraphReference::Db(graph);
-                Self::snarl_overlaps_nodes(&mut graph_ref, seed_nodes, start, end)?
-            };
-            if overlaps {
-                inserted += self.between_nodes(GraphReference::Db(graph), start, end, None)?;
-            }
-        }
-        Ok(inserted)
-    }
-
-    // Extends path-based queries to the enclosing top-level snarls without recursive propagation.
+    // Extends path-based queries to the overlapping or enclosing top-level snarls.
     fn extend_path_snarls_db(
         &mut self,
         graph: &mut GraphInterface<'_>,
-        query_pos: &FullPathName,
-        interval_start: &PathPosition,
-        interval_len: usize,
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Db(graph), None)?;
-        inserted += self.extract_partial_snarls(GraphReference::Db(graph), None)?;
-        inserted += Self::extract_enclosing_snarl_db(self, graph, query_pos, interval_start, interval_len)?;
+        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Db(graph), None)?;
         Ok(inserted)
     }
 
-    // Extends node-based queries to top-level snarls touched by the original seed nodes.
+    // Extends node-based queries to overlapping or enclosing top-level snarls.
     fn extend_node_snarls_db(
         &mut self,
         graph: &mut GraphInterface<'_>,
-        seed_nodes: &BTreeSet<usize>,
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Db(graph), None)?;
-        inserted += self.extract_partial_snarls(GraphReference::Db(graph), None)?;
-        inserted += self.extract_seed_overlapping_snarls_db(graph, seed_nodes)?;
+        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Db(graph), None)?;
         Ok(inserted)
-    }
-
-    /// Finds the chain boundary nodes of the top-level snarl that encloses the given path interval.
-    ///
-    /// Used by [`Self::extract_enclosing_snarl_db`] for GBZ-base databases, which do not have a
-    /// GBWT index in memory and cannot use backward walking.
-    /// For GBZ graphs, [`Self::extract_enclosing_snarl_gbz`] uses `GBWT::backward()` directly.
-    ///
-    /// # Arguments
-    ///
-    /// * `graph`: Graph for reading node records (DB variant only).
-    /// * `sample_seq_offset`: Sequence offset of the sampled GBWT position (from the path index).
-    /// * `sample_gbwt_pos`: GBWT position at `sample_seq_offset`.
-    /// * `interval_start`: Starting position of the interval on the reference path.
-    /// * `interval_len`: Length of the interval in bp (use 1 for point queries).
-    /// * `chains`: Always `None` for the DB case; chain links are read from `GBZRecord::next()`.
-    ///
-    /// Returns `Some((start_handle, end_handle))` if both boundary nodes are found, or `None`.
-    ///
-    /// The caller should try progressively earlier samples (by decreasing the query offset) until
-    /// boundaries are found, as the initial sample may itself be inside the enclosing snarl.
-    fn find_enclosing_snarl_boundaries(
-        graph: &mut GraphReference<'_, '_>,
-        sample_seq_offset: usize,
-        sample_gbwt_pos: Pos,
-        interval_start: &PathPosition,
-        interval_len: usize,
-        chains: Option<&Chains>,
-    ) -> Result<Option<(usize, usize)>, String> {
-        // ---- Part 1: Walk forward from the sample to the interval start ----
-        // Record the last chain boundary node seen before the interval start.
-        let start_boundary: Option<usize> = {
-            let mut last_boundary: Option<usize> = None;
-            let mut pos = sample_gbwt_pos;
-            let mut seq_offset = sample_seq_offset;
-            let target = interval_start.seq_offset();
-
-            loop {
-                let record = graph.gbz_record(pos.node)?;
-                let node_len = record.sequence_len();
-
-                // Stop when the current node's range reaches or passes the interval start.
-                // The interval start node is checked separately after the loop.
-                if seq_offset + node_len > target {
-                    break;
-                }
-
-                let is_boundary = if let Some(chains) = chains {
-                    chains.has_handle(pos.node)
-                } else {
-                    Self::db_handle_is_chain_boundary(graph, pos.node, Some(&record))?
-                };
-                if is_boundary {
-                    last_boundary = Some(pos.node);
-                }
-
-                seq_offset += node_len;
-                match record.to_gbwt_record().lf(pos.offset) {
-                    Some(next) => pos = next,
-                    None => break,
-                }
-            }
-
-            // If the interval start is itself a chain boundary, prefer it over the last one seen.
-            let is_boundary = if let Some(chains) = chains {
-                chains.has_handle(interval_start.handle())
-            } else {
-                Self::db_handle_is_chain_boundary(graph, interval_start.handle(), None)?
-            };
-            if is_boundary {
-                Some(interval_start.handle())
-            } else {
-                last_boundary
-            }
-        };
-
-        // ---- Part 2: Walk through the interval, then forward to find the end boundary ----
-        let end_boundary: Option<usize> = {
-            let mut pos = interval_start.gbwt_pos();
-            let mut remaining = interval_len;
-            let mut node_offset = interval_start.node_offset();
-
-            // Walk through the interval to reach its last node.
-            loop {
-                let record = graph.gbz_record(pos.node)?;
-                let dist_to_end = record.sequence_len() - node_offset;
-                if remaining <= dist_to_end {
-                    break; // `pos` is now the last node of the interval.
-                }
-                remaining -= dist_to_end;
-                node_offset = 0;
-                match record.to_gbwt_record().lf(pos.offset) {
-                    Some(next) => pos = next,
-                    None => return Ok(None),
-                }
-            }
-
-            // If the last node of the interval is itself a chain boundary, use it directly.
-            // Otherwise continue forward from the interval end to find the first chain boundary.
-            let is_boundary = if let Some(chains) = chains {
-                chains.has_handle(pos.node)
-            } else {
-                Self::db_handle_is_chain_boundary(graph, pos.node, None)?
-            };
-            if is_boundary {
-                Some(pos.node)
-            } else {
-                let mut found: Option<usize> = None;
-                loop {
-                    let record = graph.gbz_record(pos.node)?;
-                    match record.to_gbwt_record().lf(pos.offset) {
-                        Some(next) => {
-                            pos = next;
-                            let is_boundary = if let Some(chains) = chains {
-                                chains.has_handle(pos.node)
-                            } else {
-                                Self::db_handle_is_chain_boundary(graph, pos.node, None)?
-                            };
-                            if is_boundary {
-                                found = Some(pos.node);
-                                break;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-                found
-            }
-        };
-
-        match (start_boundary, end_boundary) {
-            (Some(start), Some(end)) => Ok(Some((start, end))),
-            _ => Ok(None),
-        }
     }
 }
 

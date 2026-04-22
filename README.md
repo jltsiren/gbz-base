@@ -170,18 +170,16 @@ Other queries can also be made snarl-aware:
 query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
 ```
 
-After extracting a subgraph, the query determines all top-level snarls that have their boundary nodes in the extracted subgraph.
+After extracting a subgraph, the query determines all top-level snarls that overlap the extracted subgraph.
+A top-level snarl overlaps the subgraph if the subgraph contains a snarl entry point and at least one successor of that entry point.
 Then it ensures that those snarls are fully in the subgraph.
 These snarls are based on the top-level chains provided or computed during GBZ-base construction.
 
 `--extend-snarls` handles two additional cases that `--snarls` does not:
 
-* **Partial overlap**: a top-level snarl has exactly one boundary node in the initial subgraph after the original extraction (query + context + fully covered snarls).
-  The subgraph is extended to fully include such snarls.
-* **Interval inside snarls**: for path and interval queries, the query interval starts and/or ends inside a top-level snarl, so one or both outer chain boundary nodes do not appear in the initial subgraph.
-  The path is walked backward from the interval start and forward from the interval end to find the nearest chain boundary on each side, and the subgraph is extended to include them. This covers both the case where the interval lies entirely within a single snarl and the case where its endpoints lie in different snarls.
-* **Node inside snarls**: for node-based queries, the original queried nodes or their context may touch a top-level snarl even if neither boundary node is initially present.
-  The touched snarl is still recovered, but the extension does not recurse into neighboring snarls.
+* **Boundary-only subgraphs** are not extended on their own. If the subgraph reaches a snarl boundary but does not contain any successor of the corresponding entry point, the subgraph ends just before that snarl.
+* **Subgraph contained in a snarl**: if the extracted subgraph has no visible chain links, GBZ-base does a greedy undirected traversal from the current subgraph until it reaches the first handle whose opposite orientation has a chain link. If that opposite handle is a snarl entry point, the enclosing snarl is extracted. Otherwise the traversal stops, because the subgraph was on a unary path between snarls.
+* **Node-based queries** with `--extend-snarls` are only supported for a single queried node, because extending multiple disconnected seed nodes is ambiguous.
 
 These extensions are applied once to the snarls touched by the original query.
 

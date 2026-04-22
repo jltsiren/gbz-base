@@ -747,23 +747,24 @@ fn partially_covered_snarls() {
 
     let a_first = (support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward));
     let a_second = (support::encode_node(14, Orientation::Forward), support::encode_node(17, Orientation::Forward));
-    let b_first = (support::encode_node(22, Orientation::Reverse), support::encode_node(23, Orientation::Forward));
-    let b_second = (support::encode_node(23, Orientation::Forward), support::encode_node(24, Orientation::Reverse));
+    let _b_first = (support::encode_node(22, Orientation::Reverse), support::encode_node(23, Orientation::Forward));
+    let _b_second = (support::encode_node(23, Orientation::Forward), support::encode_node(24, Orientation::Reverse));
 
     // (nodes_in_subgraph, expected_partial_snarls)
     let queries: Vec<(Vec<usize>, Vec<(usize, usize)>)> = vec![
         (vec![],            vec![]),
-        (vec![11],          vec![a_first]),           // 11→14: 14 not present
-        (vec![14],          vec![a_second]),          // 14→17: 17 not present
-        (vec![11, 14],      vec![a_second]),          // 11→14 fully covered; 14→17 partial
-        (vec![14, 17],      vec![]),                  // 14→17 fully covered
-        (vec![11, 12, 13],  vec![a_first]),           // interior nodes + 11; 14 still missing
+        (vec![11],          vec![]),                  // Boundary only; no successor in the subgraph.
+        (vec![14],          vec![]),                  // Boundary only; no successor in the subgraph.
+        (vec![11, 14],      vec![]),                  // Boundary nodes alone do not overlap the snarl.
+        (vec![14, 17],      vec![]),                  // Same for the second snarl.
+        (vec![11, 12, 13],  vec![a_first]),           // Entry point + interior nodes; successor boundary still missing.
         (vec![11, 14, 17],  vec![]),                  // both snarls fully covered
         (vec![12, 13],      vec![]),                  // interior nodes only, no chain links
-        (vec![22],          vec![b_first]),           // reverse-oriented boundary only
-        (vec![23],          vec![b_second]),          // forward boundary in mixed-orientation chain
-        (vec![22, 23],      vec![b_second]),          // first snarl covered; second still partial
+        (vec![22],          vec![]),                  // Boundary only; no successor in the subgraph.
+        (vec![23],          vec![]),                  // Boundary only; no successor in the subgraph.
+        (vec![22, 23],      vec![]),                  // No entry-point successor overlap.
         (vec![23, 24],      vec![]),                  // second snarl fully covered
+        (vec![11, 14, 16],  vec![a_second]),          // Second snarl overlaps through node 16.
     ];
 
     for (nodes, expected) in queries {
@@ -788,36 +789,81 @@ fn partially_covered_snarls() {
 }
 
 #[test]
-fn db_chain_boundary_check_uses_flipped_handle() {
-    let gbz_file = support::get_test_data("example.gbz");
-    let chains_file = utils::get_test_data("example.chains");
-    let db_file = serialize::temp_file_name("subgraph-db-boundary");
-    let result = GBZBase::create_from_files(&gbz_file, Some(&chains_file), &db_file);
-    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
-    let mut database = GBZBase::open(&db_file).unwrap();
-    let mut graph = GraphInterface::new(&mut database).unwrap();
+fn snarl_entry_successor_in_subgraph_checks_outdegree_and_indegree() {
+    let handle = support::encode_node(10, Orientation::Forward);
+    let next = support::encode_node(20, Orientation::Forward);
+    let successor = support::encode_node(11, Orientation::Forward);
+    let flipped_successor = support::flip_node(successor);
 
-    let handle = support::encode_node(24, Orientation::Reverse);
-    let record = graph.get_record(handle).unwrap().unwrap();
-    assert!(record.next().is_none(), "Test assumption failed: handle {} unexpectedly has a direct chain link", handle);
-    let mut graph_ref = GraphReference::Db(&mut graph);
-    let is_boundary = Subgraph::db_handle_is_chain_boundary(&mut graph_ref, handle, Some(&record)).unwrap();
-    assert!(is_boundary, "Flipped-handle boundary check failed for handle {}", handle);
+    let mut subgraph = Subgraph::new();
+    let start = unsafe {
+        GBZRecord::from_raw_parts(
+            handle,
+            vec![Pos::new(successor, 0)],
+            Vec::new(),
+            b"A".to_vec(),
+            Some(next),
+        )
+    };
+    let unary_predecessor = unsafe {
+        GBZRecord::from_raw_parts(
+            flipped_successor,
+            vec![Pos::new(support::encode_node(9, Orientation::Reverse), 0)],
+            Vec::new(),
+            b"T".to_vec(),
+            None,
+        )
+    };
+    subgraph.records.insert(handle, start.clone());
+    subgraph.records.insert(flipped_successor, unary_predecessor);
+    assert_eq!(
+        subgraph.snarl_entry_successor_in_subgraph(handle, &start, None),
+        None,
+        "A unary path with successor indegree 1 should not be treated as a snarl entry point"
+    );
 
-    drop(graph_ref);
-    drop(graph);
-    drop(database);
-    fs::remove_file(&db_file).unwrap();
+    let branching_start = unsafe {
+        GBZRecord::from_raw_parts(
+            handle,
+            vec![Pos::new(successor, 0), Pos::new(support::encode_node(12, Orientation::Forward), 0)],
+            Vec::new(),
+            b"A".to_vec(),
+            Some(next),
+        )
+    };
+    assert_eq!(
+        subgraph.snarl_entry_successor_in_subgraph(handle, &branching_start, None),
+        Some(next),
+        "Outdegree > 1 should make the handle a snarl entry point"
+    );
+
+    let indegree_two = unsafe {
+        GBZRecord::from_raw_parts(
+            flipped_successor,
+            vec![
+                Pos::new(support::encode_node(9, Orientation::Reverse), 0),
+                Pos::new(support::encode_node(8, Orientation::Reverse), 0),
+            ],
+            Vec::new(),
+            b"T".to_vec(),
+            None,
+        )
+    };
+    subgraph.records.insert(flipped_successor, indegree_two);
+    assert_eq!(
+        subgraph.snarl_entry_successor_in_subgraph(handle, &start, None),
+        Some(next),
+        "Outdegree 1 with successor indegree > 1 should make the handle a snarl entry point"
+    );
 }
 
 // Returns (queries, (expected_nodes, expected_path_count)) for --extend-snarls tests.
-// Three basic cases:
-//   1. Offset 1 (node 12, interior to snarl 11→14): neither boundary in the initial subgraph.
-//      The enclosing snarl is detected via backward/forward GBWT walking and extracted.
-//   2. Offset 0 (node 11, chain boundary): only one boundary node in the initial subgraph.
-//      The partial snarl is extended to include all interior nodes and the missing boundary.
-//   3. Interval 2..5 (nodes 14→15→17, spanning a full snarl): --extend-snarls gives the same
-//      result as --snarls, because the query already reaches the chain boundary nodes of 14→17.
+// The expectations follow the snarl-entry-point overlap rule:
+//   1. A subgraph overlaps a snarl only if it contains an entry point and at least one successor
+//      of that entry point.
+//   2. Boundary-only subgraphs do not extend into the snarl.
+//   3. If the subgraph contains no visible chain links, it may still be extended to the enclosing
+//      snarl by the greedy undirected traversal.
 fn extend_snarls_queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, usize)>) {
     let path_a = FullPathName::generic("A");
     let path_b = FullPathName::generic("B");
@@ -858,14 +904,14 @@ fn extend_snarls_queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize>, us
     ];
     let truth = vec![
         (vec![11, 12, 13, 14], 3),
+        (vec![11], 3),
+        (vec![14, 15, 16, 17], 3),
+        (vec![14], 3),
+        (vec![14, 15, 16, 17], 3),
         (vec![11, 12, 13, 14], 3),
-        (vec![14, 15, 16, 17], 3),
-        (vec![14, 15, 16, 17], 3),
-        (vec![14, 15, 16, 17], 3),
+        (vec![22], 3),
         (vec![11, 12, 13, 14, 15, 16, 17], 3),
         (vec![21, 22, 23], 4),
-        (vec![11, 12, 13, 14, 15, 16, 17], 3),
-        (vec![21], 4),
         (vec![24], 3),
     ];
     (queries, truth)
@@ -885,10 +931,10 @@ fn extend_snarls_node_queries_and_truth() -> (Vec<SubgraphQuery>, Vec<(Vec<usize
         SubgraphQuery::nodes([24]).with_context(0).with_extend_snarls(true).with_output(HaplotypeOutput::All),
     ];
     let truth = vec![
+        (vec![11], 3),
         (vec![11, 12, 13, 14], 3),
-        (vec![11, 12, 13, 14], 3),
-        (vec![21, 22, 23], 4),
-        (vec![23, 24, 25], 3),
+        (vec![22], 3),
+        (vec![24], 3),
     ];
     (queries, truth)
 }
@@ -956,6 +1002,16 @@ fn extend_snarls_from_gbz_nodes() {
 }
 
 #[test]
+fn extend_snarls_from_gbz_nodes_rejects_multiple_seeds() {
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let chains = internal::load_chains("example.chains");
+    let query = SubgraphQuery::nodes([11, 12]).with_context(0).with_extend_snarls(true).with_output(HaplotypeOutput::All);
+    let mut subgraph = Subgraph::new();
+    let result = subgraph.from_gbz(&graph, Some(&path_index), Some(&chains), &query);
+    assert_eq!(result, Err(String::from("--extend-snarls is only supported for node-based queries with a single node")));
+}
+
+#[test]
 fn extend_snarls_from_db_nodes() {
     let gbz_file = support::get_test_data("example.gbz");
     let gbz_graph: GBZ = serialize::load_from(&gbz_file).unwrap();
@@ -977,6 +1033,26 @@ fn extend_snarls_from_db_nodes() {
         let parent = graph.graph_name().unwrap();
         check_graph_name(&subgraph, true, &parent, &query.to_string());
     }
+
+    drop(graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
+}
+
+#[test]
+fn extend_snarls_from_db_nodes_rejects_multiple_seeds() {
+    let gbz_file = support::get_test_data("example.gbz");
+    let chains_file = utils::get_test_data("example.chains");
+    let db_file = serialize::temp_file_name("subgraph-extend-snarls-nodes-error");
+    let result = GBZBase::create_from_files(&gbz_file, Some(&chains_file), &db_file);
+    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut graph = GraphInterface::new(&mut database).unwrap();
+
+    let query = SubgraphQuery::nodes([11, 12]).with_context(0).with_extend_snarls(true).with_output(HaplotypeOutput::All);
+    let mut subgraph = Subgraph::new();
+    let result = subgraph.from_db(&mut graph, &query);
+    assert_eq!(result, Err(String::from("--extend-snarls is only supported for node-based queries with a single node")));
 
     drop(graph);
     drop(database);
@@ -1208,16 +1284,16 @@ fn covered_snarls() {
     // (nodes, snarls)
     let a_first = (support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward));
     let a_second = (support::encode_node(14, Orientation::Forward), support::encode_node(17, Orientation::Forward));
-    let b_first = (support::encode_node(22, Orientation::Reverse), support::encode_node(23, Orientation::Forward));
+    let _b_first = (support::encode_node(22, Orientation::Reverse), support::encode_node(23, Orientation::Forward));
     let b_second = (support::encode_node(23, Orientation::Forward), support::encode_node(24, Orientation::Reverse));
     let queries = vec![
         (vec![], vec![]),
-        (vec![11, 14], vec![a_first]),
-        (vec![11, 14, 17], vec![a_first, a_second]),
-        (vec![12, 13, 14], vec![]),
-        (vec![11, 14, 16], vec![a_first]),
+        (vec![11, 14], vec![]),
+        (vec![11, 14, 17], vec![]),
+        (vec![12, 13, 14], vec![a_first]),
+        (vec![11, 14, 16], vec![a_second]),
         (vec![21, 24], vec![]),
-        (vec![22, 23], vec![b_first]),
+        (vec![22, 23], vec![]),
         (vec![23, 24], vec![b_second]),
     ];
 
