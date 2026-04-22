@@ -1690,6 +1690,11 @@ impl<'a> GraphInterface<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(|x| x.to_string())
     }
 
+    /// Returns `true` if the database stores any top-level chain links.
+    pub fn has_chain_links(&mut self) -> Result<bool, String> {
+        Ok(get_numeric_value(&mut self.get_tag, GBZBase::KEY_CHAIN_LINKS)? > 0)
+    }
+
     fn row_to_gbz_path(row: &Row) -> rusqlite::Result<GBZPath> {
         let handle = row.get(0)?;
         let fw_start = Pos::new(row.get(1)?, row.get(2)?);

@@ -746,7 +746,7 @@ fn partially_covered_snarls() {
     let chains = internal::load_chains("example.chains");
 
     let a_first = (support::encode_node(11, Orientation::Forward), support::encode_node(14, Orientation::Forward));
-    let a_second = (support::encode_node(14, Orientation::Forward), support::encode_node(17, Orientation::Forward));
+    let _a_second = (support::encode_node(14, Orientation::Forward), support::encode_node(17, Orientation::Forward));
     let _b_first = (support::encode_node(22, Orientation::Reverse), support::encode_node(23, Orientation::Forward));
     let _b_second = (support::encode_node(23, Orientation::Forward), support::encode_node(24, Orientation::Reverse));
 
@@ -764,7 +764,7 @@ fn partially_covered_snarls() {
         (vec![23],          vec![]),                  // Boundary only; no successor in the subgraph.
         (vec![22, 23],      vec![]),                  // No entry-point successor overlap.
         (vec![23, 24],      vec![]),                  // second snarl fully covered
-        (vec![11, 14, 16],  vec![a_second]),          // Second snarl overlaps through node 16.
+        (vec![11, 14, 16],  vec![]),                  // Multiple components are rejected.
     ];
 
     for (nodes, expected) in queries {
@@ -786,6 +786,20 @@ fn partially_covered_snarls() {
             "Wrong partial snarls for {}: found {:?}, expected {:?}", name, partial, expected
         );
     }
+}
+
+#[test]
+fn partially_covered_snarls_requires_single_component() {
+    let graph = internal::load_gbz("example.gbz");
+    let chains = internal::load_chains("example.chains");
+
+    let mut subgraph = Subgraph::new();
+    for node_id in [11, 12, 13, 23, 24] {
+        subgraph.add_node_from_gbz(&graph, node_id).unwrap();
+    }
+
+    let partial = subgraph.partially_covered_snarls(Some(&chains));
+    assert!(partial.is_empty(), "Expected no partially covered snarls for a multi-component subgraph, found {:?}", partial);
 }
 
 #[test]
@@ -855,6 +869,19 @@ fn snarl_entry_successor_in_subgraph_checks_outdegree_and_indegree() {
         Some(next),
         "Outdegree 1 with successor indegree > 1 should make the handle a snarl entry point"
     );
+}
+
+#[test]
+fn enclosing_snarl_traversal_counts_collected_nodes() {
+    let graph = internal::load_gbz("example.gbz");
+    let chains = internal::load_chains("example.chains");
+
+    let mut subgraph = Subgraph::new();
+    subgraph.around_nodes(GraphReference::Gbz(&graph), &[12].into_iter().collect(), 0).unwrap();
+
+    let inserted = subgraph.extract_enclosing_snarl_by_traversal(GraphReference::Gbz(&graph), Some(&chains)).unwrap();
+    assert_eq!(inserted, 3, "Expected the traversal to count collected unary-path nodes as inserted");
+    assert!(subgraph.node_iter().eq([11, 12, 13, 14].into_iter()), "Traversal failed to recover the enclosing snarl");
 }
 
 // Returns (queries, (expected_nodes, expected_path_count)) for --extend-snarls tests.

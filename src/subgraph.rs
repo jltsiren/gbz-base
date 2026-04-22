@@ -1409,6 +1409,9 @@ impl Subgraph {
     /// By default, this uses the chain links stored in node records.
     /// A [`Chains`] object can be provided as an override (required for GBZ graphs).
     pub fn partially_covered_snarls(&self, chains: Option<&Chains>) -> BTreeSet<(usize, usize)> {
+        if self.weakly_connected_components() != 1 {
+            return BTreeSet::new();
+        }
         let mut snarls: BTreeSet<(usize, usize)> = BTreeSet::new();
         for (&handle, record) in self.records.iter() {
             let Some(next) = self.snarl_entry_successor_in_subgraph(handle, record, chains) else {
@@ -1525,7 +1528,7 @@ impl Subgraph {
             return Ok(chains.links() > 0);
         }
         match graph {
-            GraphReference::Db(db) => Ok(!db.chain_links()?.is_empty()),
+            GraphReference::Db(db) => db.has_chain_links(),
             GraphReference::Gbz(_) => Ok(false),
             GraphReference::None => Err(String::from("No graph reference provided")),
         }
@@ -1589,14 +1592,16 @@ impl Subgraph {
             let opposite_record = graph.gbz_record(opposite)?;
             if let Some(next) = Self::record_next(&opposite_record, chains) {
                 if Self::handle_is_snarl_entry_point(&mut graph, opposite, Some(&opposite_record), chains)? {
+                    let mut inserted = 0;
                     for node_id in collected {
                         if !self.has_node(node_id) {
                             self.add_node_internal(&mut graph, node_id)?;
+                            inserted += 1;
                         }
                     }
                     return match &mut graph {
-                        GraphReference::Gbz(gbz) => self.between_nodes(GraphReference::Gbz(gbz), opposite, next, None),
-                        GraphReference::Db(db) => self.between_nodes(GraphReference::Db(db), opposite, next, None),
+                        GraphReference::Gbz(gbz) => Ok(inserted + self.between_nodes(GraphReference::Gbz(gbz), opposite, next, None)?),
+                        GraphReference::Db(db) => Ok(inserted + self.between_nodes(GraphReference::Db(db), opposite, next, None)?),
                         GraphReference::None => Err(String::from("No graph reference provided")),
                     };
                 }
@@ -1630,7 +1635,9 @@ impl Subgraph {
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Gbz(graph), Some(chains))?;
-        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Gbz(graph), Some(chains))?;
+        if !self.has_visible_chain_link(Some(chains)) {
+            inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Gbz(graph), Some(chains))?;
+        }
         Ok(inserted)
     }
 
@@ -1642,7 +1649,9 @@ impl Subgraph {
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Gbz(graph), Some(chains))?;
-        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Gbz(graph), Some(chains))?;
+        if !self.has_visible_chain_link(Some(chains)) {
+            inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Gbz(graph), Some(chains))?;
+        }
         Ok(inserted)
     }
 
@@ -1653,7 +1662,9 @@ impl Subgraph {
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Db(graph), None)?;
-        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Db(graph), None)?;
+        if !self.has_visible_chain_link(None) {
+            inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Db(graph), None)?;
+        }
         Ok(inserted)
     }
 
@@ -1664,7 +1675,9 @@ impl Subgraph {
     ) -> Result<usize, String> {
         let mut inserted = 0;
         inserted += self.extract_snarls(GraphReference::Db(graph), None)?;
-        inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Db(graph), None)?;
+        if !self.has_visible_chain_link(None) {
+            inserted += self.extract_enclosing_snarl_by_traversal(GraphReference::Db(graph), None)?;
+        }
         Ok(inserted)
     }
 }
