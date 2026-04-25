@@ -59,7 +59,7 @@ fn check_header(database: &GBZBase, graph: &GBZ, chains: &Chains) {
     assert_eq!(database.contigs(), metadata.contigs(), "Wrong number of contigs");
 }
 
-fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
+fn check_tags(interface: &mut GraphInterface, graph: &GBZ, chains: &Chains) {
     let gbwt: &GBWT = graph.as_ref();
 
     // GBWT tags.
@@ -87,6 +87,16 @@ fn check_tags(interface: &mut GraphInterface, graph: &GBZ) {
     assert!(extracted_tags.is_ok(), "Failed to get GBZ tags: {}", extracted_tags.unwrap_err());
     let extracted_tags = extracted_tags.unwrap();
     assert_eq!(extracted_tags, *graph.tags(), "Wrong GBZ tags from the database");
+
+    // Chain links.
+    let have_chain_links = interface.has_chain_links();
+    assert!(have_chain_links.is_ok(), "Failed to check for chain links: {}", have_chain_links.unwrap_err());
+    let have_chain_links = have_chain_links.unwrap();
+    if chains.is_empty() {
+        assert!(!have_chain_links, "Database has chain links, but the graph has no chains");
+    } else {
+        assert!(have_chain_links, "Database does not have chain links, but the graph has chains");
+    }
 }
 
 fn check_nodes(interface: &mut GraphInterface, graph: &GBZ, chains: &Chains) {
@@ -198,7 +208,7 @@ fn create_from_graph() {
 
     // Check header, tags, and nodes.
     check_header(&database, &graph, &chains);
-    check_tags(&mut interface, &graph);
+    check_tags(&mut interface, &graph, &chains);
     check_nodes(&mut interface, &graph, &chains);
 
     drop(interface);
@@ -221,7 +231,7 @@ fn create_from_file() {
 
     // Check header, tags, and nodes.
     check_header(&database, &graph, &chains);
-    check_tags(&mut interface, &graph);
+    check_tags(&mut interface, &graph, &chains);
     check_nodes(&mut interface, &graph, &chains);
 
     drop(interface);
@@ -244,7 +254,7 @@ fn large_test_case() {
 
     // Check header, tags, and nodes.
     check_header(&database, &graph, &chains);
-    check_tags(&mut interface, &graph);
+    check_tags(&mut interface, &graph, &chains);
     check_nodes(&mut interface, &graph, &chains);
 
     drop(interface);
