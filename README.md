@@ -170,9 +170,24 @@ Other queries can also be made snarl-aware:
 query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
 ```
 
-After extracting a subgraph, the query determines all top-level snarls that have their boundary nodes in the extracted subgraph.
+After extracting a subgraph, the query determines all top-level snarls that overlap the extracted subgraph.
+A top-level snarl overlaps the subgraph if the subgraph contains a snarl entry point and at least one successor of that entry point.
 Then it ensures that those snarls are fully in the subgraph.
 These snarls are based on the top-level chains provided or computed during GBZ-base construction.
+
+`--extend-snarls` handles two additional cases that `--snarls` does not:
+
+* **Boundary-only subgraphs** are not extended on their own. If the subgraph reaches a snarl boundary but does not contain any successor of the corresponding entry point, the subgraph ends just before that snarl.
+* **Subgraph contained in a snarl**: if the extracted subgraph has no visible chain links, GBZ-base does a greedy undirected traversal from the current subgraph until it reaches the first handle whose opposite orientation has a chain link. If that opposite handle is a snarl entry point, the enclosing snarl is extracted. Otherwise the traversal stops, because the subgraph was on a unary path between snarls.
+* **Node-based queries** with `--extend-snarls` are only supported for a single queried node, because extending multiple disconnected seed nodes is ambiguous.
+
+These extensions are applied once to the snarls touched by the original query.
+
+```sh
+query --contig chrM --interval 3000..4000 --extend-snarls graph.db > out.gfa
+```
+
+`--extend-snarls` implies `--snarls` and should be used with care, as some snarls can be very large.
 
 ### Extracting alignments
 

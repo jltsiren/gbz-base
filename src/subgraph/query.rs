@@ -55,6 +55,7 @@ pub(super) enum QueryType {
 /// let query = SubgraphQuery::path_offset(&path_name, 123);
 /// assert_eq!(query.context(), SubgraphQuery::DEFAULT_CONTEXT);
 /// assert_eq!(query.snarls(), SubgraphQuery::DEFAULT_SNARLS);
+/// assert_eq!(query.extend_snarls(), SubgraphQuery::DEFAULT_EXTEND_SNARLS);
 /// assert_eq!(query.output(), SubgraphQuery::DEFAULT_OUTPUT);
 ///
 /// let query = query.with_context(1000);
@@ -62,6 +63,9 @@ pub(super) enum QueryType {
 ///
 /// let query = query.with_snarls(true);
 /// assert!(query.snarls());
+///
+/// let query = query.with_extend_snarls(true);
+/// assert!(query.extend_snarls());
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
@@ -73,6 +77,9 @@ pub struct SubgraphQuery {
     // Also extract nodes in covered top-level snarls.
     snarls: bool,
 
+    // Also extend the subgraph to cover overlapping or enclosing top-level snarls.
+    extend_snarls: bool,
+
     // How to output the haplotypes.
     output: HaplotypeOutput,
 }
@@ -83,6 +90,9 @@ impl SubgraphQuery {
 
     /// Default value for the snarl extraction flag.
     pub const DEFAULT_SNARLS: bool = false;
+
+    /// Default value for the partial snarl extension flag.
+    pub const DEFAULT_EXTEND_SNARLS: bool = false;
 
     /// Default value for the haplotype output option.
     pub const DEFAULT_OUTPUT: HaplotypeOutput = HaplotypeOutput::All;
@@ -99,6 +109,7 @@ impl SubgraphQuery {
             query_type: QueryType::PathOffset(path_name),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -115,6 +126,7 @@ impl SubgraphQuery {
             query_type: QueryType::PathInterval(path_name, interval.len()),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -125,6 +137,7 @@ impl SubgraphQuery {
             query_type: QueryType::Nodes(nodes.into_iter().collect()),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -139,6 +152,7 @@ impl SubgraphQuery {
             query_type: QueryType::Between((start, end), limit),
             context: Self::DEFAULT_CONTEXT,
             snarls: Self::DEFAULT_SNARLS,
+            extend_snarls: Self::DEFAULT_EXTEND_SNARLS,
             output: Self::DEFAULT_OUTPUT,
         }
     }
@@ -155,6 +169,30 @@ impl SubgraphQuery {
     /// See [`Self::DEFAULT_SNARLS`] for the default value.
     pub fn with_snarls(self, snarls: bool) -> Self {
         SubgraphQuery { snarls, ..self }
+    }
+
+    /// Returns an updated query with the given snarl extension flag.
+    ///
+    /// When `true`, the subgraph is extended to handle three additional cases:
+    ///
+    /// * **Boundary-only subgraph**: reaching a snarl boundary alone does not trigger extension.
+    ///   If the subgraph does not contain any successor of the corresponding snarl entry point,
+    ///   the subgraph ends just before that snarl.
+    /// * **Subgraph contained in a snarl**: if the extracted subgraph contains no visible chain
+    ///   links, GBZ-base performs a greedy undirected traversal until it finds the first handle
+    ///   whose opposite orientation has a chain link. If that opposite handle is a snarl entry
+    ///   point, the enclosing snarl is extracted. Otherwise the traversal stops on a unary path.
+    /// * **Node-based queries**: `--extend-snarls` is only supported for node-based queries with
+    ///   a single queried node, because extending multiple disconnected seed nodes is ambiguous.
+    ///
+    /// These extensions are applied once after extracting fully covered snarls.
+    ///
+    /// This implies snarl extraction, so [`Self::snarls`] does not need to be set separately.
+    /// Note that some snarls can be very large; use this option with care.
+    ///
+    /// See [`Self::DEFAULT_EXTEND_SNARLS`] for the default value.
+    pub fn with_extend_snarls(self, extend_snarls: bool) -> Self {
+        SubgraphQuery { extend_snarls, ..self }
     }
 
     /// Returns an updated query with the given haplotype output option.
@@ -180,11 +218,27 @@ impl SubgraphQuery {
         self.context
     }
 
-    /// Returns `true` if the query also extracts nodes coverered top-level snarls.
+    /// Returns `true` if the query also extracts nodes in covered top-level snarls.
     ///
-    /// A snarl is covered, if both of its boundary nodes are contained in the query interval or in the context.
+    /// A snarl is covered if both of its boundary nodes are contained in the query interval or in the context.
     pub fn snarls(&self) -> bool {
         self.snarls
+    }
+
+    /// Returns `true` if the query extends the subgraph to cover overlapping or enclosing snarls.
+    ///
+    /// The extension changes the default snarl behavior in three ways:
+    ///
+    /// * **Boundary-only subgraph**: a boundary node alone is not enough. The subgraph must contain
+    ///   a snarl entry point and at least one successor of that entry point to overlap the snarl.
+    /// * **Subgraph contained in a snarl**: if no visible chain links are present, GBZ-base uses
+    ///   a greedy undirected traversal to find the first enclosing snarl entry point and stops on
+    ///   unary paths between snarls.
+    /// * **Node-based queries**: only single-node seed queries are supported.
+    ///
+    /// This implies [`Self::snarls`], so fully covered snarls are always extracted first.
+    pub fn extend_snarls(&self) -> bool {
+        self.extend_snarls
     }
 
     /// Returns the output format for the query.
@@ -195,7 +249,9 @@ impl SubgraphQuery {
 
 impl Display for SubgraphQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let context_str = if self.snarls() {
+        let context_str = if self.extend_snarls() {
+            format!("{} with extended snarls", self.context)
+        } else if self.snarls() {
             format!("{} with snarls", self.context)
         } else {
             format!("{}", self.context)
