@@ -1,5 +1,11 @@
 # GBZ-base releases
 
+## Current version
+
+* Improved snarl-aware queries:
+  * `SnarlOutput::Contained`: Extend the subgraph with snarls that have both boundary nodes in the subgraph (existing behavior).
+  * `SnarlOutput::Overlapping`: Extend the subgraph with all overlapping snarls (requires a connected subgraph).
+
 ## GBZ-base 0.4.0 (2026-04-17)
 
 * Database versions: GBZ-base v0.4.0, GAF-base version 3

@@ -1,5 +1,5 @@
 use gbz_base::{GBZBase, GraphInterface, GraphReference, PathIndex};
-use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput};
+use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput, SnarlOutput};
 use gbz_base::{GAFBase, ReadSet, AlignmentOutput};
 use gbz_base::{formats, utils};
 
@@ -158,8 +158,8 @@ impl Config {
         opts.optopt("", "limit", "safety limit for the number of nodes in -b", "INT");
         let context_desc = format!("context length in bp (not for -b; default: {})", Self::DEFAULT_CONTEXT);
         opts.optopt("", "context", &context_desc, "INT");
-        opts.optflag("", "snarls", "include nodes in covered top-level snarls");
-        opts.optflag("", "extend-snarls", "also extend subgraph to recover overlapping or enclosing top-level snarls (implies --snarls)");
+        opts.optflag("", "snarls", "extend subgraph to include contained top-level snarls");
+        opts.optflag("", "extend-snarls", "extend subgraph to include overlapping top-level snarls");
         opts.optopt("", "chains", "top-level chains file (for --snarls/--extend-snarls with a GBZ graph)", "FILE");
         opts.optflag("", "distinct", "output distinct haplotypes with weights");
         opts.optflag("", "reference-only", "output the reference but no other haplotypes");
@@ -292,8 +292,12 @@ impl Config {
         } else {
             None
         };
-        let snarls = matches.opt_present("snarls");
-        let extend_snarls = matches.opt_present("extend-snarls");
+        let snarls = match (matches.opt_present("snarls"), matches.opt_present("extend-snarls")) {
+            (true, true) => SnarlOutput::Overlapping,
+            (true, false) => SnarlOutput::Contained,
+            (false, true) => SnarlOutput::Overlapping,
+            (false, false) => SnarlOutput::None,
+        };
         let mut output = HaplotypeOutput::All;
         if matches.opt_present("distinct") {
             output = HaplotypeOutput::Distinct;
@@ -327,7 +331,7 @@ impl Config {
             SubgraphQuery::nodes(nodes)
         };
 
-        Ok(query.with_context(context).with_snarls(snarls).with_extend_snarls(extend_snarls).with_output(output))
+        Ok(query.with_context(context).with_snarls(snarls).with_output(output))
     }
 }
 

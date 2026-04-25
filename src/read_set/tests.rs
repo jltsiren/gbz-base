@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::{Subgraph, SubgraphQuery, HaplotypeOutput};
+use crate::{Subgraph, SubgraphQuery, HaplotypeOutput, SnarlOutput};
 use crate::GAFBaseParams;
 use crate::internal;
 
@@ -8,9 +8,9 @@ use crate::internal;
 
 fn gaf_base_subgraph_queries() -> Vec<(SubgraphQuery, String)> {
     vec![
-        (SubgraphQuery::nodes(vec![]).with_context(100).with_snarls(false).with_output(HaplotypeOutput::All), String::from("empty")),
-        (SubgraphQuery::nodes(vec![1000]).with_context(100).with_snarls(false).with_output(HaplotypeOutput::All), String::from("single component")),
-        (SubgraphQuery::nodes(vec![500, 1500]).with_context(100).with_snarls(false).with_output(HaplotypeOutput::All), String::from("two components")),
+        (SubgraphQuery::nodes(vec![]).with_context(100).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::All), String::from("empty")),
+        (SubgraphQuery::nodes(vec![1000]).with_context(100).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::All), String::from("single component")),
+        (SubgraphQuery::nodes(vec![500, 1500]).with_context(100).with_snarls(SnarlOutput::None).with_output(HaplotypeOutput::All), String::from("two components")),
     ]
 }
 

@@ -1556,7 +1556,6 @@ pub struct GraphInterface<'a> {
     get_tag: Statement<'a>,
     get_tags: Statement<'a>,
     get_record: Statement<'a>,
-    get_chain_links: Statement<'a>,
     get_path: Statement<'a>,
     find_path: Statement<'a>,
     paths_for_sample: Statement<'a>,
@@ -1578,10 +1577,6 @@ impl<'a> GraphInterface<'a> {
 
         let get_record = database.connection.prepare(
             "SELECT edges, bwt, sequence, next FROM Nodes WHERE handle = ?1"
-        ).map_err(|x| x.to_string())?;
-
-        let get_chain_links = database.connection.prepare(
-            "SELECT handle, next FROM Nodes WHERE next IS NOT NULL ORDER BY handle"
         ).map_err(|x| x.to_string())?;
 
         let get_path = database.connection.prepare(
@@ -1608,7 +1603,7 @@ impl<'a> GraphInterface<'a> {
 
         Ok(GraphInterface {
             get_tag, get_tags,
-            get_record, get_chain_links,
+            get_record,
             get_path, find_path, paths_for_sample,
             indexed_position,
         })
@@ -1679,15 +1674,6 @@ impl<'a> GraphInterface<'a> {
                 Ok(GBZRecord { handle, edges, bwt, sequence, next })
             }
         ).optional().map_err(|x| x.to_string())
-    }
-
-    /// Returns the stored top-level chain links, ordered by source handle.
-    pub fn chain_links(&mut self) -> Result<Vec<(usize, usize)>, String> {
-        let rows = self.get_chain_links.query_map(
-            (),
-            |row| Ok((row.get(0)?, row.get(1)?))
-        ).map_err(|x| x.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|x| x.to_string())
     }
 
     /// Returns `true` if the database stores any top-level chain links.

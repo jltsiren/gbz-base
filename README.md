@@ -170,24 +170,21 @@ Other queries can also be made snarl-aware:
 query --contig chrM --interval 3000..4000 --snarls graph.db > out.gfa
 ```
 
-After extracting a subgraph, the query determines all top-level snarls that overlap the extracted subgraph.
-A top-level snarl overlaps the subgraph if the subgraph contains a snarl entry point and at least one successor of that entry point.
-Then it ensures that those snarls are fully in the subgraph.
+After extracting a subgraph, the query determines all top-level snarls that are contained in the extracted subgraph.
+A top-level snarl is contained in a subgraph if both of its boundary nodes are in the subgraph.
 These snarls are based on the top-level chains provided or computed during GBZ-base construction.
 
-`--extend-snarls` handles two additional cases that `--snarls` does not:
-
-* **Boundary-only subgraphs** are not extended on their own. If the subgraph reaches a snarl boundary but does not contain any successor of the corresponding entry point, the subgraph ends just before that snarl.
-* **Subgraph contained in a snarl**: if the extracted subgraph has no visible chain links, GBZ-base does a greedy undirected traversal from the current subgraph until it reaches the first handle whose opposite orientation has a chain link. If that opposite handle is a snarl entry point, the enclosing snarl is extracted. Otherwise the traversal stops, because the subgraph was on a unary path between snarls.
-* **Node-based queries** with `--extend-snarls` are only supported for a single queried node, because extending multiple disconnected seed nodes is ambiguous.
-
-These extensions are applied once to the snarls touched by the original query.
+We can also extend the subgraph with all overlapping snarls:
 
 ```sh
 query --contig chrM --interval 3000..4000 --extend-snarls graph.db > out.gfa
 ```
 
-`--extend-snarls` implies `--snarls` and should be used with care, as some snarls can be very large.
+In this case, we also include partially overlapping snarls.
+A snarl is partially overlapping with a subgraph if a boundary node and one of its successors in the snarl are in the subgraph.
+If there are no chain links in the subgraph, the query instead tries to find a snarl that contains the entire subgraph.
+Option `--extend-snarls` requires that the subgraph is weakly connected.
+It does not work with node-based queries with multiple nodes.
 
 ### Extracting alignments
 
