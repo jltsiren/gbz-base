@@ -635,5 +635,48 @@ fn gaf_base_ref_free_db() {
     let _ = std::fs::remove_file(&gbz_base_file);
 }
 
+#[test]
+fn gbz_base_uri_and_pragma() {
+    let gbz_file = gbz::support::get_test_data("example.gbz");
+    let db_file = internal::create_gbz_base_from_files(&gbz_file, None);
+
+    let uri = format!("file:{}?mode=ro", db_file.display());
+    let database = GBZBase::open(std::path::Path::new(&uri)).expect("Failed to open GBZBase with file URI");
+    assert!(
+        database.execute_pragma("PRAGMA mmap_size = 67108864; PRAGMA cache_size = -8192;").is_ok(),
+        "Failed to execute pragma on GBZBase"
+    );
+
+    let cache_size: i64 = database
+        .connection
+        .query_row("PRAGMA cache_size;", [], |row| row.get(0))
+        .expect("Failed to query PRAGMA cache_size");
+    assert_eq!(cache_size, -8192, "PRAGMA cache_size did not take effect");
+
+    let mmap_size: i64 = database
+        .connection
+        .query_row("PRAGMA mmap_size;", [], |row| row.get(0))
+        .expect("Failed to query PRAGMA mmap_size");
+    assert_eq!(mmap_size, 67108864, "PRAGMA mmap_size did not take effect");
+
+    drop(database);
+    let _ = std::fs::remove_file(&db_file);
+
+    let gaf_db_file = internal::create_gaf_base("empty.gaf", "empty.gbwt");
+    let gaf_uri = format!("file:{}?mode=ro", gaf_db_file.display());
+    let gaf_db = GAFBase::open(std::path::Path::new(&gaf_uri)).expect("Failed to open GAFBase with file URI");
+    assert!(
+        gaf_db.execute_pragma("PRAGMA mmap_size = 67108864; PRAGMA cache_size = -8192;").is_ok(),
+        "Failed to execute pragma on GAFBase"
+    );
+    let gaf_cache_size: i64 = gaf_db
+        .connection
+        .query_row("PRAGMA cache_size;", [], |row| row.get(0))
+        .expect("Failed to query PRAGMA cache_size on GAFBase");
+    assert_eq!(gaf_cache_size, -8192, "PRAGMA cache_size did not take effect on GAFBase");
+    drop(gaf_db);
+    let _ = std::fs::remove_file(&gaf_db_file);
+}
+
 //-----------------------------------------------------------------------------
 

@@ -1251,9 +1251,11 @@ impl Subgraph {
         }
 
         // Mark the positions that have predecessors in the subgraph.
+        let mut targets: Vec<Pos> = Vec::new();
         for handle in keys.iter() {
-            let decompressed = successors.get(handle).unwrap().clone();
-            for (pos, _) in decompressed.iter() {
+            targets.clear();
+            targets.extend(successors.get(handle).unwrap().iter().map(|(pos, _)| *pos));
+            for pos in targets.iter() {
                 if let Some(v) = successors.get_mut(&pos.node) {
                     v[pos.offset].1 = true;
                 }
