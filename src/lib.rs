@@ -78,4 +78,4 @@ pub use error::{Error, ErrorKind, Result};
 pub use path_index::PathIndex;
 pub use read_set::{ReadSet, AlignmentOutput};
 pub use subgraph::{CigarOp, HaplotypeWalk, Subgraph};
-pub use subgraph::query::{SubgraphQuery, HaplotypeOutput, SnarlOutput};
+pub use subgraph::query::{SubgraphQuery, DistanceMode, HaplotypeOutput, SnarlOutput};

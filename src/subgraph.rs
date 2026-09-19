@@ -9,7 +9,7 @@ use crate::{GBZRecord, GBZPath};
 use crate::{Error, Result};
 use crate::{GraphInterface, GraphReference};
 use crate::PathIndex;
-use crate::{SubgraphQuery, HaplotypeOutput, SnarlOutput};
+use crate::{SubgraphQuery, DistanceMode, HaplotypeOutput, SnarlOutput};
 use crate::subgraph::query::QueryType;
 use crate::formats::{self, WalkMetadata, JSONValue};
 
@@ -136,6 +136,9 @@ pub struct Subgraph {
 
     // Safety limit for the number of nodes in the subgraph.
     limit: Option<usize>,
+
+    // Distance calculation heuristic for context extraction.
+    distance_mode: DistanceMode,
 
     // Paths in the subgraph.
     paths: Vec<PathInfo>,
@@ -270,6 +273,19 @@ impl Subgraph {
     /// The return value will then be [`ErrorKind::LimitExceeded`](crate::ErrorKind::LimitExceeded).
     pub fn set_limit(&mut self, limit: Option<usize>) {
         self.limit = limit;
+    }
+
+    /// Sets the distance calculation heuristic used for context extraction.
+    ///
+    /// This affects [`Self::around_position`], [`Self::around_interval`], and [`Self::around_nodes`].
+    /// [`Self::from_gbz`] and [`Self::from_db`] set this from the query.
+    pub fn set_distance_mode(&mut self, distance_mode: DistanceMode) {
+        self.distance_mode = distance_mode;
+    }
+
+    /// Returns the distance calculation heuristic used for context extraction.
+    pub fn distance_mode(&self) -> DistanceMode {
+        self.distance_mode
     }
 
     /// Returns the path position for the haplotype offset represented by the query position.
@@ -491,6 +507,7 @@ impl Subgraph {
     ///
     /// Reuses existing records when possible.
     /// Removes node records outside the context as well as all path information.
+    /// Uses the distance calculation heuristic set with [`Self::set_distance_mode`].
     /// Returns the number of inserted and removed nodes.
     /// See [`Subgraph`] for an example.
     ///
@@ -532,6 +549,7 @@ impl Subgraph {
     ///
     /// Reuses existing records when possible.
     /// Removes node records outside the context as well as all path information.
+    /// Uses the distance calculation heuristic set with [`Self::set_distance_mode`].
     /// Returns the number of inserted and removed nodes.
     /// See [`Self::path_pos_from_gbz`] for an example.
     ///
@@ -604,6 +622,7 @@ impl Subgraph {
     ///
     /// Reuses existing records when possible.
     /// Removes node records outside the context as well as all path information.
+    /// Uses the distance calculation heuristic set with [`Self::set_distance_mode`].
     /// Returns the number of inserted and removed nodes.
     ///
     /// # Arguments
@@ -683,8 +702,27 @@ impl Subgraph {
         let mut inserted = 0;
         let mut graph = graph;
 
-        while !active.is_empty() {
-            let (distance, node_side) = active.pop().unwrap().0;
+        // In `DistanceMode::Node`, visiting a node fixes the distances to both of its sides.
+        // The initial nodes are in the subgraph by definition and `active` contains the exact
+        // distances to both of their sides, so we visit all of them before starting the traversal.
+        if self.distance_mode == DistanceMode::Node {
+            let mut initial: Vec<(usize, (usize, NodeSide))> = Vec::with_capacity(active.len());
+            while let Some(Reverse((distance, node_side))) = active.pop() {
+                if visited.insert(node_side) {
+                    to_remove.remove(&node_side.0);
+                    if !self.has_node(node_side.0) {
+                        self.add_node_internal(&mut graph, node_side.0)?;
+                        inserted += 1;
+                    }
+                    initial.push((distance, node_side));
+                }
+            }
+            for (distance, node_side) in initial {
+                self.push_neighbors(&mut active, &visited, node_side, distance, context);
+            }
+        }
+
+        while let Some(Reverse((distance, node_side))) = active.pop() {
             if visited.contains(&node_side) {
                 continue;
             }
@@ -697,28 +735,24 @@ impl Subgraph {
 
             // We can reach the other side by traversing the node.
             let other_side = (node_side.0, node_side.1.flip());
-            if !visited.contains(&other_side) {
-                let handle = support::encode_node(node_side.0, support::entry_orientation(node_side.1));
-                let record = self.record(handle).unwrap();
-                let next_distance = distance + record.sequence_len() - 1;
-                if next_distance <= context {
-                    active.push(Reverse((next_distance, other_side)));
-                }
+            let handle = support::encode_node(node_side.0, support::entry_orientation(node_side.1));
+            let other_distance = distance + self.record(handle).unwrap().sequence_len() - 1;
+            match self.distance_mode {
+                DistanceMode::Side => {
+                    // There may still be a shorter route to the other side.
+                    if !visited.contains(&other_side) && other_distance <= context {
+                        active.push(Reverse((other_distance, other_side)));
+                    }
+                },
+                DistanceMode::Node => {
+                    // Visiting the node fixes the distance to the other side.
+                    visited.insert(other_side);
+                    self.push_neighbors(&mut active, &visited, other_side, other_distance, context);
+                },
             }
 
             // The predecessors of this node side are 1 bp away.
-            let handle = support::encode_node(node_side.0, support::exit_orientation(node_side.1));
-            let record = self.record(handle).unwrap();
-            let next_distance = distance + 1;
-            if next_distance <= context {
-                for successor in record.successors() {
-                    let node_id = support::node_id(successor);
-                    let side = support::entry_side(support::node_orientation(successor));
-                    if !visited.contains(&(node_id, side)) {
-                        active.push(Reverse((next_distance, (node_id, side))));
-                    }
-                }
-            }
+            self.push_neighbors(&mut active, &visited, node_side, distance, context);
         }
 
         let removed = to_remove.len();
@@ -726,6 +760,32 @@ impl Subgraph {
             self.remove_node_internal(node_id);
         }
         Ok((inserted, removed))
+    }
+
+    // Pushes the unvisited neighbors of the given node side, which are 1 bp away.
+    //
+    // Assumes that the node is already in the subgraph.
+    fn push_neighbors(
+        &self,
+        active: &mut BinaryHeap<Reverse<(usize, (usize, NodeSide))>>,
+        visited: &BTreeSet<(usize, NodeSide)>,
+        node_side: (usize, NodeSide),
+        distance: usize,
+        context: usize
+    ) {
+        let next_distance = distance + 1;
+        if next_distance > context {
+            return;
+        }
+        let handle = support::encode_node(node_side.0, support::exit_orientation(node_side.1));
+        let record = self.record(handle).unwrap();
+        for successor in record.successors() {
+            let node_id = support::node_id(successor);
+            let side = support::entry_side(support::node_orientation(successor));
+            if !visited.contains(&(node_id, side)) {
+                active.push(Reverse((next_distance, (node_id, side))));
+            }
+        }
     }
 
     /// Inserts all nodes between the given two handles into the subgraph.
@@ -941,6 +1001,7 @@ impl Subgraph {
             return Err(Error::invalid_query("Top-level chains are required for extracting snarls"));
         }
         self.set_limit(query.limit());
+        self.set_distance_mode(query.distance_mode());
 
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
@@ -1046,6 +1107,7 @@ impl Subgraph {
     /// ```
     pub fn from_db<'reference, 'graph>(&mut self, graph: &'reference mut GraphInterface<'graph>, query: &SubgraphQuery) -> Result<()> {
         self.set_limit(query.limit());
+        self.set_distance_mode(query.distance_mode());
 
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
