@@ -1676,5 +1676,163 @@ fn align_to_ref_special_cases() {
     }
 }
 
+// Node lengths for the synthetic `unweighted_alignment` tests: handle `h` has length `h % 10`,
+// except handles `>= 100`, which have length `h - 100`.
+fn synthetic_len(handle: usize) -> usize {
+    if handle >= 100 { handle - 100 } else { handle % 10 }
+}
+
+fn unweighted_cigar(path: &[usize], ref_path: &[usize]) -> String {
+    CigarOp::cigar_string(&Subgraph::unweighted_alignment(path, ref_path, synthetic_len))
+}
+
+#[test]
+fn unweighted_alignment() {
+    // Identical paths are a single match.
+    assert_eq!(unweighted_cigar(&[2, 3, 4], &[2, 3, 4]), "9M", "Wrong CIGAR for identical paths");
+
+    // A short diverging part of equal length (1..5 bp) is a mismatch.
+    assert_eq!(unweighted_cigar(&[1, 11, 1], &[1, 21, 1]), "3M", "Wrong CIGAR for a 1 bp mismatch");
+    assert_eq!(unweighted_cigar(&[1, 104, 1], &[1, 4, 1]), "6M", "Wrong CIGAR for a 4 bp mismatch");
+
+    // An equal-length diverging part of 5 bp or more is an insertion + deletion.
+    assert_eq!(unweighted_cigar(&[1, 5, 1], &[1, 15, 1]), "1M5I5D1M", "Wrong CIGAR for a 5 bp divergence");
+
+    // Different lengths are always insertion + deletion, and empty sides are omitted.
+    assert_eq!(unweighted_cigar(&[1, 2, 1], &[1, 13, 1]), "1M2I3D1M", "Wrong CIGAR for unequal lengths");
+    assert_eq!(unweighted_cigar(&[1, 2, 1], &[1, 1]), "1M2I1M", "Wrong CIGAR for an insertion");
+    assert_eq!(unweighted_cigar(&[1, 1], &[1, 3, 1]), "1M3D1M", "Wrong CIGAR for a deletion");
+
+    // Diverging ends and empty paths.
+    assert_eq!(unweighted_cigar(&[2, 1], &[3, 1]), "2I3D1M", "Wrong CIGAR for a diverging start");
+    assert_eq!(unweighted_cigar(&[], &[3]), "3D", "Wrong CIGAR for an empty path");
+    assert_eq!(unweighted_cigar(&[3], &[]), "3I", "Wrong CIGAR for an empty reference");
+    assert!(unweighted_cigar(&[], &[]).is_empty(), "Non-empty CIGAR for empty paths");
+}
+
+#[test]
+fn unweighted_alignment_tie_breaking() {
+    // Both [1, 2, 4] and [1, 3, 4] are longest common subsequences. As in C++, the traceback
+    // skips a reference node on ties, so it keeps node 3 and aligns node 2 as indels.
+    assert_eq!(unweighted_cigar(&[1, 2, 3, 4], &[1, 3, 2, 4]), "1M2I3M2D4M", "Wrong tie-breaking");
+
+    // Two short shared nodes beat one long shared node, unlike with `AlignmentMode::Weighted`.
+    assert_eq!(unweighted_cigar(&[1, 150, 2, 3], &[2, 3, 150]), "51I5M50D", "Wrong CIGAR for unweighted LCS");
+}
+
+// Queries on `micb-kir3dl1.gbz` and the CIGAR strings of the non-reference haplotypes
+// for `AlignmentMode::Weighted` and `AlignmentMode::Unweighted`.
+//
+// The truth for `AlignmentMode::Unweighted` is the output of the C++ `subgraph_query` tool
+// from GBWTGraph (`--sample GRCh38 --contig chr6 --offset N --context 100 --distinct`),
+// where `N` is relative to the start of the reference path fragment.
+fn alignment_mode_queries_and_cigars() -> Vec<(SubgraphQuery, Vec<&'static str>, Vec<&'static str>)> {
+    let path_name = FullPathName::reference("GRCh38", "chr6");
+    let fragment_start = 31498140;
+    let query = |offset: usize| {
+        SubgraphQuery::path_offset(&path_name, fragment_start + offset)
+            .with_context(100)
+            .with_distance_mode(DistanceMode::Node)
+            .with_haplotypes(HaplotypeOutput::Distinct)
+    };
+    vec![
+        (
+            query(550),
+            vec!["59M24I207D", "51M174I215M", "266M", "266M", "266M", "133I42D224M"],
+            vec!["51M32I215D", "51M174I215M", "266M", "266M", "266M", "142I51D215M"],
+        ),
+        (
+            query(750),
+            vec!["51M1I170M", "51M1I170M", "51M1I170M", "53I218D3M"],
+            vec!["51M1I170M", "51M1I170M", "51M1I170M", "56I221D"],
+        ),
+        (
+            query(9750),
+            vec!["210M", "210M", "210M", "210M", "210M", "57M4D149M"],
+            vec!["210M", "210M", "210M", "210M", "210M", "56M1I5D149M"],
+        ),
+    ]
+}
+
+// Checks the CIGAR strings of the non-reference haplotypes in the subgraph.
+fn check_haplotype_cigars(subgraph: &Subgraph, truth: &[&str], query: &SubgraphQuery) {
+    let cigars: Vec<String> = subgraph.extract_haplotype_walks(true).iter()
+        .filter(|walk| !walk.is_reference)
+        .map(|walk| CigarOp::cigar_string(walk.cigar.as_ref().unwrap()))
+        .collect();
+    assert_eq!(cigars, truth, "Wrong CIGAR strings for query {}", query);
+}
+
+#[test]
+fn alignment_modes_from_gbz() {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false).unwrap();
+    for (query, weighted, unweighted) in alignment_mode_queries_and_cigars() {
+        for (mode, truth) in [(AlignmentMode::Weighted, &weighted), (AlignmentMode::Unweighted, &unweighted)] {
+            let query = query.clone().with_alignment_mode(mode);
+            let mut subgraph = Subgraph::new();
+            let result = subgraph.from_gbz(&graph, Some(&path_index), None, &query);
+            assert!(result.is_ok(), "Failed to extract the subgraph for query {}: {}", query, result.unwrap_err());
+            assert_eq!(subgraph.alignment_mode(), mode, "Wrong alignment mode for query {}", query);
+            check_haplotype_cigars(&subgraph, truth, &query);
+        }
+    }
+}
+
+#[test]
+fn alignment_modes_from_db() {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let db_file = serialize::temp_file_name("alignment-modes-from-db");
+    let result = GBZBase::create_from_files(&gbz_file, None, &db_file);
+    assert!(result.is_ok(), "Failed to create database: {}", result.unwrap_err());
+    let mut database = GBZBase::open(&db_file).unwrap();
+    let mut graph = GraphInterface::new(&mut database).unwrap();
+
+    for (query, weighted, unweighted) in alignment_mode_queries_and_cigars() {
+        for (mode, truth) in [(AlignmentMode::Weighted, &weighted), (AlignmentMode::Unweighted, &unweighted)] {
+            let query = query.clone().with_alignment_mode(mode);
+            let mut subgraph = Subgraph::new();
+            let result = subgraph.from_db(&mut graph, &query);
+            assert!(result.is_ok(), "Failed to extract the subgraph for query {}: {}", query, result.unwrap_err());
+            assert_eq!(subgraph.alignment_mode(), mode, "Wrong alignment mode for query {}", query);
+            check_haplotype_cigars(&subgraph, truth, &query);
+        }
+    }
+
+    drop(graph);
+    drop(database);
+    fs::remove_file(&db_file).unwrap();
+}
+
+#[test]
+fn alignment_mode_in_gfa_output() {
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let graph: GBZ = serialize::load_from(&gbz_file).unwrap();
+    let path_index = PathIndex::new(&graph, GBZBase::INDEX_INTERVAL, false).unwrap();
+    let (query, _, unweighted) = alignment_mode_queries_and_cigars().swap_remove(1);
+    let query = query.with_alignment_mode(AlignmentMode::Unweighted);
+    let mut subgraph = Subgraph::new();
+    let result = subgraph.from_gbz(&graph, Some(&path_index), None, &query);
+    assert!(result.is_ok(), "Failed to extract the subgraph for query {}: {}", query, result.unwrap_err());
+
+    let mut output = Vec::new();
+    let result = subgraph.write_gfa(&mut output, true);
+    assert!(result.is_ok(), "Failed to write GFA for query {}: {}", query, result.unwrap_err());
+    let gfa = String::from_utf8(output).unwrap();
+    let cigars: Vec<&str> = gfa.lines()
+        .filter_map(|line| line.split('\t').find_map(|field| field.strip_prefix("CG:Z:")))
+        .collect();
+    assert_eq!(cigars, unweighted, "Wrong CIGAR strings in GFA output for query {}", query);
+}
+
+#[test]
+fn alignment_mode_setter() {
+    let mut subgraph = Subgraph::new();
+    assert_eq!(subgraph.alignment_mode(), SubgraphQuery::DEFAULT_ALIGNMENT_MODE, "Wrong default alignment mode");
+    subgraph.set_alignment_mode(AlignmentMode::Unweighted);
+    assert_eq!(subgraph.alignment_mode(), AlignmentMode::Unweighted, "Alignment mode was not set");
+}
+
 //-----------------------------------------------------------------------------
 
