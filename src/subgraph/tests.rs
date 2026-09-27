@@ -44,12 +44,12 @@ fn create_subgraph() -> Subgraph {
     subgraph_from_sequences(&nodes)
 }
 
-fn check_edits(subgraph: &Subgraph, path: &[usize], ref_path: &[usize], truth: &[(EditOperation, usize)], name: &str) {
-    let mut edits = Vec::new();
-    subgraph.align(path, ref_path, &mut edits);
-    assert_eq!(edits.len(), truth.len(), "Wrong number of edits for {}", name);
-    for (i, (edit, truth_edit)) in edits.iter().zip(truth.iter()).enumerate() {
-        assert_eq!(edit, truth_edit, "Wrong edit {} for {}", i, name);
+fn check_edits(subgraph: &Subgraph, path: &[usize], ref_path: &[usize], truth: &[CigarOp], name: &str) {
+    let mut ops = Vec::new();
+    subgraph.align(path, ref_path, &mut ops);
+    assert_eq!(ops.len(), truth.len(), "Wrong number of edits for {}", name);
+    for (i, (op, truth_op)) in ops.iter().zip(truth.iter()).enumerate() {
+        assert_eq!(op, truth_op, "Wrong edit {} for {}", i, name);
     }
 }
 
@@ -67,19 +67,19 @@ fn align_special_cases() {
 
     // (empty, non-empty)
     {
-        let truth = vec![(EditOperation::Deletion, 6)];
+        let truth = vec![CigarOp::deletion(6)];
         check_edits(&subgraph, &empty, &non_empty, &truth, "empty vs. non-empty paths");
     }
 
     // (non-empty, empty)
     {
-        let truth = vec![(EditOperation::Insertion, 6)];
+        let truth = vec![CigarOp::insertion(6)];
         check_edits(&subgraph, &non_empty, &empty, &truth, "non-empty vs. empty paths");
     }
 
     // (non-empty, non-empty)
     {
-        let truth = vec![(EditOperation::Match, 6)];
+        let truth = vec![CigarOp::r#match(6)];
         check_edits(&subgraph, &non_empty, &non_empty, &truth, "identical paths");
     }
 
@@ -88,7 +88,7 @@ fn align_special_cases() {
         let path = vec![1, 5, 3]; // AABAAA
         let ref_path = vec![3, 2, 1, 3]; // AABAAA
         let truth = vec![
-            (EditOperation::Match, 6),
+            CigarOp::r#match(6),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "identical bases, different paths");
     }
@@ -98,14 +98,14 @@ fn align_special_cases() {
         let short = vec![5, 5]; // ABAABA
         let long = vec![1, 2, 3, 5, 3, 2, 1]; // ABAAABAAABA
         let short_path = vec![
-            (EditOperation::Match, 4),
-            (EditOperation::Deletion, 5),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(4),
+            CigarOp::deletion(5),
+            CigarOp::r#match(2),
         ];
         let short_ref = vec![
-            (EditOperation::Match, 4),
-            (EditOperation::Insertion, 5),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(4),
+            CigarOp::insertion(5),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &short, &long, &short_path, "Prefix + suffix length exceeds path length");
         check_edits(&subgraph, &long, &short, &short_ref, "Prefix + suffix length exceeds reference length");
@@ -123,8 +123,8 @@ fn align_no_prefix_no_suffix() {
         let path = vec![1, 2, 5]; // ABABA
         let ref_path = vec![4]; // BB
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Insertion, 3),
+            CigarOp::r#match(2),
+            CigarOp::insertion(3),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
     }
@@ -134,8 +134,8 @@ fn align_no_prefix_no_suffix() {
         let path = vec![3]; // AA
         let ref_path = vec![2, 1, 6]; // BABAB
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Deletion, 3),
+            CigarOp::r#match(2),
+            CigarOp::deletion(3),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
     }
@@ -145,8 +145,8 @@ fn align_no_prefix_no_suffix() {
         let path = vec![1, 2, 5, 3]; // ABABAAA
         let ref_path = vec![4, 2, 1, 6]; // BBBABAB
         let truth = vec![
-            (EditOperation::Insertion, 7),
-            (EditOperation::Deletion, 7),
+            CigarOp::insertion(7),
+            CigarOp::deletion(7),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
     }
@@ -161,8 +161,8 @@ fn align_no_prefix_with_suffix() {
         let path = vec![1, 2, 5]; // ABABA
         let ref_path = vec![2, 1]; // BA
         let truth = vec![
-            (EditOperation::Insertion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::insertion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "insertion");
     }
@@ -172,8 +172,8 @@ fn align_no_prefix_with_suffix() {
         let path = vec![1, 2]; // AB
         let ref_path = vec![2, 1, 6]; // BABAB
         let truth = vec![
-            (EditOperation::Deletion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::deletion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "deletion");
     }
@@ -183,9 +183,9 @@ fn align_no_prefix_with_suffix() {
         let path = vec![5, 2, 5]; // ABABABA
         let ref_path = vec![4, 2, 1]; // BBBA
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Insertion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(2),
+            CigarOp::insertion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
     }
@@ -195,9 +195,9 @@ fn align_no_prefix_with_suffix() {
         let path = vec![3, 1, 2]; // AAAB
         let ref_path = vec![6, 1, 6]; // BABABAB
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Deletion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(2),
+            CigarOp::deletion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
     }
@@ -207,9 +207,9 @@ fn align_no_prefix_with_suffix() {
         let path = vec![3, 2, 5, 5]; // AABABAABA
         let ref_path = vec![4, 2, 1, 6, 1]; // BBBABABA
         let truth = vec![
-            (EditOperation::Insertion, 6),
-            (EditOperation::Deletion, 5),
-            (EditOperation::Match, 3),
+            CigarOp::insertion(6),
+            CigarOp::deletion(5),
+            CigarOp::r#match(3),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
     }
@@ -224,8 +224,8 @@ fn align_with_prefix_no_suffix() {
         let path = vec![5, 2, 1]; // ABABA
         let ref_path = vec![1, 2]; // AB
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Insertion, 3),
+            CigarOp::r#match(2),
+            CigarOp::insertion(3),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "insertion");
     }
@@ -235,8 +235,8 @@ fn align_with_prefix_no_suffix() {
         let path = vec![2, 1]; // BA
         let ref_path = vec![6, 1, 2]; // BABAB
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Deletion, 3),
+            CigarOp::r#match(2),
+            CigarOp::deletion(3),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "deletion");
     }
@@ -246,8 +246,8 @@ fn align_with_prefix_no_suffix() {
         let path = vec![5, 2, 5]; // ABABABA
         let ref_path = vec![1, 2, 4]; // ABBB
         let truth = vec![
-            (EditOperation::Match, 4),
-            (EditOperation::Insertion, 3),
+            CigarOp::r#match(4),
+            CigarOp::insertion(3),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
     }
@@ -257,8 +257,8 @@ fn align_with_prefix_no_suffix() {
         let path = vec![2, 1, 3]; // BAAA
         let ref_path = vec![6, 1, 6]; // BABABAB
         let truth = vec![
-            (EditOperation::Match, 4),
-            (EditOperation::Deletion, 3),
+            CigarOp::r#match(4),
+            CigarOp::deletion(3),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
     }
@@ -268,9 +268,9 @@ fn align_with_prefix_no_suffix() {
         let path = vec![3, 2, 5, 5]; // AABABAABA
         let ref_path = vec![1, 1, 4, 2, 1, 6, 2]; // AABBBABABB
         let truth = vec![
-            (EditOperation::Match, 3),
-            (EditOperation::Insertion, 6),
-            (EditOperation::Deletion, 7),
+            CigarOp::r#match(3),
+            CigarOp::insertion(6),
+            CigarOp::deletion(7),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
     }
@@ -285,9 +285,9 @@ fn align_with_prefix_with_suffix() {
         let path = vec![5, 2, 5]; // ABABABA
         let ref_path = vec![1, 4, 1]; // ABBA
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Insertion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(2),
+            CigarOp::insertion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "insertion");
     }
@@ -297,9 +297,9 @@ fn align_with_prefix_with_suffix() {
         let path = vec![2, 3, 2]; // BAAB
         let ref_path = vec![6, 1, 6]; // BABABAB
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Deletion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(2),
+            CigarOp::deletion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "deletion");
     }
@@ -309,9 +309,9 @@ fn align_with_prefix_with_suffix() {
         let path = vec![1, 2, 4, 6, 2, 1]; // ABBBBABBA
         let ref_path = vec![5, 5]; // ABAABA
         let truth = vec![
-            (EditOperation::Match, 4),
-            (EditOperation::Insertion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(4),
+            CigarOp::insertion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + insertion");
     }
@@ -321,9 +321,9 @@ fn align_with_prefix_with_suffix() {
         let path = vec![2, 3, 3, 2]; // BAAAAB
         let ref_path = vec![2, 5, 3, 6]; // BABAAABAB
         let truth = vec![
-            (EditOperation::Match, 4),
-            (EditOperation::Deletion, 3),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(4),
+            CigarOp::deletion(3),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "mismatch + deletion");
     }
@@ -333,10 +333,10 @@ fn align_with_prefix_with_suffix() {
         let path = vec![1, 5, 4, 3, 4]; // AABABBAABB
         let ref_path = vec![3, 1, 5, 1, 4, 2]; // AAAABAABBB
         let truth = vec![
-            (EditOperation::Match, 2),
-            (EditOperation::Insertion, 6),
-            (EditOperation::Deletion, 6),
-            (EditOperation::Match, 2),
+            CigarOp::r#match(2),
+            CigarOp::insertion(6),
+            CigarOp::deletion(6),
+            CigarOp::r#match(2),
         ];
         check_edits(&subgraph, &path, &ref_path, &truth, "insertion + deletion");
     }
@@ -1369,4 +1369,122 @@ fn json_output() {
     }
 }
 
+// Reconstructs the sequence of a GFA walk from the segment sequences.
+fn walk_sequence(nodes: &BTreeMap<&str, &str>, walk: &str) -> Vec<u8> {
+    fn complement(base: u8) -> u8 {
+        match base {
+            b'A' => b'T',
+            b'C' => b'G',
+            b'G' => b'C',
+            b'T' => b'A',
+            _ => base,
+        }
+    }
+
+    let mut result: Vec<u8> = Vec::new();
+    let mut offset = 0;
+    while offset < walk.len() {
+        let forward = walk.as_bytes()[offset] == b'>';
+        let end = walk[offset + 1..]
+            .find(['>', '<'])
+            .map_or(walk.len(), |next| offset + 1 + next);
+        let sequence = nodes.get(&walk[offset + 1..end]).unwrap().as_bytes();
+        if forward {
+            result.extend_from_slice(sequence);
+        } else {
+            result.extend(sequence.iter().rev().map(|&base| complement(base)));
+        }
+        offset = end;
+    }
+    result
+}
+
+#[test]
+fn cigar_ops() {
+    assert_eq!(CigarOp::r#match(3).to_string(), "3M", "Wrong string for a match");
+    assert_eq!(CigarOp::insertion(1).to_string(), "1I", "Wrong string for an insertion");
+    assert_eq!(CigarOp::deletion(12).to_string(), "12D", "Wrong string for a deletion");
+    assert_eq!(CigarOp::new(b'S', 4).to_string(), "4S", "Wrong string for a soft clip");
+
+    let ops = [CigarOp::r#match(3), CigarOp::insertion(1), CigarOp::deletion(2)];
+    assert_eq!(CigarOp::cigar_string(&ops), "3M1I2D", "Wrong CIGAR string");
+    assert!(CigarOp::cigar_string(&[]).is_empty(), "Non-empty CIGAR string for no operations");
+}
+
+#[test]
+fn haplotype_walks() {
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    for cigar in [false, true] {
+        let (queries, gfas) = queries_and_gfas(cigar);
+        for (query, truth) in queries.iter().zip(gfas.iter()) {
+            let mut subgraph = Subgraph::new();
+            let result = subgraph.from_gbz(&graph, Some(&path_index), None, query);
+            assert!(result.is_ok(), "Failed to extract the subgraph for query {}", query);
+            let walks = subgraph.extract_haplotype_walks(cigar);
+
+            // Node sequences and walk lines from the GFA truth data.
+            let mut nodes: BTreeMap<&str, &str> = BTreeMap::new();
+            let mut truth_walks: Vec<Vec<&str>> = Vec::new();
+            for line in truth.iter() {
+                let fields: Vec<&str> = line.split('\t').collect();
+                if fields[0] == "S" {
+                    nodes.insert(fields[1], fields[2]);
+                } else if fields[0] == "W" {
+                    truth_walks.push(fields);
+                }
+            }
+
+            assert_eq!(walks.len(), truth_walks.len(), "Wrong number of walks for query {}", query);
+            for (walk, fields) in walks.iter().zip(truth_walks.iter()) {
+                assert_eq!(walk.name.sample, fields[1], "Wrong sample name for query {}", query);
+                assert_eq!(walk.name.haplotype.to_string(), fields[2], "Wrong haplotype number for query {}", query);
+                assert_eq!(walk.name.contig, fields[3], "Wrong contig name for query {}", query);
+                assert_eq!(walk.name.fragment.to_string(), fields[4], "Wrong start offset for query {}", query);
+                assert_eq!(walk.is_reference, walk.name.sample != "unknown", "Wrong reference flag for query {}", query);
+
+                let truth_seq = walk_sequence(&nodes, fields[6]);
+                assert_eq!(walk.sequence, truth_seq, "Wrong sequence for query {}", query);
+                let end = fields[5].parse::<usize>().unwrap();
+                assert_eq!(walk.sequence.len(), end - walk.name.fragment, "Wrong sequence length for query {}", query);
+
+                let truth_weight = fields[7..].iter()
+                    .find_map(|field| field.strip_prefix("WT:i:"))
+                    .map(|value| value.parse::<usize>().unwrap());
+                assert_eq!(walk.weight, truth_weight, "Wrong weight for query {}", query);
+                let truth_cigar = fields[7..].iter().find_map(|field| field.strip_prefix("CG:Z:"));
+                let walk_cigar = walk.cigar.as_ref().map(|ops| CigarOp::cigar_string(ops));
+                assert_eq!(walk_cigar.as_deref(), truth_cigar, "Wrong CIGAR for query {}", query);
+            }
+        }
+    }
+}
+
+#[test]
+fn align_to_ref_special_cases() {
+    let (graph, path_index) = internal::load_gbz_and_create_path_index("example.gbz", GBZBase::INDEX_INTERVAL);
+    let path_a = FullPathName::generic("A");
+    let query = SubgraphQuery::path_offset(&path_a, 2).with_context(1).with_haplotypes(HaplotypeOutput::All);
+    let mut subgraph = Subgraph::new();
+    let result = subgraph.from_gbz(&graph, Some(&path_index), None, &query);
+    assert!(result.is_ok(), "Failed to extract the subgraph");
+
+    let ref_id = subgraph.ref_id.unwrap();
+    assert!(subgraph.align_to_ref(ref_id).is_none(), "Got an alignment for the reference path");
+    assert!(subgraph.align_to_ref(subgraph.paths()).is_none(), "Got an alignment for a nonexistent path");
+
+    // Without a reference path, there is nothing to align to.
+    let query = SubgraphQuery::nodes([14]).with_context(1).with_haplotypes(HaplotypeOutput::All);
+    let mut subgraph = Subgraph::new();
+    let result = subgraph.from_gbz(&graph, Some(&path_index), None, &query);
+    assert!(result.is_ok(), "Failed to extract the subgraph without a reference path");
+    for id in 0..subgraph.paths() {
+        assert!(subgraph.align_to_ref(id).is_none(), "Got an alignment without a reference path");
+    }
+    for walk in subgraph.extract_haplotype_walks(true) {
+        assert!(walk.cigar.is_none(), "Got a CIGAR without a reference path");
+        assert!(!walk.is_reference, "Got a reference walk without a reference path");
+    }
+}
+
 //-----------------------------------------------------------------------------
+

@@ -77,5 +77,5 @@ pub use db::{GAFBase, GAFBaseParams};
 pub use error::{Error, ErrorKind, Result};
 pub use path_index::PathIndex;
 pub use read_set::{ReadSet, AlignmentOutput};
-pub use subgraph::Subgraph;
+pub use subgraph::{CigarOp, HaplotypeWalk, Subgraph};
 pub use subgraph::query::{SubgraphQuery, HaplotypeOutput, SnarlOutput};
