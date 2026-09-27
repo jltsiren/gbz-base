@@ -1,8 +1,19 @@
 # GBZ-base releases
 
+## Current version
+
+* New functionality:
+  * `Subgraph::extract_haplotype_walks` for extracting the paths as `HaplotypeWalk` objects.
+  * `GBZBase::execute_pragma` and `GAFBase::execute_pragma` for tuning database behavior.
+* Compatibility with the old subgraph extraction algorithms still used in GBWTGraph:
+  * `SubgraphQuery` includes `DistanceMode` parameter for extracting context based on shortest distances to node sides (default) or nodes (old behavior).
+* Database files can be opened using `file:` URIs.
+
 ## GBZ-base 0.6.2 (2026-09-26)
 
 * Query benchmark can also use GBZ graphs in addition to GBZ-bases.
+
+This is a patch version for the revised paper.
 
 ## GBZ-base 0.6.1 (2026-08-24)
 

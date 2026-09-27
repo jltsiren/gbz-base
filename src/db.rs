@@ -199,6 +199,7 @@ impl GBZBase {
         self.contigs
     }
 
+    // FIXME: What is the actual interface we want to support?
     /// Executes custom SQLite `PRAGMA` statements on the underlying connection.
     ///
     /// # Arguments
@@ -644,6 +645,7 @@ impl GAFBase {
         })
     }
 
+    // FIXME: What is the actual interface we want to support?
     /// Executes custom SQLite `PRAGMA` statements on the underlying connection.
     ///
     /// # Arguments
