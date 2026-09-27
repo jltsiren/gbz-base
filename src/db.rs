@@ -109,7 +109,7 @@ impl GBZBase {
     // Prefix for GBZ tag keys.
     const KEY_GBZ: &'static str = "gbz_";
 
-    /// Opens a connection to the database in the given file.
+    /// Opens a connection to the database in the given file or SQLite `file:` URI.
     ///
     /// Reads the header information.
     ///
@@ -119,8 +119,9 @@ impl GBZBase {
     /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the stored header information is corrupt.
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
         let connection = Connection::open_with_flags(filename, flags)?;
+        connection.busy_timeout(std::time::Duration::from_secs(60))?;
 
         // Get some header information.
         let mut get_tag = connection.prepare(
@@ -196,6 +197,19 @@ impl GBZBase {
     /// Returns the number of contigs in path metadata.
     pub fn contigs(&self) -> usize {
         self.contigs
+    }
+
+    /// Executes custom SQLite `PRAGMA` statements on the underlying connection.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql`: One or more semicolon-separated SQLite statements (e.g., `"PRAGMA mmap_size = 67108864;"`).
+    ///
+    /// # Errors
+    ///
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn execute_pragma(&self, sql: &str) -> Result<()> {
+        self.connection.execute_batch(sql).map_err(Error::from)
     }
 }
 
@@ -577,7 +591,7 @@ impl GAFBase {
         }
     }
 
-    /// Opens a connection to the database in the given file.
+    /// Opens a connection to the database in the given file or SQLite `file:` URI.
     ///
     /// Reads the header information.
     ///
@@ -587,8 +601,9 @@ impl GAFBase {
     /// Returns an [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) error if the stored header information is corrupt.
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn open<P: AsRef<Path>>(filename: P) -> Result<Self> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
         let connection = Connection::open_with_flags(filename, flags)?;
+        connection.busy_timeout(std::time::Duration::from_secs(60))?;
 
         // Read all tags from the database.
         let mut get_tags = connection.prepare(
@@ -627,6 +642,19 @@ impl GAFBase {
             nodes, alignments, blocks, bidirectional_gbwt,
             tags,
         })
+    }
+
+    /// Executes custom SQLite `PRAGMA` statements on the underlying connection.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql`: One or more semicolon-separated SQLite statements (e.g., `"PRAGMA mmap_size = 67108864;"`).
+    ///
+    /// # Errors
+    ///
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn execute_pragma(&self, sql: &str) -> Result<()> {
+        self.connection.execute_batch(sql).map_err(Error::from)
     }
 
     /// Returns the filename of the database or an error if there is no filename.
