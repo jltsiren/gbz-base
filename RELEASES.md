@@ -1,6 +1,6 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.6.2 (2026-09-26)
 
 * Query benchmark can also use GBZ graphs in addition to GBZ-bases.
 
