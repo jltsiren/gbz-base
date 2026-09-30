@@ -1018,6 +1018,7 @@ fn run_manual_gbz_queries(
         let mut subgraph = Subgraph::new();
         subgraph.set_limit(query.limit());
         subgraph.set_distance_mode(query.distance_mode());
+        subgraph.set_alignment_mode(query.alignment_mode());
         let mut reference_path = None;
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
@@ -1089,6 +1090,7 @@ fn run_manual_db_queries(
         let mut subgraph = Subgraph::new();
         subgraph.set_limit(query.limit());
         subgraph.set_distance_mode(query.distance_mode());
+        subgraph.set_alignment_mode(query.alignment_mode());
         let mut reference_path = None;
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
@@ -1157,7 +1159,9 @@ fn run_duplicate_gbz_queries(
 ) {
     for query in queries {
         let mut subgraph = Subgraph::new();
+        subgraph.set_limit(query.limit());
         subgraph.set_distance_mode(query.distance_mode());
+        subgraph.set_alignment_mode(query.alignment_mode());
         match query.query_type() {
             QueryType::PathOffset(query_pos) => {
                 let result = subgraph.path_pos_from_gbz(graph, path_index, query_pos);

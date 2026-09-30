@@ -5,8 +5,10 @@
 * New functionality:
   * `Subgraph::extract_haplotype_walks` for extracting the paths as `HaplotypeWalk` objects.
   * `GBZBase::execute_pragma` and `GAFBase::execute_pragma` for tuning database behavior.
-* Compatibility with the old subgraph extraction algorithms still used in GBWTGraph:
-  * `SubgraphQuery` includes `DistanceMode` parameter for extracting context based on shortest distances to node sides (default) or nodes (old behavior).
+* Compatibility with the old subgraph query algorithms still used in GBWTGraph:
+  * `DistanceMode` parameter for extracting context based on shortest distances to node sides (default) or nodes (for compatibility).
+  * `AlignmentMode` parameter for aligning other paths to the reference by LCS weighted by node length (default) or unweighted LCS (for compatibility).
+  * These parameters are not exposed in `gbz-base query`, and they may be deprecated and removed in future releases.
 * Database files can be opened using `file:` URIs.
 
 ## GBZ-base 0.6.2 (2026-09-26)
