@@ -79,6 +79,33 @@ impl Display for DistanceMode {
     }
 }
 
+/// Algorithm for aligning haplotypes to the reference path.
+///
+/// The alignments are used as CIGAR strings in the output.
+/// Both modes find a longest common subsequence (LCS) of the paths as sequences of oriented nodes.
+/// They differ in how the LCS is chosen and how the diverging parts between LCS nodes are aligned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AlignmentMode {
+    /// LCS weighted by node lengths, with the diverging parts aligned heuristically (default).
+    #[default]
+    Weighted,
+    /// Unweighted LCS, where a diverging part becomes a mismatch if both sides have the same length
+    /// of at most 4 bp, and an insertion followed by a deletion otherwise.
+    ///
+    /// This matches `gbwtgraph::align_paths` in the C++ implementation.
+    /// Running time and memory usage are proportional to the product of the path lengths in nodes.
+    Unweighted,
+}
+
+impl Display for AlignmentMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            AlignmentMode::Weighted => write!(f, "weighted"),
+            AlignmentMode::Unweighted => write!(f, "unweighted"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum QueryType {
     // Path name and offset in bp stored in the fragment field.
@@ -98,7 +125,7 @@ pub(super) enum QueryType {
 /// # Examples
 ///
 /// ```
-/// use gbz_base::{SubgraphQuery, DistanceMode, SnarlOutput};
+/// use gbz_base::{SubgraphQuery, AlignmentMode, DistanceMode, SnarlOutput};
 /// use gbz::FullPathName;
 ///
 /// let path_name = FullPathName::generic("path");
@@ -107,6 +134,7 @@ pub(super) enum QueryType {
 /// assert_eq!(query.snarls(), SubgraphQuery::DEFAULT_SNARLS);
 /// assert_eq!(query.output(), SubgraphQuery::DEFAULT_OUTPUT);
 /// assert_eq!(query.distance_mode(), SubgraphQuery::DEFAULT_DISTANCE_MODE);
+/// assert_eq!(query.alignment_mode(), SubgraphQuery::DEFAULT_ALIGNMENT_MODE);
 ///
 /// let query = query.with_limit(Some(100));
 /// assert_eq!(query.limit(), Some(100));
@@ -122,6 +150,9 @@ pub(super) enum QueryType {
 ///
 /// let query = query.with_distance_mode(DistanceMode::Node);
 /// assert_eq!(query.distance_mode(), DistanceMode::Node);
+///
+/// let query = query.with_alignment_mode(AlignmentMode::Unweighted);
+/// assert_eq!(query.alignment_mode(), AlignmentMode::Unweighted);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubgraphQuery {
@@ -141,6 +172,9 @@ pub struct SubgraphQuery {
 
     // Distance calculation heuristic for context extraction.
     distance_mode: DistanceMode,
+
+    // Algorithm for aligning haplotypes to the reference path.
+    alignment_mode: AlignmentMode,
 }
 
 impl SubgraphQuery {
@@ -155,6 +189,9 @@ impl SubgraphQuery {
 
     /// Default value for the distance calculation mode.
     pub const DEFAULT_DISTANCE_MODE: DistanceMode = DistanceMode::Side;
+
+    /// Default value for the alignment mode.
+    pub const DEFAULT_ALIGNMENT_MODE: AlignmentMode = AlignmentMode::Weighted;
 
     /// Creates a query that retrieves a subgraph around a path offset.
     ///
@@ -171,6 +208,7 @@ impl SubgraphQuery {
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
             distance_mode: Self::DEFAULT_DISTANCE_MODE,
+            alignment_mode: Self::DEFAULT_ALIGNMENT_MODE,
         }
     }
 
@@ -189,6 +227,7 @@ impl SubgraphQuery {
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
             distance_mode: Self::DEFAULT_DISTANCE_MODE,
+            alignment_mode: Self::DEFAULT_ALIGNMENT_MODE,
         }
     }
 
@@ -201,6 +240,7 @@ impl SubgraphQuery {
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
             distance_mode: Self::DEFAULT_DISTANCE_MODE,
+            alignment_mode: Self::DEFAULT_ALIGNMENT_MODE,
         }
     }
 
@@ -216,6 +256,7 @@ impl SubgraphQuery {
             snarls: Self::DEFAULT_SNARLS,
             output: Self::DEFAULT_OUTPUT,
             distance_mode: Self::DEFAULT_DISTANCE_MODE,
+            alignment_mode: Self::DEFAULT_ALIGNMENT_MODE,
         }
     }
 
@@ -243,6 +284,13 @@ impl SubgraphQuery {
     /// See [`Self::DEFAULT_DISTANCE_MODE`] for the default value.
     pub fn with_distance_mode(self, distance_mode: DistanceMode) -> Self {
         SubgraphQuery { distance_mode, ..self }
+    }
+
+    /// Returns an updated query with the given alignment mode.
+    ///
+    /// See [`Self::DEFAULT_ALIGNMENT_MODE`] for the default value.
+    pub fn with_alignment_mode(self, alignment_mode: AlignmentMode) -> Self {
+        SubgraphQuery { alignment_mode, ..self }
     }
 
     #[deprecated(since = "0.6.0", note = "Use `with_haplotypes` instead")]
@@ -307,6 +355,11 @@ impl SubgraphQuery {
     pub fn distance_mode(&self) -> DistanceMode {
         self.distance_mode
     }
+
+    /// Returns the alignment mode for the query.
+    pub fn alignment_mode(&self) -> AlignmentMode {
+        self.alignment_mode
+    }
 }
 
 impl Display for SubgraphQuery {
@@ -338,6 +391,11 @@ impl Display for SubgraphQuery {
         // Distance mode (only if not the default).
         if self.distance_mode != Self::DEFAULT_DISTANCE_MODE {
             write!(f, ", distance mode {}", self.distance_mode)?;
+        }
+
+        // Alignment mode (only if not the default).
+        if self.alignment_mode != Self::DEFAULT_ALIGNMENT_MODE {
+            write!(f, ", alignment mode {}", self.alignment_mode)?;
         }
 
         // Haplotype output.
