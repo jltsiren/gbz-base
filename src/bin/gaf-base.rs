@@ -244,8 +244,10 @@ fn decompress(args: DecompressArgs) -> Result<()> {
         return Err(Error::invalid_query("--chunk-size must be positive"));
     }
 
-    // Inputs.
+    // Inputs. Increasing cache size helps a bit.
     let database = GAFBase::open(&args.gaf_base)?;
+    let cache_size: isize = -1048576; // 1 GiB
+    database.set_pragma("cache_size", cache_size)?;
     let graph = if let Some(gbz_file) = &args.reference {
         Some(serialize::load_from(gbz_file)?)
     } else {

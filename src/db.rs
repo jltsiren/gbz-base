@@ -11,6 +11,7 @@ use std::sync::{mpsc, Arc};
 use std::{fs, thread};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement};
+use rusqlite::types::{ToSql, FromSql};
 
 use gbz::{FullPathName, GBWT, GBWTBuilder, GBZ, GraphName, Orientation, Pos};
 use gbz::algorithms;
@@ -199,8 +200,10 @@ impl GBZBase {
         self.contigs
     }
 
-    // FIXME: What is the actual interface we want to support?
+    // TODO: What is the actual interface we want to support?
     /// Executes custom SQLite `PRAGMA` statements on the underlying connection.
+    ///
+    /// See also [`set_pragma`](Self::set_pragma).
     ///
     /// # Arguments
     ///
@@ -211,6 +214,35 @@ impl GBZBase {
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn execute_pragma(&self, sql: &str) -> Result<()> {
         self.connection.execute_batch(sql).map_err(Error::from)
+    }
+
+    /// Executes `PRAGMA name = value` on the underlying connection.
+    ///
+    /// Returns the value that was actually set.
+    ///
+    /// # Arguments
+    ///
+    /// * `name`: The name of the SQLite pragma.
+    /// * `value`: The value to set for the pragma.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn set_pragma<V: ToSql + FromSql>(&self, name: &str, value: V) -> Result<V> {
+        let result = self.connection.pragma_update_and_check(
+            None, name, &value,
+            |result| result.get::<_, V>(0)
+        );
+        match result {
+            Ok(value) => Ok(value),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                self.connection.pragma_query_value(
+                    None, name,
+                    |row| row.get::<_, V>(0)
+                ).map_err(Error::from)
+            },
+            Err(err) => Err(Error::from(err)),
+        }
     }
 }
 
@@ -645,8 +677,10 @@ impl GAFBase {
         })
     }
 
-    // FIXME: What is the actual interface we want to support?
+    // TODO: What is the actual interface we want to support?
     /// Executes custom SQLite `PRAGMA` statements on the underlying connection.
+    ///
+    /// See also [`set_pragma`](Self::set_pragma).
     ///
     /// # Arguments
     ///
@@ -657,6 +691,35 @@ impl GAFBase {
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn execute_pragma(&self, sql: &str) -> Result<()> {
         self.connection.execute_batch(sql).map_err(Error::from)
+    }
+
+    /// Executes `PRAGMA name = value` on the underlying connection.
+    ///
+    /// Returns the value that was actually set.
+    ///
+    /// # Arguments
+    ///
+    /// * `name`: The name of the SQLite pragma.
+    /// * `value`: The value to set for the pragma.
+    ///
+    /// # Errors
+    ///
+    /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
+    pub fn set_pragma<V: ToSql + FromSql>(&self, name: &str, value: V) -> Result<V> {
+        let result = self.connection.pragma_update_and_check(
+            None, name, &value,
+            |result| result.get::<_, V>(0)
+        );
+        match result {
+            Ok(value) => Ok(value),
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                self.connection.pragma_query_value(
+                    None, name,
+                    |row| row.get::<_, V>(0)
+                ).map_err(Error::from)
+            },
+            Err(err) => Err(Error::from(err)),
+        }
     }
 
     /// Returns the filename of the database or an error if there is no filename.
