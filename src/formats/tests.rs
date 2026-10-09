@@ -446,6 +446,7 @@ fn gaf_headers() {
     let test_cases = vec![
         ("empty.gaf", 0),
         ("good.gaf", 2),
+        ("good.v1.1.gaf", 2),
         ("micb-kir3dl1_HG003.gaf", 2),
         ("no_header.gaf", 0)
     ];

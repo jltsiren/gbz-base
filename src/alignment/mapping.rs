@@ -137,8 +137,10 @@ impl Mapping {
 /// * `=`: A match given as the matching sequence.
 /// * `:`: A match given as the match length.
 /// * `*`: A mismatch given as the target base and the query base.
+/// * `?`: A mismatch given as the query base.
 /// * `+`: An insertion given as the inserted sequence.
 /// * `-`: A deletion given as the deleted sequence.
+/// * `!`: A deletion given as the deletion length.
 ///
 /// The operations do not store target bases, as the query sequence can be reconstructed without that information.
 /// Operation `~` (intron length and splice signal) is not supported yet.
@@ -182,7 +184,7 @@ impl Difference {
     pub const UNKNOWN_BASE: u8 = b'X';
 
     // TODO: This does not support `~` (intron length and splice signal) yet.
-    const OPS: &'static [u8] = b"=:*+-";
+    const OPS: &'static [u8] = b"=:*?+-!";
 
     fn base_to_upper(c: u8) -> u8 {
         if c.is_ascii_lowercase() {
@@ -213,12 +215,25 @@ impl Difference {
         Some(Self::Mismatch(Self::base_to_upper(value[1])))
     }
 
+    fn mismatch_base(value: &[u8]) -> Option<Self> {
+        if value.len() != 1 {
+            return None;
+        }
+        Some(Self::Mismatch(Self::base_to_upper(value[0])))
+    }
+
     fn insertion(value: &[u8]) -> Option<Self> {
         Some(Self::Insertion(Self::seq_to_upper(value)))
     }
 
     fn deletion(value: &[u8]) -> Option<Self> {
         Some(Self::Deletion(value.len()))
+    }
+
+    fn deletion_length(value: &[u8]) -> Option<Self> {
+        let len = str::from_utf8(value).ok()?;
+        let len = len.parse::<usize>().ok()?;
+        Some(Self::Deletion(len))
     }
 
     /// Parses a difference string and returns it as a vector of operations.
@@ -248,8 +263,10 @@ impl Difference {
                 b'=' => Self::matching_sequence(value),
                 b':' => Self::match_length(value),
                 b'*' => Self::mismatch(value),
+                b'?' => Self::mismatch_base(value),
                 b'+' => Self::insertion(value),
                 b'-' => Self::deletion(value),
+                b'!' => Self::deletion_length(value),
                 _ => return Err(Error::invalid_data(format!("Invalid difference string operation: {}", difference_string[start] as char))),
             }.ok_or_else(|| Error::invalid_data(format!("Invalid difference string field: {}", String::from_utf8_lossy(&difference_string[start..end]))))?;
             result.push(op);
@@ -391,6 +408,10 @@ impl Difference {
     }
 
     /// Writes a difference string as a `Vec<u8>` string.
+    ///
+    /// If a target sequence is given, it must start from the beginning of the alignment and cover the entire alingment.
+    /// Mismatches and deletions will then be represented using the `*` and `-` operations, respectively.
+    /// If the target sequence is empty, mismatches and deletions will use `?` and `!`, respectively.
     pub fn to_bytes(ops: &[Difference], target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
         let mut target_offset = 0;
@@ -402,8 +423,12 @@ impl Difference {
                     target_offset += *len;
                 },
                 Self::Mismatch(base) => {
-                    result.push(b'*');
-                    result.push(target_sequence[target_offset]);
+                    if target_sequence.is_empty() {
+                        result.push(b'?');
+                    } else {
+                        result.push(b'*');
+                        result.push(target_sequence[target_offset]);
+                    }
                     result.push(*base);
                     target_offset += 1;
                 },
@@ -412,8 +437,13 @@ impl Difference {
                     result.extend_from_slice(seq);
                 },
                 Self::Deletion(len) => {
-                    result.push(b'-');
-                    result.extend_from_slice(&target_sequence[target_offset..target_offset + *len]);
+                    if target_sequence.is_empty() {
+                        result.push(b'!');
+                        utils::append_usize(&mut result, *len);
+                    } else {
+                        result.push(b'-');
+                        result.extend_from_slice(&target_sequence[target_offset..target_offset + *len]);
+                    }
                     target_offset += *len;
                 },
                 Self::End => {},
@@ -488,6 +518,13 @@ fn difference_single() {
         check_to_bytes(&truth, seq, target_sequence, name);
     }
     {
+        let name = "mismatching base";
+        let seq = b"?G";
+        let truth = [ Difference::Mismatch(b'G') ];
+        let target_sequence = b""; // If we have a target sequence, we get a `*` mismatch.
+        check_to_bytes(&truth, seq, target_sequence, name);
+    }
+    {
         let name = "insertion";
         let seq = b"+ACGT";
         let truth = [ Difference::Insertion(b"ACGT".to_vec()) ];
@@ -501,6 +538,14 @@ fn difference_single() {
         let truth = [ Difference::Deletion(4) ];
         check_difference(seq, &truth, name, false);
         let target_sequence = b"ACGT";
+        check_to_bytes(&truth, seq, target_sequence, name);
+    }
+    {
+        let name = "deletion length";
+        let seq = b"!5";
+        let truth = [ Difference::Deletion(5) ];
+        check_difference(seq, &truth, name, false);
+        let target_sequence = b""; // If we have a target sequence, we get a `-` deletion.
         check_to_bytes(&truth, seq, target_sequence, name);
     }
 }
@@ -627,14 +672,14 @@ fn difference_len() {
 #[test]
 fn difference_normalize() {
     {
-        let seq = b"=ACGT:4*AC*GT:2:3=ACT*AC-ACGT-ACGT+GATTACA+CAT";
+        let seq = b"=ACGT:4*AC*GT:2:3=ACT*AC-ACGT-ACGT!2+GATTACA+CAT";
         let truth = [
             Difference::Match(8),
             Difference::Mismatch(b'C'),
             Difference::Mismatch(b'T'),
             Difference::Match(8),
             Difference::Mismatch(b'C'),
-            Difference::Deletion(8),
+            Difference::Deletion(10),
             Difference::Insertion(b"GATTACACAT".to_vec()),
         ];
         check_difference(seq, &truth, "normalized", true);

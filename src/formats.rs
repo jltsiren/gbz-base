@@ -306,6 +306,10 @@ pub fn peek_gaf_header_line<R: BufRead>(reader: &mut R) -> io::Result<bool> {
 ///
 /// The returned lines do not contain the trailing newline character.
 /// The reader position is advanced past the header lines.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidData`] if the GAF version is unsupported (see [`SUPPORTED_GAF_VERSIONS`]).
 /// Returns an I/O error if reading from the reader fails.
 ///
 /// # Examples
@@ -333,14 +337,42 @@ pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<Strin
         if line.last() == Some(&b'\n') {
             line.pop();
         }
-        headers.push(String::from_utf8_lossy(&line).to_string());
+        let line = String::from_utf8_lossy(&line).to_string();
+        if line.starts_with("@HD") {
+            let fields: Vec<&str> = line.split('\t').collect();
+            for field in fields {
+                if field.starts_with("VN:Z:") {
+                    let version = &field[5..];
+                    if !SUPPORTED_GAF_VERSIONS.contains(&version) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Unsupported GAF version: {}", version),
+                        ));
+                    }
+                }
+            }
+        }
+        headers.push(line);
     }
     Ok(headers)
 }
 
+/// List of supported GAF versions.
+///
+/// We currently support versions 1.0 and 1.1.
+pub const SUPPORTED_GAF_VERSIONS: &[&str] = &["1.0", "1.1"];
+
+/// Default GAF version used.
+///
+/// This is currently 1.0.
+pub const DEFAULT_GAF_VERSION: &str = "1.0";
+
 /// Writes a GAF file header.
-pub fn write_gaf_file_header<T: Write>(output: &mut T) -> io::Result<()> {
-    let header = String::from("@HD\tVN:Z:1.0\n");
+///
+/// If a specific version is not given, this will use [`DEFAULT_GAF_VERSION`].
+pub fn write_gaf_file_header<T: Write>(output: &mut T, version: Option<&str>) -> io::Result<()> {
+    let version = version.unwrap_or(DEFAULT_GAF_VERSION);
+    let header = format!("@HD\tVN:Z:{}\n", version);
     output.write_all(header.as_bytes())?;
     Ok(())
 }

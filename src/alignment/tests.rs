@@ -228,6 +228,19 @@ fn alignment_known_good_no_header() {
 }
 
 #[test]
+fn alignment_gaf_v11() {
+    // good.v1.1.gaf contains the same alignments as good.gaf.
+    // It uses some GAF v1.1 difference string operations without reference bases (`?`, `!`).
+    let truth = known_good_alignments();
+    let filename = utils::get_test_data("good.v1.1.gaf");
+    let alignments = parse_alignments(&filename, false);
+    assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
+    for i in 0..truth.len() {
+        check_alignment(&alignments[i], &truth[i], i + 1, false, false);
+    }
+}
+
+#[test]
 fn alignment_known_bad() {
     let filename = utils::get_test_data("bad.gaf");
     let alignments = parse_alignments(&filename, true);

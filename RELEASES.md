@@ -10,6 +10,7 @@
   * `AlignmentMode` parameter for aligning other paths to the reference by LCS weighted by node length (default) or unweighted LCS (for compatibility).
   * These parameters are not exposed in `gbz-base query`, and they may be deprecated and removed in future releases.
 * Database files can be opened using `file:` URIs.
+* Support for GAF version 1.1.
 
 ## GBZ-base 0.6.2 (2026-09-26)
 

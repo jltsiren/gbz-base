@@ -299,7 +299,7 @@ fn write_gaf(
     // Output thread.
     let output_thread = thread::spawn(move || {
         let mut output = BufWriter::new(writer);
-        let mut status = formats::write_gaf_file_header(&mut output)
+        let mut status = formats::write_gaf_file_header(&mut output, None)
             .map_err(Error::io);
         if status.is_ok() {
             status = formats::write_header_lines(&header_lines, &mut output)

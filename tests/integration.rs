@@ -1204,7 +1204,7 @@ fn run_gbz_gaf_base_query(
 
 fn write_gaf(read_set: &ReadSet, subgraph: &Subgraph) -> Vec<u8> {
     let mut output = Vec::new();
-    formats::write_gaf_file_header(&mut output).expect("Failed to write GAF file header");
+    formats::write_gaf_file_header(&mut output, None).expect("Failed to write GAF file header");
     if let Some(graph_name) = subgraph.graph_name() {
         let header_lines = graph_name.to_gaf_header_lines();
         formats::write_header_lines(&header_lines, &mut output).expect("Failed to write GAF header lines");
