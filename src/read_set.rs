@@ -1,7 +1,7 @@
 //! A set of reads extracted from a GAF-base.
 
-use crate::{GAFBase, GBZRecord, GraphReference, Subgraph, Alignment, AlignmentBlock};
-use crate::alignment::{Flags, TargetPath};
+use crate::{GAFBase, GBZRecord, GraphReference, Subgraph, Alignment, GAFBaseInterface};
+use crate::alignment::TargetPath;
 use crate::error::{Error, Result};
 use crate::utils;
 
@@ -125,29 +125,6 @@ impl ReadSet {
         Ok(row_id)
     }
 
-    // Decompresses an alignment block from a row, starting from index `from_idx`.
-    fn decompress_block(row: &Row, from_idx: usize) -> Result<Vec<Alignment>> {
-        let min_handle: Option<usize> = row.get(from_idx + 0)?;
-        let max_handle: Option<usize> = row.get(from_idx + 1)?;
-        let alignments: usize = row.get(from_idx + 2)?;
-        let read_length: Option<usize> = row.get(from_idx + 3)?;
-        let gbwt_starts: Vec<u8> = row.get(from_idx + 4)?;
-        let names: Vec<u8> = row.get(from_idx + 5)?;
-        let quality_strings: Vec<u8> = row.get(from_idx + 6)?;
-        let difference_strings: Vec<u8> = row.get(from_idx + 7)?;
-        let flags: Vec<u8> = row.get(from_idx + 8)?;
-        let numbers: Vec<u8> = row.get(from_idx + 9)?;
-        let optional: Vec<u8> = row.get(from_idx + 10)?;
-        let block = AlignmentBlock {
-            min_handle, max_handle, alignments, read_length,
-            gbwt_starts, names,
-            quality_strings, difference_strings,
-            flags: Flags::from(flags), numbers,
-            optional,
-        };
-        block.decode()
-    }
-
     // Replaces the GBWT starting position of the alignment with the path and sets the true target path length.
     // Requires that the path overlaps with / is fully contained in the subgraph.
     // If the path is valid, inserts all missing node records into the read set.
@@ -229,6 +206,7 @@ impl ReadSet {
         Ok(())
     }
 
+    // FIXME: use GAFBaseInterface
     /// Extracts a set of reads overlapping with the subgraph.
     ///
     /// The extracted reads will be in the same order as in the database.
@@ -315,7 +293,7 @@ impl ReadSet {
                     continue;
                 }
                 row_ids.insert(row_id);
-                let block = Self::decompress_block(row, 1)?;
+                let block = GAFBaseInterface::decompress_block(row, 1)?;
                 let block_size = block.len();
                 for mut alignment in block {
                     read_set.set_target_path(&mut alignment, subgraph, &mut get_record, output == AlignmentOutput::Contained)?;
@@ -343,6 +321,7 @@ impl ReadSet {
         Ok(read_set)
     }
 
+    // FIXME: use GAFBaseInterface
     /// Extracts all reads from the given range of row ids.
     ///
     /// The extracted reads will be in the same order as in the database.
@@ -410,7 +389,7 @@ impl ReadSet {
         )?;
         let mut rows = get_reads.query((row_range.start, row_range.end))?;
         while let Some(row) = rows.next()? {
-            let block = Self::decompress_block(row, 0)?;
+            let block = GAFBaseInterface::decompress_block(row, 0)?;
             let block_size = block.len();
             for mut alignment in block {
                 read_set.set_target_path_simple(&mut alignment, &mut get_record)?;

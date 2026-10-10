@@ -202,10 +202,11 @@ fn alignment_known_good() {
     }
 
     // These alignments will survive the round-trip from/to GAF intact.
-    // 1 is on the reverse strand, while 7 has non-canonical empty fields.
+    // 1 is on the reverse strand, 6 has path length 0 that gets normalized
+    // to *, and 7 has non-canonical empty fields.
     // In 8, missing numerical fields get values from the difference string.
     let round_trip = vec![
-        0, 2, 3, 4, 5, 6,
+        0, 2, 3, 4, 5,
     ];
     let gaf_lines = read_gaf_lines(&filename);
     let target_sequence = b"AAAAAAAAAACCCCCCCCCCCCCCCCCCCCAGAAAAAAAAAAAAAAAAAAAAGATTACATGGGGGGGGGGGGGGGGGGGGTTTTTTTTTTTTTTTTTTTTAAAAAAAAAACCCCCCCCCC".to_vec();

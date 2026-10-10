@@ -482,7 +482,11 @@ impl Alignment {
 
         // Coordinates in the target path.
         result.push(b'\t');
-        utils::append_usize(&mut result, self.path_len);
+        if self.path_len == 0 {
+            result.extend_from_slice(&Self::MISSING_VALUE);
+        } else {
+            utils::append_usize(&mut result, self.path_len);
+        }
         result.push(b'\t');
         utils::append_usize(&mut result, self.path_interval.start);
         result.push(b'\t');
