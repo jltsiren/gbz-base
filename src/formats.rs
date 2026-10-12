@@ -35,14 +35,20 @@
 //! * [`write_gaf_file_header`]: Write a GAF file header.
 //! * [`write_header_lines`]: Write additional header lines.
 //!
-//! I/O for GAF alignment lines is currently implemented in [`crate::Alignment`].
+//! There are two options for parsing alignment lines:
+//!
+//! * [`parse_gaf_lines`]: Parse all GAF alignment lines from a reader.
+//! * [`parse_gaf_file`]: Parse a GAF file, returning both header lines and alignments.
+//!
+//! Writing GAF alignment lines is currently implemented in [`crate::Alignment`].
 
-use crate::error::{Error, Result};
-use crate::utils;
+use crate::{Alignment, Error, Result};
+use crate::{formats, utils};
 
 use std::fmt::Display;
 use std::io::{self, BufRead, Write};
 use std::ops::Range;
+use std::path::Path;
 use std::str;
 
 use gbz::{Metadata, Orientation, FullPathName};
@@ -355,6 +361,46 @@ pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<Strin
         headers.push(line);
     }
     Ok(headers)
+}
+
+// FIXME: example, tests
+/// Parses GAF lines from a reader, returning a vector of alignments.
+///
+/// If `first_line` is provided, it will be used as the number of the first line in error messages.
+/// Otherwise line numbers start from 1.
+pub fn parse_gaf_lines<R: BufRead>(reader: &mut R, first_line: Option<usize>) -> Result<Vec<Alignment>> {
+    let mut line_num = first_line.unwrap_or(1);
+    let mut result = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        reader.read_until(b'\n', &mut buf)
+            .map_err(|e| Error::io(format!("Failed to read line {}: {}", line_num, e)))?;
+        if formats::is_gaf_header_line(&buf) {
+            line_num += 1;
+            continue;
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        if buf.is_empty() {
+            break;
+        }
+        let aln = Alignment::from_gaf(&buf)
+            .map_err(|e| Error::invalid_data(format!("Failed to parse GAF line {}: {}", line_num, e)))?;
+        result.push(aln);
+        line_num += 1;
+    };
+
+    Ok(result)
+}
+
+// FIXME: document, example, tests
+pub fn parse_gaf_file<P: AsRef<Path>>(filename: P) -> Result<(Vec<String>, Vec<Alignment>)> {
+    let mut reader = utils::open_file(filename)?;
+    let headers = read_gaf_header_lines(&mut reader)?;
+    let alignments = parse_gaf_lines(&mut reader, Some(headers.len() + 1))?;
+    Ok((headers, alignments))
 }
 
 /// List of supported GAF versions.

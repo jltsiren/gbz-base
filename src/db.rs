@@ -545,6 +545,7 @@ impl GBZBase {
 ///
 /// This structure stores a database connection and some header information.
 /// In multi-threaded applications, each thread should have its own connection.
+/// [`crate::GAFBaseInterface`] provides a low-level query interface to the database.
 /// A set of alignments overlapping with a subgraph can be extracted using the [`crate::ReadSet`] structure.
 ///
 /// # Examples
@@ -1465,16 +1466,31 @@ impl GBZRecord {
     /// Returns a GBWT record based on this record.
     ///
     /// The lifetime of the returned record is tied to this record.
+    /// Note that node handle will be used as the record id.
+    /// In an actual GBWT record, it would be the offset of the record in [`BWT`].
+    /// See [`Self::to_gbwt_record_with_id`] for a version that assigns a specific record id.
     ///
     /// # Panics
     ///
     /// Will panic if the record would be empty.
     /// This should never happen with a valid database.
     pub fn to_gbwt_record(&self) -> Record<'_> {
+        self.to_gbwt_record_with_id(self.handle)
+    }
+
+    /// Returns a GBWT record based on this record, with the given record id.
+    ///
+    /// See also [`Self::to_gbwt_record`].
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the record would be empty.
+    /// This should never happen with a valid database.
+    pub fn to_gbwt_record_with_id(&self, record_id: usize) -> Record<'_> {
         if self.edges.is_empty() {
-            panic!("GBZRecord::to_gbwt_record: Empty record");
+            panic!("GBZRecord::to_gbwt_record_with_id: Empty record");
         }
-        unsafe { Record::from_raw_parts(self.handle, self.edges.clone(), &self.bwt) }
+        unsafe { Record::from_raw_parts(record_id, self.edges.clone(), &self.bwt) }
     }
 
     /// Returns the handle of the record.

@@ -46,7 +46,7 @@
 //! Given a query subgraph, we want to find blocks where the interval overlaps with the subgraph.
 //! These blocks must then be decompressed, as they may contain alignments to the subgraph.
 //!
-//! See [`GAFBase`] and [`ReadSet`] for the database interface.
+//! See [`GAFBase`], [`GAFBaseInterface`], and [`ReadSet`] for the database interface.
 //! See [`alignment`], [`Alignment`], and [`AlignmentBlock`] for more details.
 //!
 //! # Error handling
@@ -76,7 +76,7 @@ pub use alignment::mapping::{Difference, Mapping};
 pub use db::{GBZBase, GBZPath, GBZRecord, GraphInterface, GraphReference};
 pub use db::{GAFBase, GAFBaseParams};
 pub use error::{Error, ErrorKind, Result};
-pub use gaf_base_interface::GAFBaseInterface;
+pub use gaf_base_interface::{GAFBaseInterface, GAFBaseIter};
 pub use path_index::PathIndex;
 pub use read_set::{ReadSet, AlignmentOutput};
 pub use subgraph::{CigarOp, HaplotypeWalk, Subgraph};
