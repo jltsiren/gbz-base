@@ -1290,8 +1290,9 @@ impl GAFBase {
         } else {
             None
         };
+        let mut buf: Vec<u8> = Vec::new();
         loop {
-            let mut buf: Vec<u8> = Vec::new();
+            buf.clear();
             let len = gaf_file.read_until(b'\n', &mut buf).map_err(Error::io);
             match len {
                 Ok(len) => {

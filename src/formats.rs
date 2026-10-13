@@ -37,8 +37,8 @@
 //!
 //! There are two options for parsing alignment lines:
 //!
-//! * [`parse_gaf_lines`]: Parse all GAF alignment lines from a reader.
-//! * [`parse_gaf_file`]: Parse a GAF file, returning both header lines and alignments.
+//! * [`read_gaf_lines`]: Parse all GAF alignment lines from a reader.
+//! * [`read_gaf_file`]: Parse a GAF file, returning both header lines and alignments.
 //!
 //! Writing GAF alignment lines is currently implemented in [`crate::Alignment`].
 
@@ -291,6 +291,16 @@ impl WalkMetadata {
 
 //-----------------------------------------------------------------------------
 
+/// List of supported GAF versions.
+///
+/// We currently support versions 1.0 and 1.1.
+pub const SUPPORTED_GAF_VERSIONS: &[&str] = &["1.0", "1.1"];
+
+/// Default GAF version used.
+///
+/// This is currently 1.0.
+pub const DEFAULT_GAF_VERSION: &str = "1.0";
+
 /// Returns `true` if the buffer contains a GAF header line.
 ///
 /// A header line starts with `@`.
@@ -363,12 +373,30 @@ pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<Strin
     Ok(headers)
 }
 
-// FIXME: example, tests
 /// Parses GAF lines from a reader, returning a vector of alignments.
 ///
 /// If `first_line` is provided, it will be used as the number of the first line in error messages.
 /// Otherwise line numbers start from 1.
-pub fn parse_gaf_lines<R: BufRead>(reader: &mut R, first_line: Option<usize>) -> Result<Vec<Alignment>> {
+///
+/// # Errors
+///
+/// Returns [`crate::ErrorKind::InvalidData`] if the alignments cannot be parsed.
+/// Returns an I/O error if reading from the reader fails.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{formats, utils};
+///
+/// let filename = utils::get_test_data("good.gaf");
+/// let mut reader = utils::open_file(&filename)
+///     .expect("Unable to open test file");
+/// // Alignments start from line 3.
+/// let alignments = formats::read_gaf_lines(&mut reader, Some(3))
+///     .expect("Unable to parse GAF lines");
+/// assert_eq!(alignments.len(), 9);
+/// ```
+pub fn read_gaf_lines<R: BufRead>(reader: &mut R, first_line: Option<usize>) -> Result<Vec<Alignment>> {
     let mut line_num = first_line.unwrap_or(1);
     let mut result = Vec::new();
     let mut buf: Vec<u8> = Vec::new();
@@ -395,23 +423,33 @@ pub fn parse_gaf_lines<R: BufRead>(reader: &mut R, first_line: Option<usize>) ->
     Ok(result)
 }
 
-// FIXME: document, example, tests
-pub fn parse_gaf_file<P: AsRef<Path>>(filename: P) -> Result<(Vec<String>, Vec<Alignment>)> {
+/// Parses a GAF file, returning the header lines and alignments.
+///
+/// Returned header lines do not contain a newline character at the end.
+///
+/// # Errors
+///
+/// Returns [`crate::ErrorKind::InvalidData`] if the GAF version is unsupported (see [`SUPPORTED_GAF_VERSIONS`]).
+/// Returns [`crate::ErrorKind::InvalidData`] if the alignments cannot be parsed.
+/// Returns an I/O error if opening the file or reading from it fails.
+///
+/// # Examples
+///
+/// ```
+/// use gbz_base::{formats, utils};
+///
+/// let filename = utils::get_test_data("good.gaf");
+/// let (headers, alignments) = formats::read_gaf_file(&filename)
+///     .expect("Unable to parse GAF file");
+/// assert_eq!(headers.len(), 2);
+/// assert_eq!(alignments.len(), 9);
+/// ```
+pub fn read_gaf_file<P: AsRef<Path>>(filename: P) -> Result<(Vec<String>, Vec<Alignment>)> {
     let mut reader = utils::open_file(filename)?;
     let headers = read_gaf_header_lines(&mut reader)?;
-    let alignments = parse_gaf_lines(&mut reader, Some(headers.len() + 1))?;
+    let alignments = read_gaf_lines(&mut reader, Some(headers.len() + 1))?;
     Ok((headers, alignments))
 }
-
-/// List of supported GAF versions.
-///
-/// We currently support versions 1.0 and 1.1.
-pub const SUPPORTED_GAF_VERSIONS: &[&str] = &["1.0", "1.1"];
-
-/// Default GAF version used.
-///
-/// This is currently 1.0.
-pub const DEFAULT_GAF_VERSION: &str = "1.0";
 
 /// Writes a GAF file header.
 ///

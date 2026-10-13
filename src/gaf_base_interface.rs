@@ -13,12 +13,11 @@ use rusqlite::{Statement, Row, Rows, OptionalExtension};
 use std::collections::BTreeMap;
 use std::iter::FusedIterator;
 
-//#[cfg(test)]
-//mod tests;
+#[cfg(test)]
+mod tests;
 
 //-----------------------------------------------------------------------------
 
-// FIXME: test
 /// [`GAFBase`] query interface.
 ///
 /// This structure provides a low-level query interface to a GAF-base database.
@@ -88,9 +87,9 @@ use std::iter::FusedIterator;
 /// assert_eq!(Some(from_db), from_gbwt);
 ///
 /// // Iterate over the GAF-base using a second connection.
-/// let truth = formats::parse_gaf_file(&gaf_file);
+/// let truth = formats::read_gaf_file(&gaf_file);
 /// assert!(
-///     truth.is_ok(), "Failed to parse GAF file {}: {}",
+///     truth.is_ok(), "Failed to read GAF file {}: {}",
 ///     gaf_file.display(), truth.unwrap_err()
 /// );
 /// let (_headers, truth) = truth.unwrap();
@@ -228,11 +227,10 @@ impl<'a> GAFBaseInterface<'a> {
 
 //-----------------------------------------------------------------------------
 
-// FIXME: tests
-// Note: target path length is missing the right flank
 /// An iterator over alignments in a GAF-base.
 ///
-/// The iterator uses two database connetions: one for the alignments and another for node records.
+/// The iterator is designed to use two database connections: one for the alignments and another for node records.
+/// While two interfaces using the same connection would also work, connection-level caching works better with separate connections.
 /// Alignments will be iterated in the order they appear in the database.
 pub struct GAFBaseIter<'reference, 'conn> {
     // Query results from table `Alignments` in GAF-base.
@@ -279,7 +277,7 @@ impl<'reference, 'conn> FusedIterator for GAFBaseIter<'reference, 'conn> {}
 impl<'reference, 'conn> GAFBaseIter<'reference, 'conn> {
     /// Returns an iterator over all alignments in the GAF-base.
     ///
-    /// Because this does reference-free iteration, target path lengths are unset in the alignments.
+    /// Because this does reference-free iteration, target path lengths are not set in the alignments.
     /// If needed, they can be set with [`Alignment::set_target_path_len`].
     /// See [`GAFBaseInterface`] for an example.
     pub fn all_alignments(iter_interface: &'reference mut GAFBaseInterface<'_>, record_interface: &'reference mut GAFBaseInterface<'conn>) -> Result<Self> {
