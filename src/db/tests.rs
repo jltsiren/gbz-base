@@ -192,6 +192,45 @@ fn gbz_record_from_graph() {
     }
 }
 
+#[test]
+fn gbz_record_from_graph_reference() {
+    let gbz = internal::load_gbz("example.gbz");
+    let mut gbz_ref = GraphReference::Gbz(&gbz);
+    let chains = Chains::new();
+    let db_file = internal::create_gbz_base_from_graph(&gbz, &chains);
+    let database = internal::open_gbz_base(&db_file);
+    let mut interface = internal::create_graph_interface(&database);
+    let mut db_ref = GraphReference::Db(&mut interface);
+
+    for node in gbz.node_iter() {
+        for orientation in [Orientation::Forward, Orientation::Reverse] {
+            let handle = support::encode_node(node, orientation);
+            let true_record = GBZRecord::from_gbz(&gbz, handle).unwrap();
+            let from_gbz = gbz_ref.gbz_record(handle)
+                .expect(&format!("Missing GBZ record for handle {}", handle));
+            assert_eq!(true_record, from_gbz, "GBZ record mismatch for handle {}", handle);
+            let from_db = db_ref.gbz_record(handle)
+                .expect(&format!("Missing DB record for handle {}", handle));
+            assert_eq!(true_record, from_db, "DB record mismatch for handle {}", handle);
+
+            // Also check direct sequence access.
+            let true_sequence = true_record.sequence;
+            let from_gbz = gbz_ref.sequence(handle)
+                .expect(&format!("Missing GBZ sequence for handle {}", handle));
+            assert_eq!(true_sequence, from_gbz, "GBZ sequence mismatch for handle {}", handle);
+            let from_db = db_ref.sequence(handle)
+                .expect(&format!("Missing DB sequence for handle {}", handle));
+            assert_eq!(true_sequence, from_db, "DB sequence mismatch for handle {}", handle);
+        }
+    }
+
+    drop(db_ref);
+    drop(interface);
+    drop(database);
+    drop(gbz_ref);
+    let _ = std::fs::remove_file(&db_file);
+}
+
 //-----------------------------------------------------------------------------
 
 #[test]

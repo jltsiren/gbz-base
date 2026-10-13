@@ -28,7 +28,7 @@ mod tests;
 /// ```
 /// use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
 /// use gbz_base::{GAFBaseInterface, GAFBaseIter};
-/// use gbz_base::{Alignment, Result, Error};
+/// use gbz_base::{Result, Error};
 /// use gbz_base::{formats, utils};
 /// use gbz::{GBZ, GBWT, Orientation};
 /// use gbz::bwt::BWT;
@@ -38,24 +38,22 @@ mod tests;
 /// // Build a GAF-base.
 /// let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
 /// let db_file = serialize::temp_file_name("gaf-base");
-/// let db = GAFBase::create_from_files(
+/// GAFBase::create_from_files(
 ///     &gaf_file,
 ///     None, // Build a new GBWT index.
 ///     &db_file,
 ///     GraphReference::None, // Build a reference-based GAF-base.
 ///     &GAFBaseParams::default()
-/// );
-/// assert!(db.is_ok(), "Failed to build GAF-base");
-/// let conn = GAFBase::open(&db_file);
-/// assert!(conn.is_ok(), "Failed to open GAF-base");
-/// let conn = conn.unwrap();
-/// let interface = GAFBaseInterface::new(&conn);
-/// assert!(interface.is_ok(), "Failed to create GAF-base interface");
-/// let mut interface = interface.unwrap();
+/// ).expect("Failed to create GAF-base");
+/// let conn = GAFBase::open(&db_file)
+///     .expect("Failed to open GAF-base");
+/// let mut interface = GAFBaseInterface::new(&conn)
+///     .expect("Failed to create GAF-base interface");
 ///
 /// // We get sequences from an in-memory GBZ graph.
 /// let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
-/// let gbz: GBZ = serialize::load_from(&gbz_file).unwrap();
+/// let gbz: GBZ = serialize::load_from(&gbz_file)
+///     .expect("Failed to load GBZ file");
 /// let mut get_sequence = |handle: usize| -> Result<Vec<u8>> {
 ///     let (node, orientation) = support::decode_node(handle);
 ///     let seq = gbz.sequence(node).ok_or_else(||
@@ -70,13 +68,12 @@ mod tests;
 ///
 /// // GBZ records combine a GBWT record and a sequence.
 /// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
-/// let gbwt: GBWT = serialize::load_from(&gbwt_file).unwrap();
+/// let gbwt: GBWT = serialize::load_from(&gbwt_file)
+///     .expect("Failed to load GBWT file");
 /// let (node, handle) = (1, support::encode_node(1, Orientation::Forward));
-/// let gbz_record = interface.record(handle, &mut get_sequence);
-/// assert!(gbz_record.is_ok(), "Failed to query GBZ record");
-/// let gbz_record = gbz_record.unwrap();
-/// assert!(gbz_record.is_some(), "GBZ record does not exist");
-/// let gbz_record = gbz_record.unwrap();
+/// let gbz_record = interface.record(handle, &mut get_sequence)
+///     .expect("Failed to query GBZ record")
+///     .expect("GBZ record does not exist");
 /// assert_eq!(gbz_record.handle(), handle);
 /// let sequence = gbz_record.sequence();
 /// assert_eq!(Some(sequence), gbz.sequence(node));
@@ -86,31 +83,21 @@ mod tests;
 /// let from_db = gbz_record.to_gbwt_record_with_id(record_id);
 /// assert_eq!(Some(from_db), from_gbwt);
 ///
-/// // Iterate over the GAF-base using a second connection.
-/// let truth = formats::read_gaf_file(&gaf_file);
-/// assert!(
-///     truth.is_ok(), "Failed to read GAF file {}: {}",
-///     gaf_file.display(), truth.unwrap_err()
-/// );
-/// let (_headers, truth) = truth.unwrap();
-/// let iter_conn = GAFBase::open(&db_file);
-/// assert!(iter_conn.is_ok(), "Failed to open GAF-base for iteration");
-/// let iter_conn = iter_conn.unwrap();
-/// let iter_interface = GAFBaseInterface::new(&iter_conn);
-/// assert!(iter_interface.is_ok(), "Failed to create GAF-base interface for iteration");
-/// let mut iter_interface = iter_interface.unwrap();
-/// let iter = GAFBaseIter::all_alignments(&mut iter_interface, &mut interface);
-/// assert!(iter.is_ok(), "Failed to create GAF-base iterator");
-/// let iter = iter.unwrap();
+/// // Iterate over the GAF-base and compare to the original file.
+/// let (_headers, alignments) = formats::read_gaf_file(&gaf_file)
+///     .expect("Failed to read GAF file");
+/// let mut statement = GAFBaseInterface::all_alignments(&conn)
+///     .expect("Failed to prepare statement");
+/// let iter = GAFBaseIter::reference_free(&mut statement, &mut interface)
+///     .expect("Failed to create GAF-base iterator");
 /// for (i, aln) in iter.enumerate() {
-///     assert!(aln.is_ok(), "Failed to retrieve alignment");
-///     let mut aln = aln.unwrap();
-///     aln.set_target_path_len(truth[i].path_len);
-///     assert_eq!(aln, truth[i], "Wrong alignment {}", i);
+///     let mut aln = aln.expect("Failed to retrieve alignment");
+///     // Reference-free iteration does not determine target path lengths.
+///     aln.set_target_path_len(alignments[i].path_len);
+///     assert_eq!(aln, alignments[i], "Wrong alignment {}", i);
 /// }
 ///
-/// drop(iter_interface);
-/// drop(iter_conn);
+/// drop(statement);
 /// drop(interface);
 /// drop(conn);
 /// let _ = std::fs::remove_file(&db_file);
@@ -118,7 +105,6 @@ mod tests;
 #[derive(Debug)]
 pub struct GAFBaseInterface<'a> {
     get_record: Statement<'a>,
-    get_all_alignments: Statement<'a>,
 }
 
 impl<'a> GAFBaseInterface<'a> {
@@ -126,13 +112,10 @@ impl<'a> GAFBaseInterface<'a> {
     ///
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn new(database: &'a GAFBase) -> Result<Self> {
-        let get_record = database.connection.prepare("SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?")?;
-        let get_all_alignments = database.connection.prepare(
-            "SELECT * FROM Alignments ORDER BY id"
-        )?;
+        // We prefer not preparing other statements here, because we want to keep creating new interfaces cheap.
+        let get_record = database.prepare("SELECT edges, bwt, sequence FROM Nodes WHERE handle = ?")?;
         Ok(Self {
             get_record,
-            get_all_alignments,
         })
     }
 
@@ -167,6 +150,15 @@ impl<'a> GAFBaseInterface<'a> {
         } else {
             Ok(None)
         }
+    }
+
+    /// Returns a prepared statement for retrieving all alignments from table `Alignments`.
+    ///
+    /// This can be used for creating a [`GAFBaseIter`].
+    pub fn all_alignments<'conn>(database: &'conn GAFBase) -> Result<Statement<'conn>> {
+        database.prepare(
+            "SELECT * FROM Alignments ORDER BY id"
+        )
     }
 
     // Decompresses an alignment block from a row, starting from index.
@@ -229,17 +221,21 @@ impl<'a> GAFBaseInterface<'a> {
 
 /// An iterator over alignments in a GAF-base.
 ///
-/// The iterator is designed to use two database connections: one for the alignments and another for node records.
-/// While two interfaces using the same connection would also work, connection-level caching works better with separate connections.
+/// This iterator can do either reference-free or reference-based iteration.
+/// Reference-free iteration uses node records directly from the GAF-base.
+/// If the GAF-base is reference-based, target path lengths will not be set in the returned alignments.
+/// They can be set with [`Alignment::set_target_path_len`] if needed.
+/// Reference-based iteration avoids this by using another source for node sequences.
+///
 /// Alignments will be iterated in the order they appear in the database.
-pub struct GAFBaseIter<'reference, 'conn> {
-    // Query results from table `Alignments` in GAF-base.
+pub struct GAFBaseIter<'reference, 'interface> {
+    // Query results from table `Alignments`.
     // The results must include all fields from `min_handle` to `optional` contiguously.
     rows: Rows<'reference>,
     // Field number corresponding to `min_handle`.
     from_idx: usize,
     // GAF-base query interface for retrieving node records.
-    record_interface: &'reference mut GAFBaseInterface<'conn>,
+    record_interface: &'reference mut GAFBaseInterface<'interface>,
     // Cached GBZ records for the nodes used by the alignments so far.
     cache: BTreeMap<usize, GBZRecord>,
     // Alignments decoded from the current row.
@@ -250,7 +246,7 @@ pub struct GAFBaseIter<'reference, 'conn> {
     finished: bool,
 }
 
-impl<'reference, 'conn> Iterator for GAFBaseIter<'reference, 'conn> {
+impl<'reference, 'interface> Iterator for GAFBaseIter<'reference, 'interface> {
     type Item = Result<Alignment>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -272,16 +268,16 @@ impl<'reference, 'conn> Iterator for GAFBaseIter<'reference, 'conn> {
     }
 }
 
-impl<'reference, 'conn> FusedIterator for GAFBaseIter<'reference, 'conn> {}
+impl<'reference, 'interface> FusedIterator for GAFBaseIter<'reference, 'interface> {}
 
-impl<'reference, 'conn> GAFBaseIter<'reference, 'conn> {
-    /// Returns an iterator over all alignments in the GAF-base.
+impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
+    /// Returns a reference-free iterator over the alignments returned by the given statement.
     ///
-    /// Because this does reference-free iteration, target path lengths are not set in the alignments.
+    /// As the iterator does reference-free iteration, target path lengths are not set in the alignments.
     /// If needed, they can be set with [`Alignment::set_target_path_len`].
     /// See [`GAFBaseInterface`] for an example.
-    pub fn all_alignments(iter_interface: &'reference mut GAFBaseInterface<'_>, record_interface: &'reference mut GAFBaseInterface<'conn>) -> Result<Self> {
-        let rows = iter_interface.get_all_alignments.query(())?;
+    pub fn reference_free(statement: &'reference mut Statement<'_>, record_interface: &'reference mut GAFBaseInterface<'interface>) -> Result<Self> {
+        let rows = statement.query(())?;
         Ok(Self {
             rows,
             from_idx: 1,
@@ -291,6 +287,17 @@ impl<'reference, 'conn> GAFBaseIter<'reference, 'conn> {
             buffer_index: 0,
             finished: false,
         })
+    }
+
+    // FIXME: reference-based iteration
+
+    // FIXME: test with a partial iterator
+    /// Consumes the iterator and returns the node record cache.
+    ///
+    /// This can be useful for GAF output after reference-based iteration.
+    /// Some difference string operations require target bases, which can be determined from the cache.
+    pub fn consume(self) -> BTreeMap<usize, GBZRecord> {
+        self.cache
     }
 
     // Reads the next row into the buffer.

@@ -153,17 +153,18 @@ fn direct_decompression_with_gbz() {
 #[test]
 fn all_alignments() {
     let gaf_base_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", "");
-    let record_conn = internal::open_gaf_base(&gaf_base_file);
-    let mut record_interface = internal::create_gaf_base_interface(&record_conn);
-    let iter_conn = internal::open_gaf_base(&gaf_base_file);
-    let mut iter_interface = internal::create_gaf_base_interface(&iter_conn);
+    let conn = internal::open_gaf_base(&gaf_base_file);
+    let mut interface = internal::create_gaf_base_interface(&conn);
 
     let truth = formats::read_gaf_file(utils::get_test_data("micb-kir3dl1_HG003.gaf"));
     assert!(truth.is_ok(), "Failed to read GAF file: {}", truth.unwrap_err());
     let (_, truth) = truth.unwrap();
 
     {
-        let iter = GAFBaseIter::all_alignments(&mut iter_interface, &mut record_interface);
+        let statement = GAFBaseInterface::all_alignments(&conn);
+        assert!(statement.is_ok(), "Failed to prepare statement: {}", statement.unwrap_err());
+        let mut statement = statement.unwrap();
+        let iter = GAFBaseIter::reference_free(&mut statement, &mut interface);
         let iter = match iter {
             Ok(iter) => iter,
             Err(err) => panic!("Failed to create iterator: {}", err),
@@ -177,10 +178,8 @@ fn all_alignments() {
         }
     }
 
-    drop(iter_interface);
-    drop(iter_conn);
-    drop(record_interface);
-    drop(record_conn);
+    drop(interface);
+    drop(conn);
     let _ = fs::remove_file(&gaf_base_file);
 }
 
