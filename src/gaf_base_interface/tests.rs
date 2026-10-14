@@ -170,12 +170,15 @@ fn all_alignments() {
             Ok(iter) => iter,
             Err(err) => panic!("Failed to create iterator: {}", err),
         };
-        for (i, aln) in iter.enumerate() {
-            assert!(aln.is_ok(), "Failed to get alignment at index {}: {}", i, aln.unwrap_err());
-            let mut aln = aln.unwrap();
+        let mut i = 0;
+        for block in iter {
+            let mut block = block.expect(&format!("Failed to get block starting at index {}", i));
             // Because we are doing reference-free iteration, we must set target path length explicitly if we need it.
-            aln.set_target_path_len(truth[i].path_len);
-            assert_eq!(aln, truth[i], "Wrong alignment at index {}", i);
+            for aln in block.iter_mut() {
+                aln.set_target_path_len(truth[i].path_len);
+                assert_eq!(*aln, truth[i], "Wrong alignment at index {}", i);
+                i += 1;
+            }
         }
     }
 
@@ -237,15 +240,19 @@ fn row_ranges() {
             let mut iter = GAFBaseIter::reference_based(
                 &mut statement, (next_row, next_row + 2), &mut interface, &mut get_sequence
             ).expect(&format!("Failed to create iterator for rows {} to {}", next_row, next_row + 2));
-            while let Some(aln) = iter.next() {
-                let aln = aln.expect(&format!("Failed to get alignment {}", next_alignment));
-                assert_eq!(aln, truth[next_alignment], "Wrong alignment at index {}", next_alignment);
-                next_alignment += 1;
+            let mut num_rows = 0;
+            while let Some(block) = iter.next() {
+                let block = block.expect(&format!("Failed to get block starting at alignment {}", next_alignment));
+                for aln in block.iter() {
+                    assert_eq!(*aln, truth[next_alignment], "Wrong alignment at index {}", next_alignment);
+                    next_alignment += 1;
+                }
+                num_rows += 1;
             }
             if next_alignment >= truth.len() {
-                assert!(iter.num_rows() > 0, "Iterator did not process any rows in the final batch");
+                assert!(num_rows > 0, "Iterator did not process any rows in the final batch");
             } else {
-                assert_eq!(iter.num_rows(), 2, "Iterator did not process rows {}..{}", next_row, next_row + 2);
+                assert_eq!(num_rows, 2, "Iterator did not process rows {}..{}", next_row, next_row + 2);
             }
             let cache = iter.consume();
             check_node_cache(

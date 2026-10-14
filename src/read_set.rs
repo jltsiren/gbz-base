@@ -299,11 +299,13 @@ impl ReadSet {
             &mut statement, (row_range.start, row_range.end),
             &mut interface, &mut get_sequence
         )?;
-        while let Some(aln) = iter.next() {
-            reads.push(aln?);
+        let mut blocks = 0;
+        while let Some(block) = iter.next() {
+            let block = block?;
+            reads.extend(block.into_iter());
+            blocks += 1;
         }
         let unclipped = reads.len();
-        let blocks = iter.num_rows();
         let candidates = reads.len();
         let clusters = 1;
         let nodes = iter.consume();

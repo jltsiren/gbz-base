@@ -74,26 +74,33 @@ mod tests;
 ///         .expect("Failed to prepare all alignments statement");
 ///     let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface)
 ///         .expect("Failed to create GAF-base iterator");
-///     for (i, aln) in iter.enumerate() {
-///         let mut aln = aln.expect("Failed to retrieve alignment");
-///         // Reference-free iteration does not determine target path lengths.
-///         aln.set_target_path_len(alignments[i].path_len);
-///         assert_eq!(aln, alignments[i], "Wrong alignment {}", i);
+///     let mut index = 0;
+///     for block in iter {
+///         let mut block = block.expect("Failed to retrieve next row");
+///         for aln in block.iter_mut() {
+///             // Reference-free iteration does not determine target path lengths.
+///             aln.set_target_path_len(alignments[index].path_len);
+///             assert_eq!(*aln, alignments[index], "Wrong alignment {}", index);
+///             index += 1;
+///         }
 ///     }
 /// }
 ///
-/// // Iterate over row 4 that corresponds to alignments 3000..4000.
+/// // Iterate over rows 4..6 that corresponds to alignments 3000..5000.
 /// {
 ///     let mut statement = GAFBaseInterface::alignment_rows(&conn)
 ///         .expect("Failed to prepare alignment rows statement");
 ///     let mut iter = GAFBaseIter::reference_based(
-///         &mut statement, (4, 5), &mut interface, &mut get_sequence
+///         &mut statement, (4, 6), &mut interface, &mut get_sequence
 ///     ).expect("Failed to create iterator for row 4");
 ///     let mut index = 3000;
-///     while let Some(aln) = iter.next() {
-///         let aln = aln.expect("Failed to get alignment");
-///         assert_eq!(aln, alignments[index], "Wrong alignment {}", index);
-///         index += 1;
+///     while let Some(block) = iter.next() {
+///         let mut block = block.expect("Failed to retrieve next row");
+///         for aln in block.iter_mut() {
+///             let aln = aln;
+///             assert_eq!(*aln, alignments[index], "Wrong alignment {}", index);
+///             index += 1;
+///         }
 ///     }
 /// }
 ///
@@ -236,7 +243,7 @@ impl<'a> GAFBaseInterface<'a> {
 /// They can be set with [`Alignment::set_target_path_len`] if needed.
 /// Reference-based iteration avoids this by using another source for node sequences.
 ///
-/// Alignments will be iterated in the order they appear in the database.
+/// Alignments will be iterated in the order they appear in the database and returned one row at a time.
 pub struct GAFBaseIter<'reference, 'interface> {
     // Query results from table `Alignments`.
     rows: Rows<'reference>,
@@ -246,35 +253,22 @@ pub struct GAFBaseIter<'reference, 'interface> {
     get_sequence: Option<&'reference mut dyn FnMut(usize) -> Result<Vec<u8>>>,
     // Cached GBZ records for the nodes used by the alignments so far.
     cache: BTreeMap<usize, GBZRecord>,
-    // Alignments decoded from the current row.
-    buffer: Vec<Alignment>,
-    // Index of the next alignment to return from the buffer.
-    buffer_index: usize,
-    // Number of rows retrieved so far.
-    num_rows: usize,
-    // Have we reached the end?
-    finished: bool,
 }
 
 impl<'reference, 'interface> Iterator for GAFBaseIter<'reference, 'interface> {
-    type Item = Result<Alignment>;
+    type Item = Result<Vec<Alignment>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
+        match self.read_next_row() {
+            Ok(block) => {
+                if block.is_empty() {
+                    None
+                } else {
+                    Some(Ok(block))
+                }
+            },
+            Err(e) => Some(Err(e))
         }
-        if self.buffer_index >= self.buffer.len() {
-            let result = self.read_next_row();
-            if let Err(e) = result {
-                return Some(Err(e));
-            }
-            if self.finished {
-                return None;
-            }
-        }
-        let alignment = self.buffer[self.buffer_index].clone();
-        self.buffer_index += 1;
-        Some(Ok(alignment))
     }
 }
 
@@ -305,10 +299,6 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
             record_interface,
             get_sequence: None,
             cache: BTreeMap::new(),
-            buffer: Vec::new(),
-            buffer_index: 0,
-            num_rows: 0,
-            finished: false,
         })
     }
 
@@ -334,18 +324,7 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
             record_interface,
             get_sequence: Some(get_sequence),
             cache: BTreeMap::new(),
-            buffer: Vec::new(),
-            buffer_index: 0,
-            num_rows: 0,
-            finished: false,
         })
-    }
-
-    /// Returns the number of rows retrieved so far.
-    ///
-    /// This includes the current row being processed in the buffer.
-    pub fn num_rows(&self) -> usize {
-        self.num_rows
     }
 
     /// Consumes the iterator and returns the node record cache.
@@ -356,26 +335,22 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
         self.cache
     }
 
-    // Reads the next row into the buffer.
-    // Passes through database errors.
-    fn read_next_row(&mut self) -> Result<()> {
+    // Returns the next row as a block of alignments, or an empty block if there are no more rows.
+    fn read_next_row(&mut self) -> Result<Vec<Alignment>> {
         let result = self.rows.next().map_err(Error::from)?;
         if let Some(row) = result {
-            let mut buffer = GAFBaseInterface::decompress_block(&row, Self::FROM_IDX)?;
-            for aln in &mut buffer {
+            let mut block = GAFBaseInterface::decompress_block(row, Self::FROM_IDX)?;
+            for aln in block.iter_mut() {
                 if let Some(get_sequence) = &mut self.get_sequence {
                     self.record_interface.set_target_path(aln, &mut self.cache, get_sequence)?;
                 } else {
                     self.record_interface.set_target_path(aln, &mut self.cache, &mut |_| Ok(Vec::new()))?;
                 }
             }
-            self.buffer = buffer;
-            self.buffer_index = 0;
-            self.num_rows += 1;
+            Ok(block)
         } else {
-            self.finished = true;
+            Ok(Vec::new())
         }
-        Ok(())
     }
 }
 
