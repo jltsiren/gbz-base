@@ -1,6 +1,6 @@
 //! A set of reads extracted from a GAF-base.
 
-use crate::{GAFBase, GBZRecord, GraphReference, Subgraph, Alignment, GAFBaseInterface};
+use crate::{Alignment, GAFBase, GAFBaseInterface, GAFBaseIter, GBZRecord, GraphReference, Subgraph};
 use crate::alignment::TargetPath;
 use crate::error::{Error, Result};
 use crate::utils;
@@ -172,43 +172,6 @@ impl ReadSet {
         Ok(())
     }
 
-    // Replaces the GBWT starting position of the alignment with the path and sets the true target path length.
-    // Inserts all missing node records into the read set.
-    fn set_target_path_simple(
-        &mut self, alignment: &mut Alignment,
-        interface: &mut GAFBaseInterface,
-        get_sequence: &mut dyn FnMut(usize) -> Result<Vec<u8>>
-    ) -> Result<()> {
-        let mut pos = match alignment.path {
-            TargetPath::Path(_) => return Ok(()),
-            TargetPath::StartPosition(pos) => Some(pos),
-        };
-
-        let mut path = Vec::new();
-        let mut target_path_len = 0;
-        while let Some(p) = pos {
-            // Now get the record for the node.
-            let mut record = self.nodes.get(&p.node);
-            if record.is_none() {
-                let result = interface.record(p.node, get_sequence)?
-                    .ok_or(Error::invalid_data(format!("Node {} does not exist", p.node)))?;
-                self.nodes.insert(p.node, result);
-                record = self.nodes.get(&p.node);
-            }
-
-            // Navigate to the next position.
-            path.push(p.node);
-            let record = record.unwrap();
-            target_path_len += record.sequence_len();
-            pos = record.to_gbwt_record().lf(p.offset);
-        }
-
-        // Set the target path in the alignment.
-        alignment.set_target_path(path);
-        alignment.set_target_path_len(target_path_len);
-        Ok(())
-    }
-
     /// Extracts a set of reads overlapping with the subgraph.
     ///
     /// The extracted reads will be in the same order as in the database.
@@ -294,6 +257,7 @@ impl ReadSet {
         Ok(read_set)
     }
 
+    // TODO: We could have a version that reuses the statement and the interface.
     /// Extracts all reads from the given range of row ids.
     ///
     /// The extracted reads will be in the same order as in the database.
@@ -311,8 +275,6 @@ impl ReadSet {
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     /// Returns an error if an alignment cannot be decompressed.
     pub fn from_rows(database: &GAFBase, row_range: Range<usize>, graph: Option<&GBZ>) -> Result<Self> {
-        let mut read_set = ReadSet { clusters: 1, ..Default::default() };
-
         // If we have a reference-based GAF-base, we can get sequences from the subgraph or the graph.
         let mut get_sequence = |handle: usize| -> Result<Vec<u8>> {
             if let Some(graph) = graph {
@@ -329,31 +291,33 @@ impl ReadSet {
             }
         };
 
-        // FIXME: Use reference-based GAFBaseIter, collect the alignments, and claim the cache afterwards
-        // FIXME: we also need to get the number of blocks
-        // Get the reads in the given range of row ids.
-        let mut get_reads = database.prepare(
-            "SELECT min_handle, max_handle, alignments, read_length, gbwt_starts, names, quality_strings, difference_strings, flags, numbers, optional
-            FROM Alignments
-            WHERE id >= ?1 AND id < ?2"
-        )?;
-        let mut rows = get_reads.query((row_range.start, row_range.end))?;
+        // Iterate over the rows and build a ReadSet.
+        let mut statement = GAFBaseInterface::alignment_rows(database)?;
         let mut interface = GAFBaseInterface::new(database)?;
-        while let Some(row) = rows.next()? {
-            let block = GAFBaseInterface::decompress_block(row, 0)?;
-            let block_size = block.len();
-            for mut alignment in block {
-                read_set.set_target_path_simple(&mut alignment, &mut interface, &mut get_sequence)?;
-                if alignment.has_target_path() {
-                    read_set.reads.push(alignment);
-                    read_set.unclipped += 1;
-                }
-            }
-            read_set.blocks += 1;
-            read_set.candidates += block_size;
+        let mut reads: Vec<Alignment> = Vec::new();
+        let mut iter = GAFBaseIter::reference_based(
+            &mut statement, (row_range.start, row_range.end),
+            &mut interface, &mut get_sequence
+        )?;
+        while let Some(aln) = iter.next() {
+            reads.push(aln?);
         }
+        let unclipped = reads.len();
+        let blocks = iter.num_rows();
+        let candidates = reads.len();
+        let clusters = 1;
+        let nodes = iter.consume();
+        drop(interface);
+        drop(statement);
 
-        Ok(read_set)
+        Ok(ReadSet {
+            reads,
+            unclipped,
+            blocks,
+            candidates,
+            clusters,
+            nodes,
+        })
     }
 
     /// Returns the number of alignment fragments in the set.

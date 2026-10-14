@@ -8,6 +8,7 @@ use gbz::support;
 
 use simple_sds::serialize;
 
+use std::collections::BTreeSet;
 use std::fs;
 
 //-----------------------------------------------------------------------------
@@ -164,7 +165,7 @@ fn all_alignments() {
         let statement = GAFBaseInterface::all_alignments(&conn);
         assert!(statement.is_ok(), "Failed to prepare statement: {}", statement.unwrap_err());
         let mut statement = statement.unwrap();
-        let iter = GAFBaseIter::reference_free(&mut statement, &mut interface);
+        let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface);
         let iter = match iter {
             Ok(iter) => iter,
             Err(err) => panic!("Failed to create iterator: {}", err),
@@ -175,6 +176,83 @@ fn all_alignments() {
             // Because we are doing reference-free iteration, we must set target path length explicitly if we need it.
             aln.set_target_path_len(truth[i].path_len);
             assert_eq!(aln, truth[i], "Wrong alignment at index {}", i);
+        }
+    }
+
+    drop(interface);
+    drop(conn);
+    let _ = fs::remove_file(&gaf_base_file);
+}
+
+fn check_node_cache(cache: &BTreeMap<usize, GBZRecord>, alignments: &[Alignment], test_case: &str) {
+    let mut expected_handles: BTreeSet<usize> = BTreeSet::new();
+    for aln in alignments.iter() {
+        if let Some(path) = aln.target_path() {
+            for handle in path.iter() {
+                expected_handles.insert(*handle);
+            }
+        }
+    }
+
+    assert_eq!(cache.len(), expected_handles.len(), "Node cache size mismatch for test case {}", test_case);
+    for handle in expected_handles {
+        let record = cache.get(&handle)
+            .expect(&format!("Node {} missing in cache for test case {}", handle, test_case));
+        assert!(record.sequence_len() > 0, "Node {} has empty sequence in cache for test case {}", handle, test_case);
+    }
+}
+
+#[test]
+fn row_ranges() {
+    let gaf_base_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", "");
+    let conn = internal::open_gaf_base(&gaf_base_file);
+    let mut interface = internal::create_gaf_base_interface(&conn);
+    let gbz = internal::load_gaf_base_gbz();
+
+    let truth = formats::read_gaf_file(utils::get_test_data("micb-kir3dl1_HG003.gaf"));
+    assert!(truth.is_ok(), "Failed to read GAF file: {}", truth.unwrap_err());
+    let (_, truth) = truth.unwrap();
+
+    // Do full decompression of the GAF-base using a reference-based iterator processing two rows at a time.
+    // This tests `GAFBaseIter::reference_based` and `GAFBaseInterface::alignment_rows`.
+    // It additionally checks that the node record cache contains the right nodes.
+    {
+        let mut get_sequence = |handle: usize| -> Result<Vec<u8>> {
+            let (node, orientation) = support::decode_node(handle);
+            let seq = gbz.sequence(node).ok_or_else(||
+                Error::invalid_data(format!("The graph does not contain a sequence for node handle {}", handle))
+            )?;
+            match orientation {
+                Orientation::Forward => Ok(seq.to_vec()),
+                Orientation::Reverse => Ok(support::reverse_complement(seq)),
+            }
+        };
+        let mut statement = GAFBaseInterface::alignment_rows(&conn)
+            .expect("Failed to prepare alignment rows statement");
+
+        let mut next_alignment = 0;
+        let mut next_row: usize = 1; // Row ids start from 1.
+        while next_alignment < truth.len() {
+            let batch_start = next_alignment;
+            let mut iter = GAFBaseIter::reference_based(
+                &mut statement, (next_row, next_row + 2), &mut interface, &mut get_sequence
+            ).expect(&format!("Failed to create iterator for rows {} to {}", next_row, next_row + 2));
+            while let Some(aln) = iter.next() {
+                let aln = aln.expect(&format!("Failed to get alignment {}", next_alignment));
+                assert_eq!(aln, truth[next_alignment], "Wrong alignment at index {}", next_alignment);
+                next_alignment += 1;
+            }
+            if next_alignment >= truth.len() {
+                assert!(iter.num_rows() > 0, "Iterator did not process any rows in the final batch");
+            } else {
+                assert_eq!(iter.num_rows(), 2, "Iterator did not process rows {}..{}", next_row, next_row + 2);
+            }
+            let cache = iter.consume();
+            check_node_cache(
+                &cache, &truth[batch_start..next_alignment],
+                &format!("rows {}..{}", next_row, next_row + 2)
+            );
+            next_row += 2;
         }
     }
 

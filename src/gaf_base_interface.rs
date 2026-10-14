@@ -8,7 +8,7 @@ use crate::utils;
 
 use gbz::bwt::Record;
 
-use rusqlite::{Statement, Row, Rows, OptionalExtension};
+use rusqlite::{Statement, Row, Rows, OptionalExtension, Params};
 
 use std::collections::BTreeMap;
 use std::iter::FusedIterator;
@@ -88,7 +88,7 @@ mod tests;
 ///     .expect("Failed to read GAF file");
 /// let mut statement = GAFBaseInterface::all_alignments(&conn)
 ///     .expect("Failed to prepare statement");
-/// let iter = GAFBaseIter::reference_free(&mut statement, &mut interface)
+/// let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface)
 ///     .expect("Failed to create GAF-base iterator");
 /// for (i, aln) in iter.enumerate() {
 ///     let mut aln = aln.expect("Failed to retrieve alignment");
@@ -154,10 +154,21 @@ impl<'a> GAFBaseInterface<'a> {
 
     /// Returns a prepared statement for retrieving all alignments from table `Alignments`.
     ///
+    /// The statement can be queried without any parameters.
     /// This can be used for creating a [`GAFBaseIter`].
     pub fn all_alignments<'conn>(database: &'conn GAFBase) -> Result<Statement<'conn>> {
         database.prepare(
             "SELECT * FROM Alignments ORDER BY id"
+        )
+    }
+
+    /// Returns a prepared statement for retrieving the given range of rows from table `Alignments`.
+    ///
+    /// The statement takes two integer parameters that define a half-open interval of row ids.
+    /// This can be used for creating a [`GAFBaseIter`].
+    pub fn alignment_rows<'conn>(database: &'conn GAFBase) -> Result<Statement<'conn>> {
+        database.prepare(
+            "SELECT * FROM Alignments WHERE id >= ? AND id < ? ORDER BY id"
         )
     }
 
@@ -230,18 +241,19 @@ impl<'a> GAFBaseInterface<'a> {
 /// Alignments will be iterated in the order they appear in the database.
 pub struct GAFBaseIter<'reference, 'interface> {
     // Query results from table `Alignments`.
-    // The results must include all fields from `min_handle` to `optional` contiguously.
     rows: Rows<'reference>,
-    // Field number corresponding to `min_handle`.
-    from_idx: usize,
     // GAF-base query interface for retrieving node records.
     record_interface: &'reference mut GAFBaseInterface<'interface>,
+    // Optional function for getting node sequences from another source.
+    get_sequence: Option<&'reference mut dyn FnMut(usize) -> Result<Vec<u8>>>,
     // Cached GBZ records for the nodes used by the alignments so far.
     cache: BTreeMap<usize, GBZRecord>,
     // Alignments decoded from the current row.
     buffer: Vec<Alignment>,
     // Index of the next alignment to return from the buffer.
     buffer_index: usize,
+    // Number of rows retrieved so far.
+    num_rows: usize,
     // Have we reached the end?
     finished: bool,
 }
@@ -271,27 +283,72 @@ impl<'reference, 'interface> Iterator for GAFBaseIter<'reference, 'interface> {
 impl<'reference, 'interface> FusedIterator for GAFBaseIter<'reference, 'interface> {}
 
 impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
+    // Column index of `min_handle` in query results with all columns included.
+    const FROM_IDX: usize = 1;
+
     /// Returns a reference-free iterator over the alignments returned by the given statement.
     ///
     /// As the iterator does reference-free iteration, target path lengths are not set in the alignments.
     /// If needed, they can be set with [`Alignment::set_target_path_len`].
     /// See [`GAFBaseInterface`] for an example.
-    pub fn reference_free(statement: &'reference mut Statement<'_>, record_interface: &'reference mut GAFBaseInterface<'interface>) -> Result<Self> {
-        let rows = statement.query(())?;
+    ///
+    /// # Arguments
+    ///
+    /// * `statement`: Prepared SQL statement that returns rows with all columns from table `Alignments`.
+    /// * `params`: Parameters to bind to the SQL statement.
+    /// * `record_interface`: The GAF-base interface for retrieving node records.
+    pub fn reference_free<P: Params>(
+        statement: &'reference mut Statement<'_>, params: P,
+        record_interface: &'reference mut GAFBaseInterface<'interface>
+    ) -> Result<Self> {
+        let rows = statement.query(params)?;
         Ok(Self {
             rows,
-            from_idx: 1,
             record_interface,
+            get_sequence: None,
             cache: BTreeMap::new(),
             buffer: Vec::new(),
             buffer_index: 0,
+            num_rows: 0,
             finished: false,
         })
     }
 
-    // FIXME: reference-based iteration
+    /// Returns a reference-based iterator over the alignments returned by the given statement.
+    ///
+    /// If the GAF-base is reference-based, this version uses the given function to determine node sequences.
+    /// After iteration has finished, node records with sequences can be obtained with [`Self::consume`].
+    ///
+    /// # Arguments
+    ///
+    /// * `statement`: Prepared SQL statement that returns rows with all columns from table `Alignments`.
+    /// * `record_interface`: The GAF-base interface for retrieving node records.
+    /// * `get_sequence`: Function for retrieving node sequences.
+    pub fn reference_based<P: Params>(
+        statement: &'reference mut Statement<'_>, params: P,
+        record_interface: &'reference mut GAFBaseInterface<'interface>,
+        get_sequence: &'reference mut dyn FnMut(usize) -> Result<Vec<u8>>
+    ) -> Result<Self> {
+        let rows = statement.query(params)?;
+        Ok(Self {
+            rows,
+            record_interface,
+            get_sequence: Some(get_sequence),
+            cache: BTreeMap::new(),
+            buffer: Vec::new(),
+            buffer_index: 0,
+            num_rows: 0,
+            finished: false,
+        })
+    }
 
-    // FIXME: test with a partial iterator
+    /// Returns the number of rows retrieved so far.
+    ///
+    /// This includes the current row being processed in the buffer.
+    pub fn num_rows(&self) -> usize {
+        self.num_rows
+    }
+
     /// Consumes the iterator and returns the node record cache.
     ///
     /// This can be useful for GAF output after reference-based iteration.
@@ -305,12 +362,17 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
     fn read_next_row(&mut self) -> Result<()> {
         let result = self.rows.next().map_err(Error::from)?;
         if let Some(row) = result {
-            let mut buffer = GAFBaseInterface::decompress_block(&row, self.from_idx)?;
+            let mut buffer = GAFBaseInterface::decompress_block(&row, Self::FROM_IDX)?;
             for aln in &mut buffer {
-                self.record_interface.set_target_path(aln, &mut self.cache, &mut |_| Ok(Vec::new()))?;
+                if let Some(get_sequence) = &mut self.get_sequence {
+                    self.record_interface.set_target_path(aln, &mut self.cache, get_sequence)?;
+                } else {
+                    self.record_interface.set_target_path(aln, &mut self.cache, &mut |_| Ok(Vec::new()))?;
+                }
             }
             self.buffer = buffer;
             self.buffer_index = 0;
+            self.num_rows += 1;
         } else {
             self.finished = true;
         }
