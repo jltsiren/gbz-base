@@ -21,6 +21,7 @@ mod tests;
 /// [`GAFBase`] query interface.
 ///
 /// This structure provides a low-level query interface to a GAF-base database.
+/// It is mostly intended to be used with [`GAFBaseIter`].
 /// See [`crate::ReadSet`] for a higher-level interface for extracting alignments to a subgraph.
 ///
 /// # Examples
@@ -30,8 +31,7 @@ mod tests;
 /// use gbz_base::{GAFBaseInterface, GAFBaseIter};
 /// use gbz_base::{Result, Error};
 /// use gbz_base::{formats, utils};
-/// use gbz::{GBZ, GBWT, Orientation};
-/// use gbz::bwt::BWT;
+/// use gbz::{GBZ, Orientation};
 /// use gbz::support;
 /// use simple_sds::serialize;
 ///
@@ -66,38 +66,37 @@ mod tests;
 ///     }
 /// };
 ///
-/// // GBZ records combine a GBWT record and a sequence.
-/// let gbwt_file = utils::get_test_data("micb-kir3dl1_HG003.gbwt");
-/// let gbwt: GBWT = serialize::load_from(&gbwt_file)
-///     .expect("Failed to load GBWT file");
-/// let (node, handle) = (1, support::encode_node(1, Orientation::Forward));
-/// let gbz_record = interface.record(handle, &mut get_sequence)
-///     .expect("Failed to query GBZ record")
-///     .expect("GBZ record does not exist");
-/// assert_eq!(gbz_record.handle(), handle);
-/// let sequence = gbz_record.sequence();
-/// assert_eq!(Some(sequence), gbz.sequence(node));
-/// let bwt: &BWT = gbwt.as_ref();
-/// let record_id = gbwt.node_to_record(handle);
-/// let from_gbwt = bwt.record(record_id);
-/// let from_db = gbz_record.to_gbwt_record_with_id(record_id);
-/// assert_eq!(Some(from_db), from_gbwt);
-///
 /// // Iterate over the GAF-base and compare to the original file.
 /// let (_headers, alignments) = formats::read_gaf_file(&gaf_file)
 ///     .expect("Failed to read GAF file");
-/// let mut statement = GAFBaseInterface::all_alignments(&conn)
-///     .expect("Failed to prepare statement");
-/// let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface)
-///     .expect("Failed to create GAF-base iterator");
-/// for (i, aln) in iter.enumerate() {
-///     let mut aln = aln.expect("Failed to retrieve alignment");
-///     // Reference-free iteration does not determine target path lengths.
-///     aln.set_target_path_len(alignments[i].path_len);
-///     assert_eq!(aln, alignments[i], "Wrong alignment {}", i);
+/// {
+///     let mut statement = GAFBaseInterface::all_alignments(&conn)
+///         .expect("Failed to prepare all alignments statement");
+///     let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface)
+///         .expect("Failed to create GAF-base iterator");
+///     for (i, aln) in iter.enumerate() {
+///         let mut aln = aln.expect("Failed to retrieve alignment");
+///         // Reference-free iteration does not determine target path lengths.
+///         aln.set_target_path_len(alignments[i].path_len);
+///         assert_eq!(aln, alignments[i], "Wrong alignment {}", i);
+///     }
 /// }
 ///
-/// drop(statement);
+/// // Iterate over row 4 that corresponds to alignments 3000..4000.
+/// {
+///     let mut statement = GAFBaseInterface::alignment_rows(&conn)
+///         .expect("Failed to prepare alignment rows statement");
+///     let mut iter = GAFBaseIter::reference_based(
+///         &mut statement, (4, 5), &mut interface, &mut get_sequence
+///     ).expect("Failed to create iterator for row 4");
+///     let mut index = 3000;
+///     while let Some(aln) = iter.next() {
+///         let aln = aln.expect("Failed to get alignment");
+///         assert_eq!(aln, alignments[index], "Wrong alignment {}", index);
+///         index += 1;
+///     }
+/// }
+///
 /// drop(interface);
 /// drop(conn);
 /// let _ = std::fs::remove_file(&db_file);
@@ -119,12 +118,11 @@ impl<'a> GAFBaseInterface<'a> {
         })
     }
 
-    /// Returns the node record for the given handle, or [`None`] if the node does not exist.
-    ///
-    /// If the GAF-base is reference-based, the `get_sequence` function will be used to retrieve the sequence.
-    /// The function is mutable to allow using a [`crate::GraphInterface`].
-    /// If the sequence is not necessary, this can be a trivial function.
-    pub fn record(
+    // Returns the node record for the given handle.
+    // If the GAF-base is reference-based, the `get_sequence` function will be used to retrieve the sequence.
+    // The function is mutable to allow using a `GraphInterface`.
+    // If the sequence is not necessary, this can be a trivial function.
+    pub(crate) fn record(
         &mut self, handle: usize,
         get_sequence: &mut dyn FnMut(usize) -> Result<Vec<u8>>
     ) -> Result<Option<GBZRecord>> {
@@ -318,6 +316,7 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
     ///
     /// If the GAF-base is reference-based, this version uses the given function to determine node sequences.
     /// After iteration has finished, node records with sequences can be obtained with [`Self::consume`].
+    /// See [`GAFBaseInterface`] for an example.
     ///
     /// # Arguments
     ///
