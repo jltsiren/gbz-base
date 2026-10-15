@@ -1,19 +1,20 @@
 use std::fs::{self, File};
-use std::io::{self, Write, BufWriter};
+use std::io::{self, BufReader, BufWriter, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Instant;
 use std::thread;
 
-use gbz_base::{GBZBase, GraphInterface};
-use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
+use gbz_base::{Alignment, GBZBase, GraphInterface};
+use gbz_base::{GAFBase, GAFBaseParams, GraphReference, GAFBaseInterface, GAFBaseIter};
 use gbz_base::db::FileType;
 use gbz_base::gaf_sort::{sort_gaf, KeyType, SortParameters};
 use gbz_base::{db, formats, utils};
 use gbz_base::ReadSet;
 use gbz_base::{Error, Result};
 
-use gbz::{GBZ, GraphName};
+use gbz::{GBZ, GraphName, Orientation};
+use gbz::support;
 
 use simple_sds::{binaries, serialize};
 
@@ -42,6 +43,8 @@ enum Commands {
     Decompress(DecompressArgs),
     /// Sort a GAF file for GAF-base construction
     Sort(SortArgs),
+    /// Batched queries from a GAF-base
+    Batch(BatchArgs),
 }
 
 fn main() -> Result<()> {
@@ -54,6 +57,7 @@ fn main() -> Result<()> {
             construct(args, sub_matches)
         },
         Commands::Decompress(args) => decompress(args),
+        Commands::Batch(args) => batch(args),
         Commands::Sort(args) => {
             // `subcommand_matches` is guaranteed to succeed, as we just parsed the `sort` subcommand.
             let sub_matches = matches.subcommand_matches("sort").unwrap();
@@ -468,6 +472,128 @@ fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<()> {
     }
 
     Ok(())
+}
+
+//-----------------------------------------------------------------------------
+
+#[derive(Args)]
+struct BatchArgs {
+    /// Input GAF-base database file
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+
+    /// Cache size for the database connection used for alignments
+    #[arg(long, value_name = "BYTES", value_parser = parse_quantity)]
+    aln_cache: Option<usize>,
+
+    /// Cache size for the database connection used for node records
+    #[arg(long, value_name = "BYTES", value_parser = parse_quantity)]
+    node_cache: Option<usize>,
+
+    /// Print progress information to stderr
+    #[arg(short, long)]
+    progress: bool,
+}
+
+fn batch(args: BatchArgs) -> Result<()> {
+    let start_time = Instant::now();
+
+    let iter_conn = GAFBase::open(&args.input)?;
+    if let Some(aln_cache) = args.aln_cache {
+        if args.progress {
+            eprintln!("Setting alignment cache size to {} bytes", aln_cache);
+        }
+        let aln_cache = -(aln_cache as isize) / 1024;
+        iter_conn.set_pragma("cache_size", aln_cache)?;
+    }
+    let mut handle_range = GAFBaseInterface::handle_range(&iter_conn)?;
+
+    let record_conn = GAFBase::open(&args.input)?;
+    if let Some(node_cache) = args.node_cache {
+        if args.progress {
+            eprintln!("Setting node record cache size to {} bytes", node_cache);
+        }
+        let node_cache = -(node_cache as isize) / 1024;
+        record_conn.set_pragma("cache_size", node_cache)?;
+    }
+    let mut record_interface = GAFBaseInterface::new(&record_conn)?;
+
+    // FIXME: should we continue with the next query if an error occurs?
+    let mut stdin = BufReader::new(io::stdin());
+    let mut stdout = BufWriter::new(io::stdout());
+    loop {
+        let query = read_query(&mut stdin)?;
+        if query.is_none() {
+            break;
+        }
+        let (min_handle, max_handle) = query.unwrap();
+        let iter = GAFBaseIter::reference_free(
+            &mut handle_range, (min_handle, max_handle), &mut record_interface
+        )?;
+        let mut alignments: usize = 0;
+        for row in iter {
+            let block = row?;
+            for aln in block.iter() {
+                if !alignment_in_range(aln, min_handle, max_handle) {
+                    continue;
+                }
+                let mut buf = aln.to_gaf(&[]);
+                buf.push(b'\n');
+                stdout.write_all(&buf)?;
+                alignments += 1;
+            }
+        }
+        stdout.write_all(b"\n")?; // Empty line to signal the end of results for the current query.
+        stdout.flush()?;
+        if args.progress {
+            eprintln!("Handles {} to {}: {} alignments", min_handle, max_handle, alignments);
+        }
+    }
+
+    if args.progress {
+        let end_time = Instant::now();
+        let seconds = end_time.duration_since(start_time).as_secs_f64();
+        eprintln!("Total time: {:.3} seconds", seconds);
+        utils::report_peak_memory_usage();
+    }
+    Ok(())
+}
+
+// Returns a (min_handle, max_handle) or `None` if the input is empty.
+fn read_query(stdin: &mut BufReader<io::Stdin>) -> Result<Option<(usize, usize)>> {
+    let mut query: Vec<u8> = Vec::new();
+    stdin.read_until(b'\n', &mut query)?;
+    if query.last() == Some(&b'\n') {
+        query.pop();
+    }
+    if query.is_empty() {
+        return Ok(None);
+    }
+    let query = String::from_utf8(query)
+        .map_err(|e| Error::invalid_query(format!("Invalid UTF-8 sequence: {}", e)))?;
+    let parts: Vec<&str> = query.split('\t').collect();
+    if parts.len() != 2 {
+        return Err(Error::invalid_query("Invalid query format"));
+    }
+    let start = parts[0].parse::<usize>()
+        .map_err(|e| Error::invalid_query(format!("Invalid start position: {}", e)))?;
+    let end = parts[1].parse::<usize>()
+        .map_err(|e| Error::invalid_query(format!("Invalid end position: {}", e)))?;
+
+    let start = support::encode_node(start, Orientation::Forward);
+    let end = support::encode_node(end, Orientation::Reverse);
+    Ok(Some((start, end)))
+}
+
+fn alignment_in_range(aln: &Alignment, min_handle: usize, max_handle: usize) -> bool {
+    if let Some(handles) = aln.target_path() {
+        for &handle in handles {
+            if handle >= min_handle && handle <= max_handle {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 //-----------------------------------------------------------------------------

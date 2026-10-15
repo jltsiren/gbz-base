@@ -5,6 +5,8 @@
 * New functionality:
   * `Subgraph::extract_haplotype_walks` for extracting the paths as `HaplotypeWalk` objects.
   * Tuning database behavior with `execute_pragma` and `set_pragma` in `GBZBase` and `GAFBase`.
+  * `GAFBaseInterface`: low-level query interface for GAF-base.
+  * `GAFBaseIter`: an iterator over alignments returned by an SQL statement.
 * Compatibility with the old subgraph query algorithms still used in GBWTGraph:
   * `DistanceMode` parameter for extracting context based on shortest distances to node sides (default) or nodes (for compatibility).
   * `AlignmentMode` parameter for aligning other paths to the reference by LCS weighted by node length (default) or unweighted LCS (for compatibility).

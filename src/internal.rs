@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 //-----------------------------------------------------------------------------
 
-pub(crate) fn open_connection(filename: &Path) -> rusqlite::Result<Connection> {
+pub(crate) fn open_connection(filename: &Path) -> crate::Result<Connection> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
     let connection = Connection::open_with_flags(filename, flags)?;
     Ok(connection)

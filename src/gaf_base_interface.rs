@@ -177,6 +177,17 @@ impl<'a> GAFBaseInterface<'a> {
         )
     }
 
+    // FIXME: test
+    /// Returns a prepared statement for retrieving rows overlapping the given range of handles from table `Alignments`.
+    ///
+    /// The statement takes two integer parameters: the minimum handle and the maximum handle.
+    /// This can be used for creating a [`GAFBaseIter`].
+    pub fn handle_range<'conn>(database: &'conn GAFBase) -> Result<Statement<'conn>> {
+        database.prepare(
+            "SELECT * FROM Alignments WHERE max_handle >= ? AND min_handle <= ? ORDER BY id"
+        )
+    }
+
     // Decompresses an alignment block from a row, starting from index.
     // Fields `from_idx` to `from_idx + 10` must correspond to columns `min_handle` to `optional` in table `Alignments`.
     pub(crate) fn decompress_block(row: &Row, from_idx: usize) -> Result<Vec<Alignment>> {

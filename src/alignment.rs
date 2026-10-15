@@ -442,14 +442,16 @@ impl Alignment {
         })
     }
 
+    // FIXME: test with empty target sequences
     /// Converts the alignment to a GAF line.
     ///
     /// If the target path is stored as a GBWT starting position, it will be missing (`*`).
     /// The path can be set with [`Alignment::set_target_path`] or extracted from a GBWT index with [`Alignment::extract_target_path`].
     /// The returned line does not end with an endline character.
     ///
-    /// A target sequence is necessary for reconstructing the difference string, if present.
-    /// It must correspond to the entire target path.
+    /// If a target sequence is provided, it must correspond to the entire target path.
+    /// It will be used for reconstructing a GAF v1.0 difference string with `*` and `-` operations for mismatches and deletions.
+    /// If the target sequence is empty, the difference string will use `?` and `!` operations introduced in GAF v1.1.
     pub fn to_gaf(&self, target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
 
@@ -511,7 +513,11 @@ impl Alignment {
         }
         if !self.difference.is_empty() {
             // TODO: Can we write the difference string directly?
-            let target_sequence = &target_sequence[self.path_interval.clone()];
+            let target_sequence = if target_sequence.is_empty() {
+                &[]
+            } else {
+                &target_sequence[self.path_interval.clone()]
+            };
             let field = TypedField::String(Self::TAG_DIFFERENCE_STRING, Difference::to_bytes(&self.difference, target_sequence));
             field.append_to(&mut result, true);
         }
