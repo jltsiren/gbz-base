@@ -250,6 +250,47 @@ The relevant files are:
 * `micb-kir3dl1_HG003.gaf` / `micb-kir3dl1_HG003.gaf.gz`: HG003 reads aligned to the graph
 * `micb-kir3dl1_HG003.gbwt`: Pre-built GBWT index for the reads
 
+## Batched GAF-base queries
+
+`gaf-base batch` can be used for querying GAF-base without the overhead of opening a database connection and extracting a subgraph.
+The subcommand reads queries from standard input and writes GAF output to standard output.
+It can be used interactively (typically by launching it as a child process) or for batched queries.
+In interactive use, the parent process is expected to issue one query at a time and read the result afterwards.
+
+Each query is given as two integers that define a closed range of node identifiers.
+An empty line or end-of-file tells `gaf-base batch` to stop.
+The results from a single query are similarly terminated by an empty line.
+
+Example queries:
+```
+179551168	179552548
+179552548	179554243
+179554243	179558906
+179558906	179559573
+179559573	179560180
+```
+
+Basic usage:
+```sh
+gaf-base batch reads.db < queries.tsv > out.gaf
+```
+
+If the GAF-base is reference-based, the output will be written as GAF version 1.1.
+As a reference-based database does not store node sequences, target path lengths will be undefined in the output.
+Difference strings will use `?` and `!` operations for mismatches and deletions, respectively.
+The `*` and `-` operations used in GAF 1.0 would require target bases.
+
+### Options
+
+* `-p` / `--progress`: Print progress information to standard error.
+* `--aln-cache N`: Cache size in bytes for the database connection used for alignments.
+  This can be specified using suffixes such as `50M` or `128MiB`.
+* `--node-cache N`: Cache size in bytes for the database connection used for node records.
+  This can be specified using suffixes such as `50M` or `128MiB`.
+* `--record-cache N`: Cache size threshold in handles for reusing the node record cache in the next query.
+  This can be specified using suffixes such as `100k`.
+  When subsequent queries cover adjacent graph regions, this can speed them up significantly.
+
 ## Interface
 
 See `cargo doc --open`.

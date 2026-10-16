@@ -448,8 +448,9 @@ impl Alignment {
     /// The path can be set with [`Alignment::set_target_path`] or extracted from a GBWT index with [`Alignment::extract_target_path`].
     /// The returned line does not end with an endline character.
     ///
-    /// A target sequence is necessary for reconstructing the difference string, if present.
-    /// It must correspond to the entire target path.
+    /// If a target sequence is provided, it must correspond to the entire target path.
+    /// It will be used for reconstructing a GAF v1.0 difference string with `*` and `-` operations for mismatches and deletions.
+    /// If the target sequence is empty, the difference string will use `?` and `!` operations introduced in GAF v1.1.
     pub fn to_gaf(&self, target_sequence: &[u8]) -> Vec<u8> {
         let mut result = Vec::new();
 
@@ -482,7 +483,11 @@ impl Alignment {
 
         // Coordinates in the target path.
         result.push(b'\t');
-        utils::append_usize(&mut result, self.path_len);
+        if self.path_len == 0 {
+            result.extend_from_slice(&Self::MISSING_VALUE);
+        } else {
+            utils::append_usize(&mut result, self.path_len);
+        }
         result.push(b'\t');
         utils::append_usize(&mut result, self.path_interval.start);
         result.push(b'\t');
@@ -507,7 +512,11 @@ impl Alignment {
         }
         if !self.difference.is_empty() {
             // TODO: Can we write the difference string directly?
-            let target_sequence = &target_sequence[self.path_interval.clone()];
+            let target_sequence = if target_sequence.is_empty() {
+                &[]
+            } else {
+                &target_sequence[self.path_interval.clone()]
+            };
             let field = TypedField::String(Self::TAG_DIFFERENCE_STRING, Difference::to_bytes(&self.difference, target_sequence));
             field.append_to(&mut result, true);
         }

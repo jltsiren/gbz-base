@@ -1,14 +1,24 @@
-use crate::{GBZBase, GraphInterface, formats};
-use crate::{GAFBase, GAFBaseParams, GraphReference};
+use crate::{GBZBase, GraphInterface, GraphReference};
+use crate::{GAFBase, GAFBaseParams, GAFBaseInterface};
 use crate::{Alignment, PathIndex};
-use crate::utils;
+use crate::{formats, utils};
 
 use gbz::GBZ;
 use gbz::support::{self, Chains};
 
 use simple_sds::{binaries, serialize};
 
+use rusqlite::{Connection, OpenFlags};
+
 use std::path::{Path, PathBuf};
+
+//-----------------------------------------------------------------------------
+
+pub(crate) fn open_connection(filename: &Path) -> crate::Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI;
+    let connection = Connection::open_with_flags(filename, flags)?;
+    Ok(connection)
+}
 
 //-----------------------------------------------------------------------------
 
@@ -73,6 +83,12 @@ pub(crate) fn open_gaf_base(db_file: &Path) -> GAFBase {
     db.unwrap()
 }
 
+pub(crate) fn create_gaf_base_interface(conn: &GAFBase) -> GAFBaseInterface<'_> {
+    let interface = GAFBaseInterface::new(conn);
+    assert!(interface.is_ok(), "Failed to create GAF-base interface: {}", interface.unwrap_err());
+    interface.unwrap()
+}
+
 //-----------------------------------------------------------------------------
 
 // Files for the GAF-base test case (from vg haplotype sampling).
@@ -98,33 +114,9 @@ pub(crate) fn load_gaf_base_reads(gzip_compressed: bool) -> Vec<Alignment> {
         "micb-kir3dl1_HG003.gaf"
     };
     let gaf_file = utils::get_test_data(gaf_part);
-
-    let reader = utils::open_file(gaf_file);
-    assert!(reader.is_ok(), "Failed to open GAF file: {}", reader.err().unwrap());
-    let mut reader = reader.unwrap();
-
-    let mut result = Vec::new();
-    let mut line_num = 1;
-    loop {
-        let mut buf: Vec<u8> = Vec::new();
-        let len = reader.read_until(b'\n', &mut buf);
-        assert!(len.is_ok(), "Failed to read line {}: {}", line_num, len.err().unwrap());
-        if formats::is_gaf_header_line(&buf) {
-            line_num += 1;
-            continue;
-        }
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-        }
-        if buf.is_empty() {
-            break;
-        }
-        let aln = Alignment::from_gaf(&buf);
-        assert!(aln.is_ok(), "Failed to parse GAF line {}: {}", line_num, aln.unwrap_err());
-        result.push(aln.unwrap());
-        line_num += 1;
-    };
-
+    let result = formats::read_gaf_file(&gaf_file);
+    assert!(result.is_ok(), "Failed to read GAF file {}: {}", gaf_file.display(), result.unwrap_err());
+    let (_, result) = result.unwrap();
     result
 }
 

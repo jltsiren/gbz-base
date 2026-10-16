@@ -244,6 +244,11 @@ impl GBZBase {
             Err(err) => Err(Error::from(err)),
         }
     }
+
+    // Returns a prepared statement using the underlying connection.
+    pub(crate) fn prepare<'a>(&'a self, sql: &str) -> Result<Statement<'a>> {
+        self.connection.prepare(sql).map_err(Error::from)
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -545,6 +550,7 @@ impl GBZBase {
 ///
 /// This structure stores a database connection and some header information.
 /// In multi-threaded applications, each thread should have its own connection.
+/// [`crate::GAFBaseInterface`] provides a low-level query interface to the database.
 /// A set of alignments overlapping with a subgraph can be extracted using the [`crate::ReadSet`] structure.
 ///
 /// # Examples
@@ -720,6 +726,11 @@ impl GAFBase {
             },
             Err(err) => Err(Error::from(err)),
         }
+    }
+
+    // Returns a prepared statement using the underlying connection.
+    pub(crate) fn prepare<'a>(&'a self, sql: &str) -> Result<Statement<'a>> {
+        self.connection.prepare(sql).map_err(Error::from)
     }
 
     /// Returns the filename of the database or an error if there is no filename.
@@ -912,7 +923,7 @@ impl Default for GAFBaseParams {
 
 //-----------------------------------------------------------------------------
 
-// TODO: If we are willing to use a reference, we could reuse `edges` in the `Nodes` table from it.
+// NOTE: If we are willing to use a reference, we could reuse `edges` in the `Nodes` table from it.
 
 /// Creating the database.
 impl GAFBase {
@@ -1289,8 +1300,9 @@ impl GAFBase {
         } else {
             None
         };
+        let mut buf: Vec<u8> = Vec::new();
         loop {
-            let mut buf: Vec<u8> = Vec::new();
+            buf.clear();
             let len = gaf_file.read_until(b'\n', &mut buf).map_err(Error::io);
             match len {
                 Ok(len) => {
@@ -1465,16 +1477,31 @@ impl GBZRecord {
     /// Returns a GBWT record based on this record.
     ///
     /// The lifetime of the returned record is tied to this record.
+    /// Note that node handle will be used as the record id.
+    /// In an actual GBWT record, it would be the offset of the record in [`BWT`].
+    /// See [`Self::to_gbwt_record_with_id`] for a version that assigns a specific record id.
     ///
     /// # Panics
     ///
     /// Will panic if the record would be empty.
     /// This should never happen with a valid database.
     pub fn to_gbwt_record(&self) -> Record<'_> {
+        self.to_gbwt_record_with_id(self.handle)
+    }
+
+    /// Returns a GBWT record based on this record, with the given record id.
+    ///
+    /// See also [`Self::to_gbwt_record`].
+    ///
+    /// # Panics
+    ///
+    /// Will panic if the record would be empty.
+    /// This should never happen with a valid database.
+    pub fn to_gbwt_record_with_id(&self, record_id: usize) -> Record<'_> {
         if self.edges.is_empty() {
-            panic!("GBZRecord::to_gbwt_record: Empty record");
+            panic!("GBZRecord::to_gbwt_record_with_id: Empty record");
         }
-        unsafe { Record::from_raw_parts(self.handle, self.edges.clone(), &self.bwt) }
+        unsafe { Record::from_raw_parts(record_id, self.edges.clone(), &self.bwt) }
     }
 
     /// Returns the handle of the record.
@@ -1532,6 +1559,12 @@ impl GBZRecord {
     #[inline]
     pub fn sequence(&self) -> &[u8] {
         &self.sequence
+    }
+
+    /// Consumes the record and returns the sequence.
+    #[inline]
+    pub fn into_sequence(self) -> Vec<u8> {
+        self.sequence
     }
 
     /// Returns the length of the sequence stored in the record.
@@ -1693,34 +1726,34 @@ impl<'a> GraphInterface<'a> {
     ///
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     pub fn new(database: &'a GBZBase) -> Result<Self> {
-        let get_tag = database.connection.prepare(
+        let get_tag = database.prepare(
             "SELECT value FROM Tags WHERE key = ?1"
         )?;
 
-        let get_tags = database.connection.prepare(
+        let get_tags = database.prepare(
             "SELECT key, value FROM Tags WHERE key LIKE ?1"
         )?;
 
-        let get_record = database.connection.prepare(
+        let get_record = database.prepare(
             "SELECT edges, bwt, sequence, next FROM Nodes WHERE handle = ?1"
         )?;
 
-        let get_path = database.connection.prepare(
+        let get_path = database.prepare(
             "SELECT * FROM Paths WHERE handle = ?1"
         )?;
 
-        let find_path = database.connection.prepare(
+        let find_path = database.prepare(
             "SELECT * FROM Paths
             WHERE sample = ?1 AND contig = ?2 AND haplotype = ?3 AND fragment <= ?4
             ORDER BY fragment DESC
             LIMIT 1"
         )?;
 
-        let paths_for_sample = database.connection.prepare(
+        let paths_for_sample = database.prepare(
             "SELECT * FROM Paths WHERE sample = ?1"
         )?;
 
-        let indexed_position = database.connection.prepare(
+        let indexed_position = database.prepare(
             "SELECT path_offset, node_handle, node_offset FROM ReferenceIndex
             WHERE path_handle = ?1 AND path_offset <= ?2
             ORDER BY path_offset DESC
@@ -1904,6 +1937,33 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
             },
             GraphReference::Db(db) => {
                 db.get_record(handle)?.ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
+            },
+            GraphReference::None => Err(Error::invalid_query("No reference graph provided")),
+        }
+    }
+
+    /// Returns the sequence corresponding to the given handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ErrorKind::NotFound`](crate::ErrorKind::NotFound) error if the handle does not exist in the graph.
+    /// Returns an [`ErrorKind::InvalidQuery`](crate::ErrorKind::InvalidQuery) error if the graph reference is [`Self::None`].
+    /// Passes through any errors from the graph implementation.
+    pub fn sequence(&mut self, handle: usize) -> Result<Vec<u8>> {
+        match self {
+            GraphReference::Gbz(gbz) => {
+                let (node, orientation) = support::decode_node(handle);
+                let sequence = gbz.sequence(node)
+                    .ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))?;
+                match orientation {
+                    Orientation::Forward => Ok(sequence.to_vec()),
+                    Orientation::Reverse => Ok(support::reverse_complement(sequence)),
+                }
+            },
+            GraphReference::Db(db) => {
+                db.get_record(handle)?
+                    .map(|record| record.into_sequence())
+                    .ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
             },
             GraphReference::None => Err(Error::invalid_query("No reference graph provided")),
         }

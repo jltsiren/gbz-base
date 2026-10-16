@@ -202,16 +202,26 @@ fn alignment_known_good() {
     }
 
     // These alignments will survive the round-trip from/to GAF intact.
-    // 1 is on the reverse strand, while 7 has non-canonical empty fields.
+    // 1 is on the reverse strand, 6 has path length 0 that gets normalized
+    // to *, and 7 has non-canonical empty fields.
     // In 8, missing numerical fields get values from the difference string.
     let round_trip = vec![
-        0, 2, 3, 4, 5, 6,
+        0, 2, 3, 4, 5,
     ];
     let gaf_lines = read_gaf_lines(&filename);
     let target_sequence = b"AAAAAAAAAACCCCCCCCCCCCCCCCCCCCAGAAAAAAAAAAAAAAAAAAAAGATTACATGGGGGGGGGGGGGGGGGGGGTTTTTTTTTTTTTTTTTTTTAAAAAAAAAACCCCCCCCCC".to_vec();
     for index in round_trip {
         let line = alignments[index].to_gaf(&target_sequence);
         assert_eq!(line, gaf_lines[index], "Line {} did not survive the round trip", index + 1);
+    }
+
+    // Write the alignments without a target sequence, which uses difference string operations from GAF v1.1 without reference bases.
+    // All alignments should survive the round trip to GAF and back.
+    for (index, aln) in alignments.iter().enumerate() {
+        let line = aln.to_gaf(&[]);
+        let parsed = Alignment::from_gaf(&line);
+        assert!(parsed.is_ok(), "Could not parse line {} with a GAF v1.1 difference string: {}", index + 1, parsed.unwrap_err());
+        assert_eq!(parsed.unwrap(), *aln, "Line {} did not survive the round trip to GAF v1.1", index + 1);
     }
 }
 
@@ -220,6 +230,19 @@ fn alignment_known_good_no_header() {
     // This is the same test as above, but the GAF file has no header lines.
     let truth = known_good_alignments();
     let filename = utils::get_test_data("no_header.gaf");
+    let alignments = parse_alignments(&filename, false);
+    assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
+    for i in 0..truth.len() {
+        check_alignment(&alignments[i], &truth[i], i + 1, false, false);
+    }
+}
+
+#[test]
+fn alignment_gaf_v11() {
+    // good.v1.1.gaf contains the same alignments as good.gaf.
+    // It uses some GAF v1.1 difference string operations without reference bases (`?`, `!`).
+    let truth = known_good_alignments();
+    let filename = utils::get_test_data("good.v1.1.gaf");
     let alignments = parse_alignments(&filename, false);
     assert_eq!(alignments.len(), truth.len(), "Wrong number of alignments in the test file");
     for i in 0..truth.len() {

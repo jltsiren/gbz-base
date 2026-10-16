@@ -440,24 +440,29 @@ fn write_json_path() {
 
 // Tests for GAF reading.
 
-#[test]
-fn gaf_headers() {
-    // Filename and expected number of header lines.
-    let test_cases = vec![
-        ("empty.gaf", 0),
-        ("good.gaf", 2),
-        ("micb-kir3dl1_HG003.gaf", 2),
-        ("no_header.gaf", 0)
-    ];
+fn gaf_reading_test_cases() -> Vec<(&'static str, usize, usize)> {
+    vec![
+        ("empty.gaf", 0, 0),
+        ("good.gaf", 2, 9),
+        ("good.v1.1.gaf", 2, 9),
+        ("micb-kir3dl1_HG003.gaf", 2, 12439),
+        ("no_header.gaf", 0, 9)
+    ]
+}
 
-    for (filename, expected_lines) in test_cases {
+#[test]
+fn gaf_from_reader() {
+    let test_cases = gaf_reading_test_cases();
+    for (filename, header_lines, alignment_lines) in test_cases {
         let filepath = utils::get_test_data(filename);
         let mut reader = utils::open_file(&filepath)
             .expect(&format!("Failed to open test GAF file {}", filename));
+
+        // Check the headers.
         let headers = read_gaf_header_lines(&mut reader);
         assert!(headers.is_ok(), "Failed to read GAF headers from file {}: {}", filename, headers.unwrap_err());
         let headers = headers.unwrap();
-        assert_eq!(headers.len(), expected_lines, "Wrong number of GAF header lines in file {}", filename);
+        assert_eq!(headers.len(), header_lines, "Wrong number of GAF header lines in file {}", filename);
         for (i, line) in headers.iter().enumerate() {
             let is_header = is_gaf_header_line(line.as_bytes());
             assert!(is_header, "Line {} in file {} is not a valid GAF header line", i + 1, filename);
@@ -468,6 +473,25 @@ fn gaf_headers() {
         if let Ok(is_header) = peek {
             assert!(!is_header, "Additional header lines found in file {}", filename);
         }
+
+        // Check the alignments.
+        let alignments = read_gaf_lines(&mut reader, Some(header_lines + 1));
+        assert!(alignments.is_ok(), "Failed to read GAF alignments from file {}: {}", filename, alignments.unwrap_err());
+        let alignments = alignments.unwrap();
+        assert_eq!(alignments.len(), alignment_lines, "Wrong number of GAF alignments in file {}", filename);
+    }
+}
+
+#[test]
+fn gaf_from_file() {
+    let test_cases = gaf_reading_test_cases();
+    for (filename, header_lines, alignment_lines) in test_cases {
+        let filepath = utils::get_test_data(filename);
+        let result = read_gaf_file(&filepath);
+        assert!(result.is_ok(), "Failed to read GAF file {}: {}", filename, result.unwrap_err());
+        let (headers, alignments) = result.unwrap();
+        assert_eq!(headers.len(), header_lines, "Wrong number of GAF header lines in file {}", filename);
+        assert_eq!(alignments.len(), alignment_lines, "Wrong number of GAF alignments in file {}", filename);
     }
 }
 

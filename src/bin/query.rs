@@ -104,7 +104,7 @@ fn extract_gaf(graph: GraphReference<'_, '_>, subgraph: &Subgraph, config: &Conf
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     let mut gaf_output = options.open(gaf_output_file)?;
-    formats::write_gaf_file_header(&mut gaf_output).map_err(
+    formats::write_gaf_file_header(&mut gaf_output, None).map_err(
         |x| Error::io(format!("Failed to write GAF header to {}: {}", gaf_output_file, x))
     )?;
     let graph_name = subgraph.graph_name();
