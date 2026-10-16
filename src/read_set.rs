@@ -297,7 +297,7 @@ impl ReadSet {
         let mut reads: Vec<Alignment> = Vec::new();
         let mut iter = GAFBaseIter::reference_based(
             &mut statement, (row_range.start, row_range.end),
-            &mut interface, &mut get_sequence
+            &mut interface, &mut get_sequence, None
         )?;
         let mut blocks = 0;
         while let Some(block) = iter.next() {

@@ -165,7 +165,7 @@ fn all_alignments() {
         let statement = GAFBaseInterface::all_alignments(&conn);
         assert!(statement.is_ok(), "Failed to prepare statement: {}", statement.unwrap_err());
         let mut statement = statement.unwrap();
-        let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface);
+        let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface, None);
         let iter = match iter {
             Ok(iter) => iter,
             Err(err) => panic!("Failed to create iterator: {}", err),
@@ -238,7 +238,7 @@ fn row_ranges() {
         while next_alignment < truth.len() {
             let batch_start = next_alignment;
             let mut iter = GAFBaseIter::reference_based(
-                &mut statement, (next_row, next_row + 2), &mut interface, &mut get_sequence
+                &mut statement, (next_row, next_row + 2), &mut interface, &mut get_sequence, None
             ).expect(&format!("Failed to create iterator for rows {} to {}", next_row, next_row + 2));
             let mut num_rows = 0;
             while let Some(block) = iter.next() {
@@ -289,6 +289,8 @@ fn handle_ranges() {
     {
         let mut statement = GAFBaseInterface::handle_range(&conn)
             .expect("Failed to prepare handle range statement");
+        // We also test reusing the cache across multiple iterations.
+        let mut cache = None;
         for (min_node, max_node) in boundary_node_pairs() {
             // Collect the truth. We take the entire block if at least one alignment falls within the range.
             let min_handle = support::encode_node(min_node, Orientation::Forward);
@@ -321,12 +323,14 @@ fn handle_ranges() {
 
             // Compare iterator output to the truth.
             let mut result: Vec<Alignment> = Vec::new();
-            let iter = GAFBaseIter::reference_free(&mut statement, (min_handle, max_handle), &mut interface)
-                .expect(&format!("Failed to create iterator for node range {} to {}", min_node, max_node));
-            for row in iter {
+            let mut iter = GAFBaseIter::reference_free(
+                &mut statement, (min_handle, max_handle), &mut interface, cache
+            ).expect(&format!("Failed to create iterator for node range {} to {}", min_node, max_node));
+            while let Some(row) = iter.next() {
                 let block = row.expect(&format!("Failed to read block for node range {} to {}", min_node, max_node));
                 result.extend(block);
             }
+            cache = Some(iter.consume());
             assert_eq!(result.len(), truth.len(), "Wrong number of alignments for node range {} to {}", min_node, max_node);
             for (i, (aln, truth_aln)) in result.iter_mut().zip(truth.iter()).enumerate() {
                 // Reference-free iteration cannot determine target path lengths from a reference-based GAF-base.

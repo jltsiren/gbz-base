@@ -72,7 +72,7 @@ mod tests;
 /// {
 ///     let mut statement = GAFBaseInterface::all_alignments(&conn)
 ///         .expect("Failed to prepare all alignments statement");
-///     let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface)
+///     let iter = GAFBaseIter::reference_free(&mut statement, (), &mut interface, None)
 ///         .expect("Failed to create GAF-base iterator");
 ///     let mut index = 0;
 ///     for block in iter {
@@ -91,7 +91,7 @@ mod tests;
 ///     let mut statement = GAFBaseInterface::alignment_rows(&conn)
 ///         .expect("Failed to prepare alignment rows statement");
 ///     let mut iter = GAFBaseIter::reference_based(
-///         &mut statement, (4, 6), &mut interface, &mut get_sequence
+///         &mut statement, (4, 6), &mut interface, &mut get_sequence, None
 ///     ).expect("Failed to create iterator for row 4");
 ///     let mut index = 3000;
 ///     while let Some(block) = iter.next() {
@@ -300,16 +300,18 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
     /// * `statement`: Prepared SQL statement that returns rows with all columns from table `Alignments`.
     /// * `params`: Parameters to bind to the SQL statement.
     /// * `record_interface`: The GAF-base interface for retrieving node records.
+    /// * `cache`: Optional node record cache that is expected to overlap with the iterated alignments.
     pub fn reference_free<P: Params>(
         statement: &'reference mut Statement<'_>, params: P,
-        record_interface: &'reference mut GAFBaseInterface<'interface>
+        record_interface: &'reference mut GAFBaseInterface<'interface>,
+        cache: Option<BTreeMap<usize, GBZRecord>>,
     ) -> Result<Self> {
         let rows = statement.query(params)?;
         Ok(Self {
             rows,
             record_interface,
             get_sequence: None,
-            cache: BTreeMap::new(),
+            cache: cache.unwrap_or_default(),
         })
     }
 
@@ -324,17 +326,19 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
     /// * `statement`: Prepared SQL statement that returns rows with all columns from table `Alignments`.
     /// * `record_interface`: The GAF-base interface for retrieving node records.
     /// * `get_sequence`: Function for retrieving node sequences.
+    /// * `cache`: Optional node record cache that is expected to overlap with the iterated alignments.
     pub fn reference_based<P: Params>(
         statement: &'reference mut Statement<'_>, params: P,
         record_interface: &'reference mut GAFBaseInterface<'interface>,
-        get_sequence: &'reference mut dyn FnMut(usize) -> Result<Vec<u8>>
+        get_sequence: &'reference mut dyn FnMut(usize) -> Result<Vec<u8>>,
+        cache: Option<BTreeMap<usize, GBZRecord>>,
     ) -> Result<Self> {
         let rows = statement.query(params)?;
         Ok(Self {
             rows,
             record_interface,
             get_sequence: Some(get_sequence),
-            cache: BTreeMap::new(),
+            cache: cache.unwrap_or_default(),
         })
     }
 

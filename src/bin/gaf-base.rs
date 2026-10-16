@@ -476,6 +476,7 @@ fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<()> {
 
 //-----------------------------------------------------------------------------
 
+// TODO: Better heuristics for cache reuse. Or maybe an actual LRU cache?
 #[derive(Args)]
 struct BatchArgs {
     /// Input GAF-base database file
@@ -489,6 +490,10 @@ struct BatchArgs {
     /// Cache size for the database connection used for node records
     #[arg(long, value_name = "BYTES", value_parser = parse_quantity)]
     node_cache: Option<usize>,
+
+    /// Reuse node record cache if it is at most this size
+    #[arg(long, value_name = "HANDLES", value_parser = parse_quantity)]
+    reuse_cache: Option<usize>,
 
     /// Print progress information to stderr
     #[arg(short, long)]
@@ -524,6 +529,7 @@ fn batch(args: BatchArgs) -> Result<()> {
     // and we don't want to report too many errors.
     let mut stdin = BufReader::new(io::stdin());
     let mut stdout = BufWriter::new(io::stdout());
+    let mut cache = None;
     loop {
         let query = read_query(&mut stdin)?;
         if query.is_none() {
@@ -531,7 +537,7 @@ fn batch(args: BatchArgs) -> Result<()> {
         }
         let (min_handle, max_handle) = query.unwrap();
         let mut iter = GAFBaseIter::reference_free(
-            &mut handle_range, (min_handle, max_handle), &mut record_interface
+            &mut handle_range, (min_handle, max_handle), &mut record_interface, cache
         )?;
         let mut alignments: usize = 0;
         let mut blocks: usize = 0;
@@ -549,11 +555,21 @@ fn batch(args: BatchArgs) -> Result<()> {
             blocks += 1;
         }
         let cache_size = iter.cache_size();
-        drop(iter);
+        if let Some(reuse_cache) = args.reuse_cache {
+            let old_cache = iter.consume();
+            if old_cache.len() <= reuse_cache {
+                cache = Some(old_cache);
+            } else {
+                cache = None;
+            }
+        } else {
+            cache = None;
+            drop(iter);
+        }
         stdout.write_all(b"\n")?;
         stdout.flush()?;
         if args.progress {
-            eprintln!("Handles {} to {}: {} alignments in {} blocks with {} handles", min_handle, max_handle, alignments, blocks, cache_size);
+            eprintln!("Handles {} to {}: {} alignments in {} blocks (cache size: {})", min_handle, max_handle, alignments, blocks, cache_size);
         }
     }
 
