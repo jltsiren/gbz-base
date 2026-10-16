@@ -477,6 +477,7 @@ fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<()> {
 //-----------------------------------------------------------------------------
 
 // TODO: Better heuristics for cache reuse. Or maybe an actual LRU cache?
+// TODO: Would it also make sense to cache blocks extracted in the previous query?
 #[derive(Args)]
 struct BatchArgs {
     /// Input GAF-base database file
@@ -493,7 +494,7 @@ struct BatchArgs {
 
     /// Reuse node record cache if it is at most this size
     #[arg(long, value_name = "HANDLES", value_parser = parse_quantity)]
-    reuse_cache: Option<usize>,
+    record_cache: Option<usize>,
 
     /// Print progress information to stderr
     #[arg(short, long)]
@@ -555,9 +556,9 @@ fn batch(args: BatchArgs) -> Result<()> {
             blocks += 1;
         }
         let cache_size = iter.cache_size();
-        if let Some(reuse_cache) = args.reuse_cache {
+        if let Some(record_cache) = args.record_cache {
             let old_cache = iter.consume();
-            if old_cache.len() <= reuse_cache {
+            if old_cache.len() <= record_cache {
                 cache = Some(old_cache);
             } else {
                 cache = None;
