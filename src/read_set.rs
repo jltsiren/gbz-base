@@ -10,7 +10,7 @@ use gbz::support;
 
 use rusqlite::Row;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::io::Write;
 use std::ops::Range;
@@ -101,7 +101,7 @@ impl Display for AlignmentOutput {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ReadSet {
     // GBZ records from the GAF GBWT, with sequence from the graph/subgraph.
-    nodes: BTreeMap<usize, GBZRecord>,
+    nodes: HashMap<usize, GBZRecord>,
     reads: Vec<Alignment>,
     // Number of alignments before clipping.
     unclipped: usize,

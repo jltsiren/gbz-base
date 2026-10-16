@@ -8,7 +8,7 @@ use gbz::support;
 
 use simple_sds::serialize;
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::fs;
 
 //-----------------------------------------------------------------------------
@@ -104,7 +104,7 @@ fn run_direct_decompression(gbz: Option<GBZ>) {
             Err(err) => panic!("Failed to query Alignments: {}", err),
         };
         let mut line: usize = 0;
-        let mut cache = BTreeMap::new();
+        let mut cache = HashMap::new();
         loop {
             let row = rows.next();
             assert!(row.is_ok(), "Failed to get next row: {}", row.unwrap_err());
@@ -187,8 +187,8 @@ fn all_alignments() {
     let _ = fs::remove_file(&gaf_base_file);
 }
 
-fn check_node_cache(cache: &BTreeMap<usize, GBZRecord>, alignments: &[Alignment], test_case: &str) {
-    let mut expected_handles: BTreeSet<usize> = BTreeSet::new();
+fn check_node_cache(cache: &HashMap<usize, GBZRecord>, alignments: &[Alignment], test_case: &str) {
+    let mut expected_handles: HashSet<usize> = HashSet::new();
     for aln in alignments.iter() {
         if let Some(path) = aln.target_path() {
             for handle in path.iter() {

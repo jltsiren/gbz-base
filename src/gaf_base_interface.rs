@@ -10,7 +10,7 @@ use gbz::bwt::Record;
 
 use rusqlite::{Statement, Row, Rows, OptionalExtension, Params};
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::iter::FusedIterator;
 
 #[cfg(test)]
@@ -219,7 +219,7 @@ impl<'a> GAFBaseInterface<'a> {
     // If the sequences are not set, target path length will be 0.
     pub(crate) fn set_target_path(
         &mut self, aln: &mut Alignment,
-        cache: &mut BTreeMap<usize, GBZRecord>,
+        cache: &mut HashMap<usize, GBZRecord>,
         get_sequence: &mut dyn FnMut(usize) -> Result<Vec<u8>>
     ) -> Result<()> {
         let mut pos = match &aln.path {
@@ -263,7 +263,7 @@ pub struct GAFBaseIter<'reference, 'interface> {
     // Optional function for getting node sequences from another source.
     get_sequence: Option<&'reference mut dyn FnMut(usize) -> Result<Vec<u8>>>,
     // Cached GBZ records for the nodes used by the alignments so far.
-    cache: BTreeMap<usize, GBZRecord>,
+    cache: HashMap<usize, GBZRecord>,
 }
 
 impl<'reference, 'interface> Iterator for GAFBaseIter<'reference, 'interface> {
@@ -304,7 +304,7 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
     pub fn reference_free<P: Params>(
         statement: &'reference mut Statement<'_>, params: P,
         record_interface: &'reference mut GAFBaseInterface<'interface>,
-        cache: Option<BTreeMap<usize, GBZRecord>>,
+        cache: Option<HashMap<usize, GBZRecord>>,
     ) -> Result<Self> {
         let rows = statement.query(params)?;
         Ok(Self {
@@ -331,7 +331,7 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
         statement: &'reference mut Statement<'_>, params: P,
         record_interface: &'reference mut GAFBaseInterface<'interface>,
         get_sequence: &'reference mut dyn FnMut(usize) -> Result<Vec<u8>>,
-        cache: Option<BTreeMap<usize, GBZRecord>>,
+        cache: Option<HashMap<usize, GBZRecord>>,
     ) -> Result<Self> {
         let rows = statement.query(params)?;
         Ok(Self {
@@ -351,7 +351,7 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
     ///
     /// This can be useful for GAF output after reference-based iteration.
     /// Some difference string operations require target bases, which can be determined from the cache.
-    pub fn consume(self) -> BTreeMap<usize, GBZRecord> {
+    pub fn consume(self) -> HashMap<usize, GBZRecord> {
         self.cache
     }
 
