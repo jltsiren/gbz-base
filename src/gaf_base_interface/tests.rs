@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::{formats, internal};
+use crate::{GAFBaseParams, formats, internal};
 
 use gbz::{GBZ, GBWT, Orientation, ENDMARKER};
 use gbz::bwt::BWT;
@@ -260,6 +260,79 @@ fn row_ranges() {
                 &format!("rows {}..{}", next_row, next_row + 2)
             );
             next_row += 2;
+        }
+    }
+
+    drop(interface);
+    drop(conn);
+    let _ = fs::remove_file(&gaf_base_file);
+}
+
+fn boundary_node_pairs() -> Vec<(usize, usize)> {
+    vec![
+        (400, 403),   // Adjacent boundary nodes in the first component.
+        (103, 255),   // Distant boundary nodes in the first component.
+        (1981, 1984), // Adjacent boundary nodes in the second component.
+        (1169, 1550), // Distant boundary nodes in the second component.
+        (4000, 5000), // Non-existent nodes.
+    ]
+}
+
+#[test]
+fn handle_ranges() {
+    let gaf_base_file = internal::create_gaf_base("micb-kir3dl1_HG003.gaf", "");
+    let conn = internal::open_gaf_base(&gaf_base_file);
+    let mut interface = internal::create_gaf_base_interface(&conn);
+    let (_, alignments) = formats::read_gaf_file(utils::get_test_data("micb-kir3dl1_HG003.gaf"))
+        .expect("Failed to read GAF file");
+
+    {
+        let mut statement = GAFBaseInterface::handle_range(&conn)
+            .expect("Failed to prepare handle range statement");
+        for (min_node, max_node) in boundary_node_pairs() {
+            // Collect the truth. We take the entire block if at least one alignment falls within the range.
+            let min_handle = support::encode_node(min_node, Orientation::Forward);
+            let max_handle = support::encode_node(max_node, Orientation::Reverse);
+            let mut truth = Vec::new();
+            let mut start: usize = 0;
+            while start < alignments.len() {
+                let mut end = start + 1;
+                while end < alignments.len() && end - start < GAFBaseParams::BLOCK_SIZE && !alignments[end].is_unaligned() {
+                    end += 1;
+                }
+                let mut take_this_block = false;
+                for i in start..end {
+                    if let Some(handles) = alignments[i].target_path() {
+                        for handle in handles.iter() {
+                            if *handle >= min_handle && *handle <= max_handle {
+                                take_this_block = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if take_this_block {
+                    for i in start..end {
+                        truth.push(alignments[i].clone());
+                    }
+                }
+                start = end;
+            }
+
+            // Compare iterator output to the truth.
+            let mut result: Vec<Alignment> = Vec::new();
+            let iter = GAFBaseIter::reference_free(&mut statement, (min_handle, max_handle), &mut interface)
+                .expect(&format!("Failed to create iterator for node range {} to {}", min_node, max_node));
+            for row in iter {
+                let block = row.expect(&format!("Failed to read block for node range {} to {}", min_node, max_node));
+                result.extend(block);
+            }
+            assert_eq!(result.len(), truth.len(), "Wrong number of alignments for node range {} to {}", min_node, max_node);
+            for (i, (aln, truth_aln)) in result.iter_mut().zip(truth.iter()).enumerate() {
+                // Reference-free iteration cannot determine target path lengths from a reference-based GAF-base.
+                aln.set_target_path_len(truth_aln.path_len);
+                assert_eq!(aln, truth_aln, "Mismatch at alignment {} for node range {} to {}", i, min_node, max_node);
+            }
         }
     }
 

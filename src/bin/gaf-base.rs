@@ -518,7 +518,10 @@ fn batch(args: BatchArgs) -> Result<()> {
     }
     let mut record_interface = GAFBaseInterface::new(&record_conn)?;
 
-    // FIXME: should we continue with the next query if an error occurs?
+    // Process queries one at a time, reading from stdin and writing results to stdout.
+    // Write an empty line after the results for each query.
+    // If any query fails, report the error and return. Subsequent queries would also likely fail,
+    // and we don't want to report too many errors.
     let mut stdin = BufReader::new(io::stdin());
     let mut stdout = BufWriter::new(io::stdout());
     loop {
@@ -527,11 +530,12 @@ fn batch(args: BatchArgs) -> Result<()> {
             break;
         }
         let (min_handle, max_handle) = query.unwrap();
-        let iter = GAFBaseIter::reference_free(
+        let mut iter = GAFBaseIter::reference_free(
             &mut handle_range, (min_handle, max_handle), &mut record_interface
         )?;
         let mut alignments: usize = 0;
-        for row in iter {
+        let mut blocks: usize = 0;
+        while let Some(row) = iter.next() {
             let block = row?;
             for aln in block.iter() {
                 if !alignment_in_range(aln, min_handle, max_handle) {
@@ -542,11 +546,14 @@ fn batch(args: BatchArgs) -> Result<()> {
                 stdout.write_all(&buf)?;
                 alignments += 1;
             }
+            blocks += 1;
         }
-        stdout.write_all(b"\n")?; // Empty line to signal the end of results for the current query.
+        let cache_size = iter.cache_size();
+        drop(iter);
+        stdout.write_all(b"\n")?;
         stdout.flush()?;
         if args.progress {
-            eprintln!("Handles {} to {}: {} alignments", min_handle, max_handle, alignments);
+            eprintln!("Handles {} to {}: {} alignments in {} blocks with {} handles", min_handle, max_handle, alignments, blocks, cache_size);
         }
     }
 

@@ -1,14 +1,16 @@
 //! Integration tests for binaries.
 
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Write};
 use std::fs;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::process::{Command, Output, ExitStatus};
+use std::process::{Command, Output, ExitStatus, Stdio};
 
 use gbz_base::{GBZBase, GraphInterface, SnarlOutput, PathIndex};
 use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput, ReadSet, AlignmentOutput};
+use gbz_base::Alignment;
 use gbz_base::gaf_sort::{sort_gaf, SortParameters, KeyType};
 use gbz_base::{formats, utils};
 use gbz_base::Error;
@@ -1281,6 +1283,113 @@ fn gbz_base_query_with_gaf_base() {
             assert!(db_gaf_query_ok, "Output mismatch for query {} with alignment output {}", query, output);
         }
     }
+}
+
+//-----------------------------------------------------------------------------
+
+// Tests for `gaf-base batch`.
+
+fn run_gaf_base_batch(gaf_base_file: &PathBuf, ref_free_gaf_base: bool, gaf_file: &PathBuf, queries: &[(usize, usize)], test_case: &str) {
+    let (_, alignments) = formats::read_gaf_file(gaf_file)
+        .expect(&format!("Failed to read GAF file for {}", test_case));
+    let args: Vec<String> = vec![String::from("batch"), gaf_base_file.to_string_lossy().into_owned()];
+    // let args: Vec<String> = vec![String::from("batch"), String::from("--progress"), gaf_base_file.to_string_lossy().into_owned()];
+
+    let binary = get_binary_path("gaf-base");
+    let mut child = Command::new(binary)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect(&format!("Failed to execute gaf-base batch for {}", test_case));
+    let mut stdin = child.stdin.take().expect(&format!("Failed to open stdin for {}", test_case));
+    let mut stdout = BufReader::new(child.stdout.take().expect(&format!("Failed to open stdout for {}", test_case)));
+
+    for (min_node, max_node) in queries {
+        let query_line = format!("{}\t{}\n", min_node, max_node);
+        stdin.write_all(query_line.as_bytes()).expect(&format!("Failed to write to stdin for {}", test_case));
+
+        // Read from child's stdout until an empty line.
+        let mut query_result: Vec<Vec<u8>> = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            stdout.read_until(b'\n', &mut line).expect(&format!("Failed to read from stdout for {}", test_case));
+            if line.ends_with(b"\n") {
+                line.pop();
+            }
+            if line.is_empty() {
+                break;
+            }
+            query_result.push(line);
+        }
+
+        // Output GAF lines may be different from the original, but we should be able to parse the same alignments.
+        let min_handle = support::encode_node(*min_node, Orientation::Forward);
+        let max_handle = support::encode_node(*max_node, Orientation::Reverse);
+        let mut truth: Vec<Alignment> = Vec::new();
+        for aln in alignments.iter() {
+            if let Some(handles) = aln.target_path() {
+                for handle in handles.iter() {
+                    if *handle >= min_handle && *handle <= max_handle {
+                        truth.push(aln.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        assert_eq!(query_result.len(), truth.len(), "Wrong number of alignments for query {}-{} in {}", min_node, max_node, test_case);
+        for (i, line) in query_result.iter().enumerate() {
+            let mut aln = Alignment::from_gaf(line).expect(&format!("Failed to parse GAF line for {}", test_case));
+            if !ref_free_gaf_base {
+                // Target path length cannot be determined without sequences.
+                aln.set_target_path_len(truth[i].path_len);
+            }
+            assert_eq!(aln, truth[i], "Alignment {} mismatch for query {}-{} in {}", i, min_node, max_node, test_case);
+        }
+    }
+
+    drop(stdin);
+    let status = child.wait().expect(&format!("Failed to wait for child process for {}", test_case));
+    assert!(status.success(), "Child process exited with an error for {}", test_case);
+}
+
+fn boundary_node_pairs() -> Vec<(usize, usize)> {
+    vec![
+        (400, 403),   // Adjacent boundary nodes in the first component.
+        (103, 255),   // Distant boundary nodes in the first component.
+        (1981, 1984), // Adjacent boundary nodes in the second component.
+        (1169, 1550), // Distant boundary nodes in the second component.
+        (4000, 5000), // Non-existent nodes.
+    ]
+}
+
+#[test]
+fn gaf_base_batch_ref_based() {
+    let mut temp_files = TempFileHandler::new();
+    let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let params = GAFBaseParams::default();
+    let gaf_base_file = build_gaf_base_truth(&mut temp_files, &gaf_file, None, None, &params);
+
+    let no_queries: Vec<(usize, usize)> = Vec::new();
+    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &no_queries, "no queries");
+
+    let queries: Vec<(usize, usize)> = boundary_node_pairs();
+    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &queries, "queries");
+}
+
+#[test]
+fn gaf_base_batch_ref_free() {
+    let mut temp_files = TempFileHandler::new();
+    let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let gbz_file = utils::get_test_data("micb-kir3dl1.gbz");
+    let params = GAFBaseParams { reference_free: true, ..Default::default()};
+    let gaf_base_file = build_gaf_base_truth(&mut temp_files, &gaf_file, None, Some(&gbz_file), &params);
+
+    let no_queries: Vec<(usize, usize)> = Vec::new();
+    run_gaf_base_batch(&gaf_base_file, true, &gaf_file, &no_queries, "no queries");
+
+    let queries: Vec<(usize, usize)> = boundary_node_pairs();
+    run_gaf_base_batch(&gaf_base_file, true, &gaf_file, &queries, "queries");
 }
 
 //-----------------------------------------------------------------------------

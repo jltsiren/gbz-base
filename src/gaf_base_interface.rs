@@ -160,31 +160,33 @@ impl<'a> GAFBaseInterface<'a> {
     /// Returns a prepared statement for retrieving all alignments from table `Alignments`.
     ///
     /// The statement can be queried without any parameters.
+    /// Alignments will be returned in the original order.
     /// This can be used for creating a [`GAFBaseIter`].
     pub fn all_alignments<'conn>(database: &'conn GAFBase) -> Result<Statement<'conn>> {
         database.prepare(
-            "SELECT * FROM Alignments ORDER BY id"
+            "SELECT * FROM Alignments"
         )
     }
 
     /// Returns a prepared statement for retrieving the given range of rows from table `Alignments`.
     ///
     /// The statement takes two integer parameters that define a half-open interval of row ids.
+    /// Alignments will be returned in the original order.
     /// This can be used for creating a [`GAFBaseIter`].
     pub fn alignment_rows<'conn>(database: &'conn GAFBase) -> Result<Statement<'conn>> {
         database.prepare(
-            "SELECT * FROM Alignments WHERE id >= ? AND id < ? ORDER BY id"
+            "SELECT * FROM Alignments WHERE id >= ? AND id < ?"
         )
     }
 
-    // FIXME: test
     /// Returns a prepared statement for retrieving rows overlapping the given range of handles from table `Alignments`.
     ///
     /// The statement takes two integer parameters: the minimum handle and the maximum handle.
+    /// Alignment order may differ from the original if multiple rows share the same `min_handle` value.
     /// This can be used for creating a [`GAFBaseIter`].
     pub fn handle_range<'conn>(database: &'conn GAFBase) -> Result<Statement<'conn>> {
         database.prepare(
-            "SELECT * FROM Alignments WHERE max_handle >= ? AND min_handle <= ? ORDER BY id"
+            "SELECT * FROM Alignments WHERE max_handle >= ? AND min_handle <= ?"
         )
     }
 
@@ -253,8 +255,6 @@ impl<'a> GAFBaseInterface<'a> {
 /// If the GAF-base is reference-based, target path lengths will not be set in the returned alignments.
 /// They can be set with [`Alignment::set_target_path_len`] if needed.
 /// Reference-based iteration avoids this by using another source for node sequences.
-///
-/// Alignments will be iterated in the order they appear in the database and returned one row at a time.
 pub struct GAFBaseIter<'reference, 'interface> {
     // Query results from table `Alignments`.
     rows: Rows<'reference>,
@@ -336,6 +336,11 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
             get_sequence: Some(get_sequence),
             cache: BTreeMap::new(),
         })
+    }
+
+    /// Returns the number of node records in the cache.
+    pub fn cache_size(&self) -> usize {
+        self.cache.len()
     }
 
     /// Consumes the iterator and returns the node record cache.

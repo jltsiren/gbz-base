@@ -442,7 +442,6 @@ impl Alignment {
         })
     }
 
-    // FIXME: test with empty target sequences
     /// Converts the alignment to a GAF line.
     ///
     /// If the target path is stored as a GBWT starting position, it will be missing (`*`).

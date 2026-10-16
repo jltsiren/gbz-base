@@ -214,6 +214,15 @@ fn alignment_known_good() {
         let line = alignments[index].to_gaf(&target_sequence);
         assert_eq!(line, gaf_lines[index], "Line {} did not survive the round trip", index + 1);
     }
+
+    // Write the alignments without a target sequence, which uses difference string operations from GAF v1.1 without reference bases.
+    // All alignments should survive the round trip to GAF and back.
+    for (index, aln) in alignments.iter().enumerate() {
+        let line = aln.to_gaf(&[]);
+        let parsed = Alignment::from_gaf(&line);
+        assert!(parsed.is_ok(), "Could not parse line {} with a GAF v1.1 difference string: {}", index + 1, parsed.unwrap_err());
+        assert_eq!(parsed.unwrap(), *aln, "Line {} did not survive the round trip to GAF v1.1", index + 1);
+    }
 }
 
 #[test]
