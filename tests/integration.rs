@@ -11,6 +11,7 @@ use gbz_base::{GBZBase, GraphInterface, SnarlOutput, PathIndex};
 use gbz_base::{GAFBase, GAFBaseParams, GraphReference};
 use gbz_base::{Subgraph, SubgraphQuery, HaplotypeOutput, ReadSet, AlignmentOutput};
 use gbz_base::Alignment;
+use gbz_base::formats::TypedField;
 use gbz_base::gaf_sort::{sort_gaf, SortParameters, KeyType};
 use gbz_base::{formats, utils};
 use gbz_base::Error;
@@ -1289,11 +1290,14 @@ fn gbz_base_query_with_gaf_base() {
 
 // Tests for `gaf-base batch`.
 
-fn run_gaf_base_batch(gaf_base_file: &PathBuf, ref_free_gaf_base: bool, gaf_file: &PathBuf, queries: &[(usize, usize)], test_case: &str) {
+fn run_gaf_base_batch(gaf_base_file: &PathBuf, ref_free_gaf_base: bool, gaf_file: &PathBuf, queries: &[(usize, usize)], include_ids: bool, test_case: &str) {
     let (_, alignments) = formats::read_gaf_file(gaf_file)
         .expect(&format!("Failed to read GAF file for {}", test_case));
-    let args: Vec<String> = vec![String::from("batch"), gaf_base_file.to_string_lossy().into_owned()];
-    // let args: Vec<String> = vec![String::from("batch"), String::from("--progress"), gaf_base_file.to_string_lossy().into_owned()];
+    let mut args: Vec<String> = vec![String::from("batch"), gaf_base_file.to_string_lossy().into_owned()];
+    // let mut args: Vec<String> = vec![String::from("batch"), String::from("--progress"), gaf_base_file.to_string_lossy().into_owned()];
+    if include_ids {
+        args.push(String::from("--ids"));
+    }
 
     let binary = get_binary_path("gaf-base");
     let mut child = Command::new(binary)
@@ -1327,11 +1331,18 @@ fn run_gaf_base_batch(gaf_base_file: &PathBuf, ref_free_gaf_base: bool, gaf_file
         let min_handle = support::encode_node(*min_node, Orientation::Forward);
         let max_handle = support::encode_node(*max_node, Orientation::Reverse);
         let mut truth: Vec<Alignment> = Vec::new();
-        for aln in alignments.iter() {
+        for (i, aln) in alignments.iter().enumerate() {
             if let Some(handles) = aln.target_path() {
                 for handle in handles.iter() {
                     if *handle >= min_handle && *handle <= max_handle {
-                        truth.push(aln.clone());
+                        let mut aln = aln.clone();
+                        if include_ids {
+                            let row_id = (i / GAFBaseParams::BLOCK_SIZE) + 1;
+                            let row_offset = i % GAFBaseParams::BLOCK_SIZE;
+                            aln.optional.push(TypedField::Int(*b"ri", row_id as isize));
+                            aln.optional.push(TypedField::Int(*b"ro", row_offset as isize));
+                        }
+                        truth.push(aln);
                         break;
                     }
                 }
@@ -1371,10 +1382,10 @@ fn gaf_base_batch_ref_based() {
     let gaf_base_file = build_gaf_base_truth(&mut temp_files, &gaf_file, None, None, &params);
 
     let no_queries: Vec<(usize, usize)> = Vec::new();
-    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &no_queries, "no queries");
+    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &no_queries, false, "no queries");
 
     let queries: Vec<(usize, usize)> = boundary_node_pairs();
-    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &queries, "queries");
+    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &queries, false, "queries");
 }
 
 #[test]
@@ -1386,10 +1397,24 @@ fn gaf_base_batch_ref_free() {
     let gaf_base_file = build_gaf_base_truth(&mut temp_files, &gaf_file, None, Some(&gbz_file), &params);
 
     let no_queries: Vec<(usize, usize)> = Vec::new();
-    run_gaf_base_batch(&gaf_base_file, true, &gaf_file, &no_queries, "no queries");
+    run_gaf_base_batch(&gaf_base_file, true, &gaf_file, &no_queries, false, "no queries");
 
     let queries: Vec<(usize, usize)> = boundary_node_pairs();
-    run_gaf_base_batch(&gaf_base_file, true, &gaf_file, &queries, "queries");
+    run_gaf_base_batch(&gaf_base_file, true, &gaf_file, &queries, false, "queries");
+}
+
+#[test]
+fn gaf_base_batch_with_ids() {
+    let mut temp_files = TempFileHandler::new();
+    let gaf_file = utils::get_test_data("micb-kir3dl1_HG003.gaf");
+    let params = GAFBaseParams::default();
+    let gaf_base_file = build_gaf_base_truth(&mut temp_files, &gaf_file, None, None, &params);
+
+    let no_queries: Vec<(usize, usize)> = Vec::new();
+    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &no_queries, true, "no queries");
+
+    let queries: Vec<(usize, usize)> = boundary_node_pairs();
+    run_gaf_base_batch(&gaf_base_file, false, &gaf_file, &queries, true, "queries");
 }
 
 //-----------------------------------------------------------------------------

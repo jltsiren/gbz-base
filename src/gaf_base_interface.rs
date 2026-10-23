@@ -3,6 +3,7 @@
 use crate::{GAFBase, GBZRecord, Alignment, AlignmentBlock};
 use crate::{Result, Error};
 use crate::alignment::{TargetPath, Flags};
+use crate::formats::TypedField;
 
 use crate::utils;
 
@@ -264,6 +265,8 @@ pub struct GAFBaseIter<'reference, 'interface> {
     get_sequence: Option<&'reference mut dyn FnMut(usize) -> Result<Vec<u8>>>,
     // Cached GBZ records for the nodes used by the alignments so far.
     cache: HashMap<usize, GBZRecord>,
+    // Include row ids and offsets as GAF tags.
+    include_ids: bool,
 }
 
 impl<'reference, 'interface> Iterator for GAFBaseIter<'reference, 'interface> {
@@ -312,6 +315,7 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
             record_interface,
             get_sequence: None,
             cache: cache.unwrap_or_default(),
+            include_ids: false,
         })
     }
 
@@ -339,7 +343,17 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
             record_interface,
             get_sequence: Some(get_sequence),
             cache: cache.unwrap_or_default(),
+            include_ids: false,
         })
+    }
+
+    /// Sets the flag for including row ids and offsets in the output.
+    ///
+    /// 1-based row ids are stored as GAF tag `ri:i` and 0-based row offsets as `ro:i`.
+    /// Given a fixed block size `b`, the 0-based row number in the GAF file should be `(ri - 1) * b + ro`.
+    /// That assumes a sorted GAF file with unaligned reads at the end.
+    pub fn include_ids(&mut self, include: bool) {
+        self.include_ids = include;
     }
 
     /// Returns the number of node records in the cache.
@@ -360,11 +374,17 @@ impl<'reference, 'interface> GAFBaseIter<'reference, 'interface> {
         let result = self.rows.next().map_err(Error::from)?;
         if let Some(row) = result {
             let mut block = GAFBaseInterface::decompress_block(row, Self::FROM_IDX)?;
-            for aln in block.iter_mut() {
+            let row_id: isize = row.get(0)?;
+            for (row_offset, aln) in block.iter_mut().enumerate() {
                 if let Some(get_sequence) = &mut self.get_sequence {
                     self.record_interface.set_target_path(aln, &mut self.cache, get_sequence)?;
                 } else {
                     self.record_interface.set_target_path(aln, &mut self.cache, &mut |_| Ok(Vec::new()))?;
+                }
+                if self.include_ids {
+                    // We assume that these tags did not exist previously in the alignment.
+                    aln.optional.push(TypedField::Int([b'r', b'i'], row_id));
+                    aln.optional.push(TypedField::Int([b'r', b'o'], row_offset as isize));
                 }
             }
             Ok(block)

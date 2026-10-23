@@ -283,6 +283,8 @@ The `*` and `-` operations used in GAF 1.0 would require target bases.
 ### Options
 
 * `-p` / `--progress`: Print progress information to standard error.
+* `--ids`: Include 1-based database row ids and 0-based row offsets as GAF tags `ri:i` and `ro:i`, respectively.
+  With block size `b`, the 0-based row number in the GAF file should be `(ri - 1) * b + ro`, excluding headers.
 * `--aln-cache N`: Cache size in bytes for the database connection used for alignments.
   This can be specified using suffixes such as `50M` or `128MiB`.
 * `--node-cache N`: Cache size in bytes for the database connection used for node records.

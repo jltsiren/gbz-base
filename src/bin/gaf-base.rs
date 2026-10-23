@@ -496,6 +496,10 @@ struct BatchArgs {
     #[arg(long, value_name = "HANDLES", value_parser = parse_quantity)]
     record_cache: Option<usize>,
 
+    /// Include row ids and offsets in the output
+    #[arg(long)]
+    ids: bool,
+
     /// Print progress information to stderr
     #[arg(short, long)]
     progress: bool,
@@ -540,6 +544,7 @@ fn batch(args: BatchArgs) -> Result<()> {
         let mut iter = GAFBaseIter::reference_free(
             &mut handle_range, (min_handle, max_handle), &mut record_interface, cache
         )?;
+        iter.include_ids(args.ids);
         let mut alignments: usize = 0;
         let mut blocks: usize = 0;
         while let Some(row) = iter.next() {
