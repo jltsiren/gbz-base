@@ -26,6 +26,7 @@ You will then have the following binaries in `target/release/`:
   * `gaf-base sort` sorts a GAF file for GAF-base construction (`gafsort` until version 0.5.1).
   * `gaf-base construct` builds a GAF-base (`gaf2db` until version 0.5.1).
   * `gaf-base decompress` converts GAF-base back to GAF (`db2gaf` until version 0.5.1).
+  * `gaf-base batch` executes multiple GAF-base queries.
 
 ## GBZ-base construction
 
