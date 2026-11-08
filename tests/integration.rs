@@ -259,6 +259,9 @@ fn run_gaf_base_sort(input_file: &PathBuf, output_file: Option<&PathBuf>, params
     if params.stable {
         args.push(String::from("--stable"));
     }
+    if params.two_merge_rounds {
+        args.push(String::from("--two-merge-rounds"));
+    }
     if params.progress {
         args.push(String::from("--progress"));
     }
@@ -419,9 +422,27 @@ fn gaf_base_sort_params() {
         expect_merge_rounds(&input_file, &truth, &params, 1);
     }
 
+    // One round of merges, with `--two-merge-rounds` enabled but ineffective.
+    {
+        let params = SortParameters { records_per_file: 2000, two_merge_rounds: true, ..params };
+        expect_merge_rounds(&input_file, &truth, &params, 1);
+    }
+
     // Two rounds of merges.
     {
         let params = SortParameters { records_per_file: 2000, files_per_merge: 3, ..params };
+        expect_merge_rounds(&input_file, &truth, &params, 2);
+    }
+
+    // Three rounds of merges.
+    {
+        let params = SortParameters { records_per_file: 2000, files_per_merge: 2, ..params };
+        expect_merge_rounds(&input_file, &truth, &params, 3);
+    }
+
+    // Three rounds of merges, with `--two-merge-rounds` bringing it down to two rounds.
+    {
+        let params = SortParameters { records_per_file: 2000, files_per_merge: 2, two_merge_rounds: true, ..params };
         expect_merge_rounds(&input_file, &truth, &params, 2);
     }
 

@@ -83,6 +83,11 @@ You can get a more appropriate size (10 thousand lines) for long reads with `--p
 File size can be changed manually with `--records-per-file N` (e.g. `--records-per-file 10k` for 20 kpb reads).
 The size can be specified using suffixes such as `k` or `M`.
 
+By default, each worker thread merges 32 temporary files at once.
+This can be adjusted with `--files-per-merge N`.
+With at most 1024 temporary files (at most ~50x human coverage with 150 bp reads), there will be at most two merge rounds.
+Option `--two-merge-rounds` can be used to ensure this by automatically adjusting merge width up for large datasets.
+
 ### Building the GAF-base
 
 GAF-base construction takes the sorted reads:

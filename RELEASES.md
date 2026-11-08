@@ -7,6 +7,7 @@
   * Tuning database behavior with `execute_pragma` and `set_pragma` in `GBZBase` and `GAFBase`.
   * `GAFBaseInterface`: low-level query interface for GAF-base.
   * `GAFBaseIter`: an iterator over alignments returned by an SQL statement.
+* `gaf-base sort` option `--two-merge-rounds` for ensuring at most two merge rounds.
 * `gaf-base batch` subcommand for batched GAF-base queries.
 * Compatibility with the old subgraph query algorithms still used in GBWTGraph:
   * `DistanceMode` parameter for extracting context based on shortest distances to node sides (default) or nodes (for compatibility).

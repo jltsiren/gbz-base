@@ -195,6 +195,23 @@ fn sort_multi_batch_multi_round() {
     assert_sorted(&lines, params.key_type);
 }
 
+// As sort_multi_batch_multi_round, but override merge width to guarantee two rounds.
+#[test]
+fn sort_two_merge_rounds() {
+    let params = SortParameters {
+        records_per_file: 1000,
+        files_per_merge: 2,
+        two_merge_rounds: true,
+        ..SortParameters::default()
+    };
+    let output = run_sort("shuffled.gaf", &params);
+    let lines = read_data_lines(&output);
+    let _ = fs::remove_file(&output);
+
+    assert_eq!(lines.len(), RECORD_COUNT);
+    assert_sorted(&lines, params.key_type);
+}
+
 // Repeat the above with two threads.
 #[test]
 fn sort_multithreaded() {

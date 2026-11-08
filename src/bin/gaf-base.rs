@@ -401,6 +401,10 @@ struct SortArgs {
     #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = SortParameters::DEFAULT_FILES_PER_MERGE)]
     files_per_merge: usize,
 
+    /// Adjust merge width to guarantee at most two merge rounds
+    #[arg(long)]
+    two_merge_rounds: bool,
+
     /// Buffer size for reading/writing records
     #[arg(short, long, value_name = "INT", value_parser = parse_quantity, default_value_t = SortParameters::DEFAULT_BUFFER_SIZE)]
     buffer_size: usize,
@@ -436,6 +440,9 @@ fn sort(args: SortArgs, matches: &clap::ArgMatches) -> Result<()> {
     }
     if explicit("files_per_merge") {
         params.files_per_merge = args.files_per_merge;
+    }
+    if explicit("two_merge_rounds") {
+        params.two_merge_rounds = args.two_merge_rounds;
     }
     if explicit("buffer_size") {
         params.buffer_size = args.buffer_size;

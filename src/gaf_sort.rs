@@ -256,6 +256,8 @@ pub struct SortParameters {
     pub threads: usize,
     /// Use stable sorting.
     pub stable: bool,
+    /// Guarantee <= 2 merge rounds.
+    pub two_merge_rounds: bool,
     /// Print progress information to stderr.
     pub progress: bool,
 }
@@ -321,6 +323,7 @@ impl Default for SortParameters {
             buffer_size: Self::DEFAULT_BUFFER_SIZE,
             threads: 1,
             stable: false,
+            two_merge_rounds: false,
             progress: false,
         }
     }
@@ -402,10 +405,19 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
         }
     };
 
+    // Adjust merge width if necessary.
+    let mut params = params.clone();
+    if params.two_merge_rounds && temp_files.len() > params.files_per_merge * params.files_per_merge {
+        params.files_per_merge = (temp_files.len() as f64).sqrt().ceil() as usize;
+        if params.progress {
+            eprintln!("Adjusting merge width to {}", params.files_per_merge);
+        }
+    }
+
     // Merge iteratively until the number of files is small enough to merge at once.
     let mut round = 0;
     while temp_files.len() > params.files_per_merge {
-        temp_files = merge_round(temp_files, round, params)?;
+        temp_files = merge_round(temp_files, round, &params)?;
         round += 1;
     }
 
@@ -413,7 +425,7 @@ pub fn sort_gaf<P: AsRef<Path>, Q: AsRef<Path>>(
     if params.progress {
         eprintln!("Starting the final merge");
     }
-    let total_records = merge_to_output(&temp_files, &header_lines, output_file.as_ref(), params)?;
+    let total_records = merge_to_output(&temp_files, &header_lines, output_file.as_ref(), &params)?;
 
     if params.progress {
         let elapsed = start_time.elapsed().as_secs_f64();
