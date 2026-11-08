@@ -8,7 +8,7 @@ readme = "README.md"
 repository = "https://github.com/jltsiren/gbz-base"
 
 [features]
-benchmark = ["rand"]
+benchmark = ["getopts", "rand"]
 
 [dependencies]
 # We may need the latest versions of these dependencies during development.
@@ -23,11 +23,11 @@ htscodecs-wrapper = { version = "0.1" }
 
 # Use fallible_uint for getting usize values from query results.
 rusqlite = { version = "0.38", features = ["bundled", "fallible_uint"] }
-getopts = { version = "0.2" }
 clap = { version = "4", features = ["derive"] }
 flate2 = { version = "1.1", features = ["zlib-rs"] }
 zstd = { version = "0.13" }
 
+getopts = { version = "0.2", optional = true }
 rand = { version = "0.9", optional = true }
 
 [dev-dependencies]
