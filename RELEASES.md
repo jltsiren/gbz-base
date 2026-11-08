@@ -15,6 +15,9 @@
   * These parameters are not exposed in `gbz-base query`, and they may be deprecated and removed in future releases.
 * Database files can be opened using `file:` URIs.
 * Support for GAF version 1.1.
+* Deprecation:
+  * Old binaries deprecated in 0.6.0 have been removed.
+  * Public getters with a `get_` prefix have been deprecated.
 
 ## GBZ-base 0.6.2 (2026-09-26)
 

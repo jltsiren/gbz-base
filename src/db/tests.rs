@@ -11,7 +11,7 @@ use std::path::PathBuf;
 //-----------------------------------------------------------------------------
 
 fn path_by_handle(interface: &mut GraphInterface, path_handle: usize) -> Option<GBZPath> {
-    let path = interface.get_path(path_handle);
+    let path = interface.path(path_handle);
     assert!(path.is_ok(), "Failed to get path {}: {}", path_handle, path.unwrap_err());
     path.unwrap()
 }
@@ -64,26 +64,26 @@ fn check_tags(interface: &mut GraphInterface, graph: &GBZ, chains: &Chains) {
 
     // GBWT tags.
     for (key, value) in gbwt.tags().iter() {
-        let tag = interface.get_gbwt_tag(key);
+        let tag = interface.gbwt_tag(key);
         assert!(tag.is_ok(), "Failed to get GBWT tag: {}", tag.unwrap_err());
         let tag = tag.unwrap();
         assert!(tag.is_some(), "Missing GBWT tag {}", key);
         assert_eq!(tag.unwrap(), *value, "Wrong GBWT tag value for {}", key);
     }
-    let extracted_tags = interface.get_gbwt_tags();
+    let extracted_tags = interface.gbwt_tags();
     assert!(extracted_tags.is_ok(), "Failed to get GBWT tags: {}", extracted_tags.unwrap_err());
     let extracted_tags = extracted_tags.unwrap();
     assert_eq!(extracted_tags, *gbwt.tags(), "Wrong GBWT tags from the database");
 
     // GBZ tags.
     for (key, value) in graph.tags().iter() {
-        let tag = interface.get_gbz_tag(key);
+        let tag = interface.gbz_tag(key);
         assert!(tag.is_ok(), "Failed to get GBZ tag: {}", tag.unwrap_err());
         let tag = tag.unwrap();
         assert!(tag.is_some(), "Missing GBZ tag {}", key);
         assert_eq!(tag.unwrap(), *value, "Wrong GBZ tag value for {}", key);
     }
-    let extracted_tags = interface.get_gbz_tags();
+    let extracted_tags = interface.gbz_tags();
     assert!(extracted_tags.is_ok(), "Failed to get GBZ tags: {}", extracted_tags.unwrap_err());
     let extracted_tags = extracted_tags.unwrap();
     assert_eq!(extracted_tags, *graph.tags(), "Wrong GBZ tags from the database");
@@ -107,7 +107,7 @@ fn check_nodes(interface: &mut GraphInterface, graph: &GBZ, chains: &Chains) {
         let sequence = graph.sequence(node_id).unwrap();
         for orientation in [Orientation::Forward, Orientation::Reverse] {
             let handle = support::encode_node(node_id, orientation);
-            let record = interface.get_record(handle);
+            let record = interface.record(handle);
             assert!(record.is_ok(), "Failed to get node record for handle {}: {}", handle, record.unwrap_err());
             let record = record.unwrap();
             assert!(record.is_some(), "Missing node record for handle {}", handle);

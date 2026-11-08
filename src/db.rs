@@ -1675,13 +1675,13 @@ impl AsRef<FullPathName> for GBZPath {
 /// let mut interface = GraphInterface::new(&database).unwrap();
 ///
 /// // The example graph does not have a reference samples tag.
-/// assert!(interface.get_gbwt_tag("reference_samples").unwrap().is_none());
+/// assert!(interface.gbwt_tag("reference_samples").unwrap().is_none());
 ///
 /// // Node 21 with edges to 22 and 23, all in forward orientation.
 /// let id = 21;
 /// let orientation = Orientation::Forward;
 /// let handle = support::encode_node(id, orientation);
-/// let record = interface.get_record(handle).unwrap().unwrap();
+/// let record = interface.record(handle).unwrap().unwrap();
 /// assert_eq!(record.id(), id);
 /// assert_eq!(record.orientation(), orientation);
 /// let successors: Vec<usize> = record.successors().collect();
@@ -1769,7 +1769,13 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns the value of the [`GBWT`] tag with the given key, or [`None`] if the tag does not exist.
+    #[deprecated(note = "Use `gbwt_tag` instead")]
     pub fn get_gbwt_tag(&mut self, key: &str) -> Result<Option<String>> {
+        self.gbwt_tag(key)
+    }
+
+    /// Returns the value of the [`GBWT`] tag with the given key, or [`None`] if the tag does not exist.
+    pub fn gbwt_tag(&mut self, key: &str) -> Result<Option<String>> {
         let key = format!("{}{}", GBZBase::KEY_GBWT, key);
         self.get_tag.query_row(
             (key,),
@@ -1778,7 +1784,13 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns the value of the [`GBZ`] tag with the given key, or [`None`] if the tag does not exist.
+    #[deprecated(note = "Use `gbz_tag` instead")]
     pub fn get_gbz_tag(&mut self, key: &str) -> Result<Option<String>> {
+        self.gbz_tag(key)
+    }
+
+    /// Returns the value of the [`GBZ`] tag with the given key, or [`None`] if the tag does not exist.
+    pub fn gbz_tag(&mut self, key: &str) -> Result<Option<String>> {
         let key = format!("{}{}", GBZBase::KEY_GBZ, key);
         self.get_tag.query_row(
             (key,),
@@ -1801,12 +1813,24 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns all [`GBWT`] tags.
+    #[deprecated(note = "Use `gbwt_tags` instead")]
     pub fn get_gbwt_tags(&mut self) -> Result<Tags> {
+        self.gbwt_tags()
+    }
+
+    /// Returns all [`GBWT`] tags.
+    pub fn gbwt_tags(&mut self) -> Result<Tags> {
         self.get_tags_with_prefix(GBZBase::KEY_GBWT)
     }
 
     /// Returns all [`GBZ`] tags.
+    #[deprecated(note = "Use `gbz_tags` instead")]
     pub fn get_gbz_tags(&mut self) -> Result<Tags> {
+        self.gbz_tags()
+    }
+
+    /// Returns all [`GBZ`] tags.
+    pub fn gbz_tags(&mut self) -> Result<Tags> {
         self.get_tags_with_prefix(GBZBase::KEY_GBZ)
     }
 
@@ -1815,12 +1839,18 @@ impl<'a> GraphInterface<'a> {
     /// Passes through any [`ErrorKind::Database`](crate::ErrorKind::Database) errors.
     /// Returns an empty name if the corresponding GBZ tags cannot be parsed.
     pub fn graph_name(&mut self) -> Result<GraphName> {
-        let tags = self.get_gbz_tags()?;
+        let tags = self.gbz_tags()?;
         Ok(GraphName::from_tags(&tags).unwrap_or_default())
     }
 
     /// Returns the node record for the given handle, or [`None`] if the node does not exist.
+    #[deprecated(note = "Use `record` instead")]
     pub fn get_record(&mut self, handle: usize) -> Result<Option<GBZRecord>> {
+        self.record(handle)
+    }
+
+    /// Returns the node record for the given handle, or [`None`] if the node does not exist.
+    pub fn record(&mut self, handle: usize) -> Result<Option<GBZRecord>> {
         self.get_record.query_row(
             (handle,),
             |row| {
@@ -1860,7 +1890,13 @@ impl<'a> GraphInterface<'a> {
     }
 
     /// Returns the path with the given handle, or [`None`] if the path does not exist.
+    #[deprecated(note = "Use `path` instead")]
     pub fn get_path(&mut self, handle: usize) -> Result<Option<GBZPath>> {
+        self.path(handle)
+    }
+
+    /// Returns the path with the given handle, or [`None`] if the path does not exist.
+    pub fn path(&mut self, handle: usize) -> Result<Option<GBZPath>> {
         self.get_path.query_row((handle,), Self::row_to_gbz_path).optional().map_err(Error::database)
     }
 
@@ -1936,7 +1972,7 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
                 GBZRecord::from_gbz(gbz, handle).ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
             },
             GraphReference::Db(db) => {
-                db.get_record(handle)?.ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
+                db.record(handle)?.ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
             },
             GraphReference::None => Err(Error::invalid_query("No reference graph provided")),
         }
@@ -1961,7 +1997,7 @@ impl<'reference, 'graph> GraphReference<'reference, 'graph> {
                 }
             },
             GraphReference::Db(db) => {
-                db.get_record(handle)?
+                db.record(handle)?
                     .map(|record| record.into_sequence())
                     .ok_or_else(|| Error::not_found(format!("The graph does not contain handle {}", handle)))
             },
