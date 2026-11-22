@@ -554,7 +554,7 @@ fn batch(args: BatchArgs) -> Result<()> {
         iter.include_ids(args.ids);
         let mut alignments: usize = 0;
         let mut blocks: usize = 0;
-        while let Some(row) = iter.next() {
+        for row in iter.by_ref() {
             let block = row?;
             for aln in block.iter() {
                 if !alignment_in_range(aln, min_handle, max_handle) {

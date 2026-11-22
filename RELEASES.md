@@ -1,7 +1,8 @@
 # GBZ-base releases
 
-## Current version
+## GBZ-base 0.7.0 (2026-11-21)
 
+* Database versions: GBZ-base version 4, GAF-base version 4
 * New functionality:
   * `Subgraph::extract_haplotype_walks` for extracting the paths as `HaplotypeWalk` objects.
   * Tuning database behavior with `execute_pragma` and `set_pragma` in `GBZBase` and `GAFBase`.

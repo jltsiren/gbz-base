@@ -357,8 +357,7 @@ pub fn read_gaf_header_lines<R: BufRead>(reader: &mut R) -> io::Result<Vec<Strin
         if line.starts_with("@HD") {
             let fields: Vec<&str> = line.split('\t').collect();
             for field in fields {
-                if field.starts_with("VN:Z:") {
-                    let version = &field[5..];
+                if let Some(version) = field.strip_prefix("VN:Z:") {
                     if !SUPPORTED_GAF_VERSIONS.contains(&version) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,

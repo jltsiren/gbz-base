@@ -28,7 +28,7 @@ use gbz::support::Chains;
 use gbz::{algorithms, support};
 
 use pggname::Graph;
-use pggname::graph::NodeInt;
+use pggname::graph::{NodeInt, GraphStatistics};
 
 #[cfg(test)]
 mod tests;
@@ -2315,14 +2315,14 @@ impl Graph for Subgraph {
         Ok(())
     }
 
-    fn statistics(&self) -> (usize, usize, usize) {
+    fn statistics(&self) -> GraphStatistics {
         let node_count = self.nodes();
         let mut edge_count = 0;
-        let mut seq_len = 0;
+        let mut total_sequence_length = 0;
         for (handle, record) in self.records.iter() {
             let (from_id, from_o) = support::decode_node(*handle);
             if from_o == Orientation::Forward {
-                seq_len += record.sequence_len();
+                total_sequence_length += record.sequence_len();
             }
             for successor in record.successors() {
                 let (to_id, to_o) = support::decode_node(successor);
@@ -2331,10 +2331,14 @@ impl Graph for Subgraph {
                 }
             }
         }
-        (node_count, edge_count, seq_len)
+        GraphStatistics {
+            node_count,
+            edge_count,
+            total_sequence_length,
+        }
     }
 
-    fn node_iter(&self) -> impl Iterator<Item=Vec<u8>> {
+    fn serialized_node_iter(&self) -> impl Iterator<Item=Vec<u8>> {
         self.node_iter().map(|from_id| {
             let sequence = self.sequence(from_id).unwrap().to_vec();
             let mut node = NodeInt::new(Some(sequence));

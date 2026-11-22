@@ -300,9 +300,9 @@ impl ReadSet {
             &mut interface, &mut get_sequence, None
         )?;
         let mut blocks = 0;
-        while let Some(block) = iter.next() {
+        for block in iter.by_ref() {
             let block = block?;
-            reads.extend(block.into_iter());
+            reads.extend(block);
             blocks += 1;
         }
         let unclipped = reads.len();

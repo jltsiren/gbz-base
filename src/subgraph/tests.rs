@@ -443,10 +443,10 @@ fn check_subgraph(graph: &GBZ, subgraph: &Subgraph, true_nodes: &[usize], path_c
     }
 
     // Statistics from Graph.
-    let (node_count, edge_count, seq_len) = subgraph.statistics();
-    assert_eq!(node_count, true_nodes.len(), "Wrong node count in statistics for {}", test_case);
-    assert_eq!(edge_count, expected_edges, "Wrong edge count in statistics for {}", test_case);
-    assert_eq!(seq_len, expected_seq_len, "Wrong sequence length in statistics for {}", test_case);
+    let stats = subgraph.statistics();
+    assert_eq!(stats.node_count, true_nodes.len(), "Wrong node count in statistics for {}", test_case);
+    assert_eq!(stats.edge_count, expected_edges, "Wrong edge count in statistics for {}", test_case);
+    assert_eq!(stats.total_sequence_length, expected_seq_len, "Wrong sequence length in statistics for {}", test_case);
 }
 
 fn check_graph_name(subgraph: &Subgraph, should_have_name: bool, parent: &GraphName, test_case: &str) {
@@ -1539,7 +1539,7 @@ fn gfa_output() {
             // one computed from the GFA output using the reference implementation.
             let from_gfa = algorithms::parse_gfa::<GraphInt, _>(gfa.as_bytes());
             assert!(from_gfa.is_ok(), "Failed to parse GFA output for query {}: {}", query, from_gfa.unwrap_err());
-            let from_gfa = from_gfa.unwrap();
+            let (from_gfa, _) = from_gfa.unwrap();
             let true_name = algorithms::stable_name(&from_gfa);
             assert_eq!(graph_name.name(), Some(&true_name), "Wrong graph name in GFA output for query {}", query);
         }

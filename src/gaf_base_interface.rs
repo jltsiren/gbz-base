@@ -12,6 +12,7 @@ use gbz::bwt::Record;
 use rusqlite::{Statement, Row, Rows, OptionalExtension, Params};
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::iter::FusedIterator;
 
 #[cfg(test)]
@@ -231,11 +232,11 @@ impl<'a> GAFBaseInterface<'a> {
         let mut path_len = 0;
         while let Some(p) = pos {
             path.push(p.node);
-            if !cache.contains_key(&p.node) {
+            if let Entry::Vacant(e) = cache.entry(p.node) {
                 let record = self.record(p.node, get_sequence)?.ok_or(
                     Error::invalid_data(format!("GAF-base does not contain a record for node handle {}", p.node))
                 )?;
-                cache.insert(p.node, record);
+                e.insert(record);
             }
             let record = cache.get(&p.node).unwrap();
             path_len += record.sequence_len();
